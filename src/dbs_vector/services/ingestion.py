@@ -4,9 +4,10 @@ import os
 from collections.abc import Iterator
 from itertools import islice
 from pathlib import Path
+from typing import Any
 
 from dbs_vector.config import settings
-from dbs_vector.core.models import Chunk, Document
+from dbs_vector.core.models import Document
 from dbs_vector.core.ports import IChunker, IEmbedder, IVectorStore
 
 
@@ -23,7 +24,7 @@ class IngestionService:
         self.embedder = embedder
         self.vector_store = vector_store
 
-    def _batched(self, iterable: Iterator[Chunk], n: int) -> Iterator[list[Chunk]]:
+    def _batched(self, iterable: Iterator[Any], n: int) -> Iterator[list[Any]]:
         """Yields successive n-sized chunks from an iterable (Python 3.12+ backport)."""
         it = iter(iterable)
         while batch := list(islice(it, n)):
@@ -37,12 +38,12 @@ class IngestionService:
 
         print(f"\nStarting Streaming Ingestion for {target_path}...")
 
-        def _chunk_generator() -> Iterator[Chunk]:
+        def _chunk_generator() -> Iterator[Any]:
             if os.path.isdir(target_path):
                 files: list[Path] = []
                 base_dir = Path(target_path)
-                for ext in ["*.md", "*.txt"]:
-                    files.extend(base_dir.rglob(ext))
+                for ext in self.chunker.supported_extensions:
+                    files.extend(base_dir.rglob(f"*{ext}"))
             else:
                 files = [Path(p) for p in glob.glob(target_path, recursive=True)]
 

@@ -24,8 +24,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Dynamically load all configured engines
         for engine_name in settings.engines.keys():
             print(f"  -> Loading Engine ({engine_name})...")
-            embedder, store, _ = _build_dependencies(engine_name)
-            _services[engine_name] = SearchService(embedder, store)
+            deps = _build_dependencies(engine_name)
+            _services[engine_name] = SearchService(deps.embedder, deps.store)
 
         print("[Startup] API is ready to accept concurrent requests.")
     except Exception as e:

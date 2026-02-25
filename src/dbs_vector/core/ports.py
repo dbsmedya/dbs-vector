@@ -77,6 +77,11 @@ class IVectorStore(Protocol):
 class IChunker(Protocol):
     """Protocol defining how documents are split into logical boundaries."""
 
+    @property
+    def supported_extensions(self) -> list[str]:
+        """Returns a list of file extensions this chunker can process (e.g., ['.md', '.txt'])."""
+        ...
+
     def process(self, document: Any) -> Iterator[Any]:
         """Yields chunks from a raw document or parsed log."""
         ...

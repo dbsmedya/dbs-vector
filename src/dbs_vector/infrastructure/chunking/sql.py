@@ -2,22 +2,31 @@ import hashlib
 import json
 from collections.abc import Iterator
 
-from dbs_vector.core.models import SqlChunk
+from dbs_vector.core.models import Document, SqlChunk
 
 
 class SqlChunker:
     """
     Parses JSON exports of slow query logs or pg_stat_statements.
     The normalized query string must be pre-provided in the JSON payload.
+    Implements the IChunker protocol.
     """
 
-    def parse_query_log(self, filepath: str) -> Iterator[SqlChunk]:
-        """Reads a JSON file containing query records and yields SqlChunks."""
-        with open(filepath, encoding="utf-8") as f:
-            records = json.load(f)
+    @property
+    def supported_extensions(self) -> list[str]:
+        return [".json"]
+
+    def process(self, document: Document) -> Iterator[SqlChunk]:
+        """Parses the JSON content from a Document and yields SqlChunks."""
+        try:
+            records = json.loads(document.content)
+        except json.JSONDecodeError as e:
+            print(f"Error decoding JSON from {document.filepath}: {e}")
+            return
 
         if not isinstance(records, list):
-            raise ValueError(f"Expected a JSON array of query records in {filepath}")
+            print(f"Warning: Expected a JSON array of query records in {document.filepath}")
+            return
 
         for record in records:
             # Safely handle potential missing fields depending on the exact JSON schema

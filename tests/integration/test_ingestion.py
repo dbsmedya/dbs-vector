@@ -18,10 +18,12 @@ def test_ingestion_and_search_integration(tmp_path):
 
     from dbs_vector.infrastructure.storage.mappers import DocumentMapper
 
+    md_config = settings.engines["md"]
+
     embedder = MLXEmbedder(
-        model_name=settings.mlx_model_name,
-        max_token_length=settings.max_token_length,
-        dimension=settings.vector_dimension,
+        model_name=md_config.model_name,
+        max_token_length=md_config.max_token_length,
+        dimension=md_config.vector_dimension,
     )
 
     mapper = DocumentMapper(vector_dimension=embedder.dimension)
@@ -33,7 +35,7 @@ def test_ingestion_and_search_integration(tmp_path):
         mapper=mapper,
     )
 
-    chunker = DocumentChunker(max_chars=settings.chunk_max_chars)
+    chunker = DocumentChunker(max_chars=md_config.chunk_max_chars)
 
     # 2. Ingestion Phase (Using the relative docs/ path!)
     ingestion_service = IngestionService(chunker, embedder, store)

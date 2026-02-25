@@ -16,6 +16,10 @@ class DocumentChunker:
         self.max_chars = max_chars
         self.md_parser = markdown_it.MarkdownIt()
 
+    @property
+    def supported_extensions(self) -> list[str]:
+        return [".md", ".txt"]
+
     def process(self, document: Document) -> Iterator[Chunk]:
         """Yields chunks from a raw document."""
         if document.filepath.lower().endswith(".md"):

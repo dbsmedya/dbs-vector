@@ -1,5 +1,5 @@
 import os
-from typing import Annotated, Any
+from typing import Annotated, Any, NamedTuple
 
 import typer
 
@@ -14,6 +14,14 @@ app = typer.Typer(
     help="dbs-vector: Local Arrow-Native Codebase Search Engine",
     no_args_is_help=True,
 )
+
+
+class EngineDeps(NamedTuple):
+    """Container for resolved engine dependencies."""
+
+    embedder: Any
+    store: Any
+    chunker: Any
 
 
 @app.callback()
@@ -38,7 +46,7 @@ def main(
     settings.engines = new_settings.engines
 
 
-def _build_dependencies(engine_name: str) -> tuple[Any, Any, Any]:
+def _build_dependencies(engine_name: str) -> EngineDeps:
     """Dependency Injection Factory driven by config.yaml configuration."""
     if engine_name not in settings.engines:
         raise ValueError(
@@ -75,7 +83,7 @@ def _build_dependencies(engine_name: str) -> tuple[Any, Any, Any]:
         nprobes=settings.nprobes,
     )
 
-    return embedder, store, chunker
+    return EngineDeps(embedder=embedder, store=store, chunker=chunker)
 
 
 @app.command()
@@ -110,8 +118,8 @@ def ingest(
             abort=True,
         )
 
-    embedder, store, chunker = _build_dependencies(engine_name)
-    service = IngestionService(chunker, embedder, store)
+    deps = _build_dependencies(engine_name)
+    service = IngestionService(deps.chunker, deps.embedder, deps.store)
     service.ingest_directory(path, rebuild=rebuild)
 
 
@@ -142,8 +150,8 @@ def search(
         )
         raise typer.Exit(code=1)
 
-    embedder, store, _ = _build_dependencies(engine_name)
-    service = SearchService(embedder, store)
+    deps = _build_dependencies(engine_name)
+    service = SearchService(deps.embedder, deps.store)
 
     extra_filters = {}
     if min_time is not None and engine_name == "sql":
