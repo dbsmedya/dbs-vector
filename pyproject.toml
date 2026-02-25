@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dbs-vector"
+version = "0.1.0"
+description = "First RAG example"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.133.0",
+    "lance==1.2.1",
+    "lancedb==0.29.2",
+    "markdown-it-py>=4.0.0",
+    "mlx-embeddings>=0.0.5",
+    "numpy>=2.2.3",
+    "polars==1.38.1",
+    "pyarrow==19.0.1",
+    "pydantic-settings==2.13.1",
+    "pydantic>=2.10.6",
+    "pyyaml>=6.0.3",
+    "tantivy==0.25.1",
+    "typer>=0.15.1",
+    "types-pyyaml>=6.0.12.20250915",
+    "uvicorn>=0.41.0",
+]
+
+[project.scripts]
+dbs-vector = "dbs_vector.cli:app"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "poethepoet>=0.42.0",
+    "pytest-cov>=7.0.0",
+    "pytest>=9.0.2",
+    "ruff>=0.15.2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dbs_vector"]
+
+[tool.poe.tasks]
+test = "pytest tests/ -v"
+test-cov = "pytest tests/ --cov=src/dbs_vector -v"
+lint = "ruff check src/ tests/"
+format = "ruff format src/ tests/"
+typecheck = "mypy src/"
+check = ["format", "lint", "typecheck", "test"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "UP", "I"]  # pycodestyle, pyflakes, bugbear, pyupgrade, isort
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning"
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "lancedb",
+    "lancedb.*",
+    "pyarrow",
+    "pyarrow.*",
+    "mlx_embeddings",
+    "mlx_embeddings.*"
+]
+ignore_missing_imports = true
+ignore_errors = true
