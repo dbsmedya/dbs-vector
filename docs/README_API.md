@@ -112,6 +112,29 @@ Both search endpoints return a similar structure containing the original query a
 }
 ```
 
+**Example SQL Response:**
+```json
+{
+  "query": "SELECT * FROM users",
+  "results": [
+    {
+      "chunk": {
+        "id": "query_abc123",
+        "text": "SELECT * FROM users WHERE id = ?",
+        "raw_query": "SELECT * FROM users WHERE id = 42",
+        "source": "production_db",
+        "execution_time_ms": 1250.5,
+        "calls": 500,
+        "content_hash": "hash_xyz789"
+      },
+      "score": 0.9812,
+      "distance": 0.0188,
+      "is_fts_match": false
+    }
+  ]
+}
+```
+
 ---
 
 ## Concurrency and Threading
