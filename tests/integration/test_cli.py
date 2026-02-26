@@ -22,6 +22,9 @@ def mock_settings():
                 mapper_type="document",
                 chunker_type="document",
                 chunk_max_chars=1000,
+                passage_prefix="passage: ",
+                query_prefix="query: ",
+                workflow="test_md",
             ),
             "sql": MagicMock(
                 model_name="sql-model",
@@ -31,6 +34,9 @@ def mock_settings():
                 mapper_type="sql",
                 chunker_type="sql",
                 chunk_max_chars=0,
+                passage_prefix="",
+                query_prefix="",
+                workflow="test_sql",
             ),
         }
         mock.db_path = "./test_db"
@@ -54,6 +60,7 @@ def mock_store():
     """Mock LanceDBStore."""
     with patch("dbs_vector.cli.LanceDBStore") as mock:
         mock_instance = MagicMock()
+        mock_instance.mapper = MagicMock()
         mock.return_value = mock_instance
         yield mock
 
@@ -139,6 +146,9 @@ class TestIngestCommand:
         result = runner.invoke(app, ["ingest", "docs/*.md"])
 
         assert result.exit_code == 0
+        mock_ingestion_service.assert_called_once()
+        call_args = mock_ingestion_service.call_args.args
+        assert call_args[3] == "test_md"
         mock_ingestion_service.return_value.ingest_directory.assert_called_once_with(
             "docs/*.md", rebuild=False
         )
@@ -359,6 +369,8 @@ class TestBuildDependencies:
             model_name="test-model",
             max_token_length=512,
             dimension=384,
+            passage_prefix="passage: ",
+            query_prefix="query: ",
         )
 
     def test_build_dependencies_unknown_engine(self, mock_settings):

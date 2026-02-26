@@ -82,6 +82,11 @@ For full API specifications and swagger documentation, see:
 
 `dbs-vector` is built upon strict **Clean Architecture** and **SOLID** principles. It utilizes a **Configuration-Driven Registry Pattern**, allowing new data engines (e.g., LibCST, Logs) to be added by simply updating `config.yaml` and registering new mappers/chunkers without modifying core orchestration logic.
 
+### Specialized Gemma Workflows
+The project is optimized for instruction-tuned models like `embeddinggemma`. It supports asymmetric task-based workflows defined in `config.yaml`:
+*   **Markdown (Search Result)**: Uses the `task: search result` prefix for queries and `title: none | text: ` for documents, maximizing retrieval accuracy for RAG.
+*   **SQL (Clustering)**: Uses the `task: clustering` prefix for both ingestion and search, enabling high-precision semantic grouping of logically similar slow queries.
+
 ### Future Hardware Support (CUDA/TPU)
 Because the core RAG orchestration relies exclusively on the `IEmbedder` Protocol, the application is strictly hardware-agnostic at its core. While currently optimized for Apple Silicon via `MLXEmbedder`, future deployment to cloud GPUs or Linux environments simply requires implementing a new `CudaEmbedder` (using PyTorch/Transformers) that returns standard NumPy arrays. No changes to the ingestion, storage, or API layers are necessary to support new hardware accelerators.
 

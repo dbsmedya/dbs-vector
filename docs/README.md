@@ -73,7 +73,10 @@ uv run dbs-vector search "SELECT * FROM users" --type sql --min-time 1000
 1.  **Generic Storage Adapters:** `LanceDBStore` is entirely data-agnostic. It accepts an `IStoreMapper` adapter that defines the schema and serialization logic, allowing it to store Markdown and SQL side-by-side in separate tables without internal branching.
 2.  **Arrow-Native Pipeline:** Data is streamed directly to disk via `pyarrow.RecordBatch`, bypassing Python's slow object creation and utilizing Apple's Unified Memory for zero-copy tensor extraction.
 3.  **Deduplication & Delta-Updates:** `IngestionService` uses content hashing (SHA-256) to skip files that haven't changed, significantly reducing GPU compute costs during re-ingestion.
-4.  **Async API Offloading:** The FastAPI server uses `asyncio.to_thread` to handle blocking MLX inference, ensuring the web loop remains responsive during heavy searches.
+4.  **Task-Aware Embeddings (Asymmetric vs. Symmetric):** The `MLXEmbedder` natively supports instruction-tuned models (like `embeddinggemma` or `BGE`) via configurable `query_prefix` and `passage_prefix` injection. 
+    *   **Asymmetric (RAG):** The Markdown engine prepends search instructions to queries and document instructions to passages, projecting questions and answers into a shared latent space for optimal retrieval.
+    *   **Symmetric (Clustering):** The SQL engine uses identical clustering instructions for both queries and stored logs, ensuring logically similar structures group together perfectly.
+5.  **Async API Offloading:** The FastAPI server uses `asyncio.to_thread` to handle blocking MLX inference, ensuring the web loop remains responsive during heavy searches.
 5.  **Polymorphic Retrieval:** `SearchService` handles different result models (e.g., `SearchResult` vs `SqlSearchResult`) dynamically through the mapper pattern.
 
 ---

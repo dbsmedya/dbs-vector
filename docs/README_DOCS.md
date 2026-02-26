@@ -20,9 +20,19 @@ For standard prose (paragraphs, lists, blockquotes), the chunker accumulates tex
 *   **Benefit:** Keeps context dense and reduces the number of small, fragmented vectors in the database.
 
 ### 3. Plain Text Fallback
-If a `.txt` file is ingested instead of `.md`, the engine safely falls back to splitting by double-newlines (`
+If a `.txt` file is ingested instead of `.md`, the engine safely falls back to splitting by double-newlines (`\n\n`), ensuring broad compatibility with raw logs or unformatted notes.
 
-`), ensuring broad compatibility with raw logs or unformatted notes.
+---
+
+## Task Prefixes (Asymmetric Embeddings)
+Modern embedding models (like `mlx-community/embeddinggemma-300m-bf16`) are instruction-tuned. They require a specific string prepended to the text to understand *what* they are doing. 
+
+The Markdown engine uses an **Asymmetric** retrieval strategy:
+1.  **Ingestion:** The engine silently prepends the passage prefix (`title: none | text: `) to your document chunks before calculating the vector.
+2.  **Searching:** When you ask a question, the engine prepends the query prefix (`task: search result | query: `).
+
+This teaches the model to project short questions and long, factual answers into the same mathematical space, drastically improving RAG retrieval accuracy compared to naive embeddings.
+*   **Important:** These prefixes are strictly used for vector generation. They are *never* stored in the `text` column in LanceDB, ensuring your LLM prompt remains clean and your Full-Text Search index isn't polluted by the word "title" or "query."
 
 ---
 

@@ -19,6 +19,7 @@ class DocumentMapper:
                 pa.field("text", pa.string()),
                 pa.field("source", pa.string()),
                 pa.field("content_hash", pa.string()),
+                pa.field("workflow", pa.string()),  # Identifies the exact model/task prefix space used
                 pa.field("node_type", pa.string(), nullable=True),
                 pa.field("parent_scope", pa.string(), nullable=True),
                 pa.field("line_range", pa.string(), nullable=True),
@@ -29,11 +30,12 @@ class DocumentMapper:
     def schema(self) -> Any:
         return self._schema
 
-    def to_record_batch(self, chunks: list[Any], vectors: NDArray[np.float32]) -> Any:
+    def to_record_batch(self, chunks: list[Any], vectors: NDArray[np.float32], workflow: str) -> Any:
         ids = [c.id for c in chunks]
         texts = [c.text for c in chunks]
         sources = [c.source for c in chunks]
         hashes = [c.content_hash for c in chunks]
+        workflows = [workflow for _ in chunks]
         node_types = [c.node_type for c in chunks]
         scopes = [c.parent_scope for c in chunks]
         lines = [c.line_range for c in chunks]
@@ -45,6 +47,7 @@ class DocumentMapper:
                 pa.array(texts),
                 pa.array(sources),
                 pa.array(hashes),
+                pa.array(workflows),
                 pa.array(node_types, type=pa.string()),
                 pa.array(scopes, type=pa.string()),
                 pa.array(lines, type=pa.string()),
@@ -62,6 +65,7 @@ class DocumentMapper:
             parent_scope=row.get("parent_scope"),
             line_range=row.get("line_range"),
         )
+        # Assuming workflow might be needed in SearchResult in future, not added now for simplicity
         return SearchResult(chunk=chunk, score=score, distance=score, is_fts_match=(score is None))
 
 
@@ -80,6 +84,7 @@ class SqlMapper:
                 pa.field("execution_time_ms", pa.float64()),
                 pa.field("calls", pa.int64()),
                 pa.field("content_hash", pa.string()),
+                pa.field("workflow", pa.string()),  # Identifies the exact model/task prefix space used
             ]
         )
 
@@ -87,7 +92,7 @@ class SqlMapper:
     def schema(self) -> Any:
         return self._schema
 
-    def to_record_batch(self, chunks: list[Any], vectors: NDArray[np.float32]) -> Any:
+    def to_record_batch(self, chunks: list[Any], vectors: NDArray[np.float32], workflow: str) -> Any:
         ids = [c.id for c in chunks]
         texts = [c.text for c in chunks]
         sources = [c.source for c in chunks]
@@ -95,6 +100,7 @@ class SqlMapper:
         raw_queries = [c.raw_query for c in chunks]
         execution_times = [c.execution_time_ms for c in chunks]
         calls = [c.calls for c in chunks]
+        workflows = [workflow for _ in chunks]
 
         return pa.RecordBatch.from_arrays(
             [
@@ -106,6 +112,7 @@ class SqlMapper:
                 pa.array(execution_times, type=pa.float64()),
                 pa.array(calls, type=pa.int64()),
                 pa.array(hashes),
+                pa.array(workflows),
             ],
             schema=self._schema,
         )

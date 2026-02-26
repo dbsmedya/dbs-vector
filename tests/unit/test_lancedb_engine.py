@@ -132,7 +132,7 @@ class TestIngestChunks:
     def test_ingest_chunks_empty_list(self, lancedb_store):
         """Test ingesting empty chunks list does nothing."""
         store, _, mock_table, _ = lancedb_store
-        store.ingest_chunks([], np.array([], dtype=np.float32).reshape(0, 3))
+        store.ingest_chunks([], np.array([], dtype=np.float32).reshape(0, 3), workflow="default")
 
         store.mapper.to_record_batch.assert_not_called()
         mock_table.add.assert_not_called()
@@ -146,9 +146,9 @@ class TestIngestChunks:
         mock_batch = MagicMock()
         store.mapper.to_record_batch.return_value = mock_batch
 
-        store.ingest_chunks(chunks, vectors)
+        store.ingest_chunks(chunks, vectors, workflow="default")
 
-        store.mapper.to_record_batch.assert_called_once_with(chunks, vectors)
+        store.mapper.to_record_batch.assert_called_once_with(chunks, vectors, "default")
         mock_table.add.assert_called_once_with(mock_batch)
 
 

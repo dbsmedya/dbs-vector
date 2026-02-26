@@ -12,10 +12,19 @@ class MLXEmbedder:
     Forces lazy tensor evaluation and returns contiguous NumPy arrays via Unified Memory.
     """
 
-    def __init__(self, model_name: str, max_token_length: int = 512, dimension: int = 384) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        max_token_length: int,
+        dimension: int,
+        passage_prefix: str = "",
+        query_prefix: str = "",
+    ) -> None:
         self._model_name = model_name
         self._max_token_length = max_token_length
         self._dimension = dimension
+        self._passage_prefix = passage_prefix
+        self._query_prefix = query_prefix
         self._lock = threading.Lock()
 
         print(f"Loading MLX model: {model_name}...")
@@ -29,15 +38,25 @@ class MLXEmbedder:
 
     def _execute_mlx(self, texts: list[str]) -> NDArray[np.float32]:
         """Internal helper to tokenize, run the MLX model, and extract the tensor."""
+        import mlx.core as mx
+
         with self._lock:
-            inputs = self.tokenizer.encode(
+            # We call the underlying transformers tokenizer directly to obtain the attention_mask.
+            # Some models (like Gemma bf16) require the mask to be cast to bfloat16 to avoid 
+            # type promotion errors during inference.
+            inputs = self.tokenizer._tokenizer(
                 texts,
                 padding=True,
                 truncation=True,
                 max_length=self._max_token_length,
                 return_tensors="mlx",
             )
-            outputs = self.model(inputs)
+
+            if hasattr(inputs, "attention_mask"):
+                inputs["attention_mask"] = inputs["attention_mask"].astype(mx.float16)
+
+            # We pass the input_ids as the first positional argument and attention_mask as a keyword.
+            outputs = self.model(inputs["input_ids"], attention_mask=inputs.get("attention_mask"))
 
             if hasattr(outputs, "text_embeds"):
                 embeds_mlx = outputs.text_embeds
@@ -45,27 +64,31 @@ class MLXEmbedder:
                 embeds_mlx = outputs["text_embeds"]
 
             # Unified Memory mapping (Forces MLX Lazy Evaluation)
+            # Note: This involves a memcpy within Unified Memory due to different allocators.
             vectors_np: NDArray[np.float32] = np.array(embeds_mlx).astype(np.float32)
         return vectors_np
 
     def embed_batch(self, texts: list[str]) -> NDArray[np.float32]:
-        """Embeds a batch of texts safely, handling failures per-batch."""
+        """Embeds a batch of texts safely, prepending the passage prefix for asymmetric models."""
         if not texts:
             return np.empty((0, self._dimension), dtype=np.float32)
 
+        prefixed_texts = [f"{self._passage_prefix}{text}" for text in texts]
+
         try:
-            vectors = self._execute_mlx(texts)
+            vectors = self._execute_mlx(prefixed_texts)
             return vectors
         except Exception as e:
             print(f"Error embedding batch: {e}")
             raise
 
     def embed_query(self, text: str) -> NDArray[np.float32]:
-        """Embeds a single query safely, enforcing exact tensor shapes."""
+        """Embeds a single query safely, prepending the query prefix for asymmetric models."""
         if not text.strip():
             raise ValueError("Query text cannot be empty.")
 
-        vectors = self._execute_mlx([text])
+        prefixed_text = f"{self._query_prefix}{text}"
+        vectors = self._execute_mlx([prefixed_text])
         query_vector: NDArray[np.float32] = vectors[0]
 
         # Critical structural guarantee

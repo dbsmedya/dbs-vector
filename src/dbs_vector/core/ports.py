@@ -30,7 +30,7 @@ class IStoreMapper(Protocol):
         """Returns the PyArrow schema for the table."""
         ...
 
-    def to_record_batch(self, chunks: list[Any], vectors: NDArray[np.float32]) -> Any:
+    def to_record_batch(self, chunks: list[Any], vectors: NDArray[np.float32], workflow: str) -> Any:
         """Converts domain chunks and vectors into a PyArrow RecordBatch."""
         ...
 
@@ -46,7 +46,7 @@ class IVectorStore(Protocol):
         """Completely drops the vector store table/index to start fresh."""
         ...
 
-    def ingest_chunks(self, chunks: list[Any], vectors: NDArray[np.float32]) -> None:
+    def ingest_chunks(self, chunks: list[Any], vectors: NDArray[np.float32], workflow: str) -> None:
         """Appends chunks and their matching vectors into the store (Zero-Copy ideal)."""
         ...
 

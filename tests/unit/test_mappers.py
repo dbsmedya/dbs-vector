@@ -73,11 +73,11 @@ class TestDocumentMapper:
 
     def test_to_record_batch(self, mapper, sample_chunks, sample_vectors):
         """Test converting chunks and vectors to a RecordBatch."""
-        batch = mapper.to_record_batch(sample_chunks, sample_vectors)
+        batch = mapper.to_record_batch(sample_chunks, sample_vectors, workflow="test")
 
         assert isinstance(batch, pa.RecordBatch)
         assert batch.num_rows == 2
-        assert batch.num_columns == 8
+        assert batch.num_columns == 9
 
         # Check that data is correctly placed
         assert batch.column("id").to_pylist() == ["chunk_0", "chunk_1"]
@@ -104,7 +104,7 @@ class TestDocumentMapper:
         ]
         vectors = np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
 
-        batch = mapper.to_record_batch(chunks, vectors)
+        batch = mapper.to_record_batch(chunks, vectors, workflow="test")
 
         assert batch.num_rows == 1
         # None values should be handled gracefully
@@ -239,11 +239,11 @@ class TestSqlMapper:
 
     def test_to_record_batch(self, mapper, sample_sql_chunks, sample_vectors):
         """Test converting SQL chunks and vectors to a RecordBatch."""
-        batch = mapper.to_record_batch(sample_sql_chunks, sample_vectors)
+        batch = mapper.to_record_batch(sample_sql_chunks, sample_vectors, workflow="test")
 
         assert isinstance(batch, pa.RecordBatch)
         assert batch.num_rows == 2
-        assert batch.num_columns == 8
+        assert batch.num_columns == 9
 
         assert batch.column("id").to_pylist() == ["sql_0", "sql_1"]
         assert batch.column("text").to_pylist() == [
@@ -310,20 +310,20 @@ class TestMapperEdgeCases:
         mapper = DocumentMapper(vector_dimension=3)
         empty_vectors = np.array([], dtype=np.float32).reshape(0, 3)
 
-        batch = mapper.to_record_batch([], empty_vectors)
+        batch = mapper.to_record_batch([], empty_vectors, workflow="test")
 
         assert batch.num_rows == 0
-        assert batch.num_columns == 8
+        assert batch.num_columns == 9
 
     def test_sql_mapper_empty_chunks(self):
         """Test SqlMapper with empty chunks list."""
         mapper = SqlMapper(vector_dimension=4)
         empty_vectors = np.array([], dtype=np.float32).reshape(0, 4)
 
-        batch = mapper.to_record_batch([], empty_vectors)
+        batch = mapper.to_record_batch([], empty_vectors, workflow="test")
 
         assert batch.num_rows == 0
-        assert batch.num_columns == 8
+        assert batch.num_columns == 9
 
     def test_document_mapper_single_chunk(self):
         """Test DocumentMapper with single chunk."""
@@ -338,7 +338,7 @@ class TestMapperEdgeCases:
         ]
         vectors = np.array([[0.5, 0.5]], dtype=np.float32)
 
-        batch = mapper.to_record_batch(chunks, vectors)
+        batch = mapper.to_record_batch(chunks, vectors, workflow="test")
 
         assert batch.num_rows == 1
         assert batch.column("id").to_pylist() == ["single"]

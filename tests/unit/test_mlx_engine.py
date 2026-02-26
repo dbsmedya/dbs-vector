@@ -13,6 +13,8 @@ def mock_load():
     with patch("dbs_vector.infrastructure.embeddings.mlx_engine.load") as mock:
         mock_model = MagicMock()
         mock_tokenizer = MagicMock()
+        # Mock the internal transformers tokenizer
+        mock_tokenizer._tokenizer = MagicMock()
         mock.return_value = (mock_model, mock_tokenizer)
         yield mock, mock_model, mock_tokenizer
 
@@ -66,21 +68,21 @@ class TestExecuteMlx:
         mock_outputs.text_embeds = np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
         mock_model.return_value = mock_outputs
 
-        # Setup tokenizer
-        mock_inputs = MagicMock()
-        mock_tokenizer.encode.return_value = mock_inputs
+        # Setup tokenizer return (must have input_ids and optional attention_mask)
+        mock_inputs = {"input_ids": MagicMock(), "attention_mask": MagicMock()}
+        mock_tokenizer._tokenizer.return_value = mock_inputs
 
         result = embedder._execute_mlx(["test text"])
 
         # Verify tokenizer was called correctly
-        mock_tokenizer.encode.assert_called_once_with(
+        mock_tokenizer._tokenizer.assert_called_once_with(
             ["test text"],
             padding=True,
             truncation=True,
             max_length=128,
             return_tensors="mlx",
         )
-        mock_model.assert_called_once_with(mock_inputs)
+        mock_model.assert_called_once()
 
         # Verify result
         assert isinstance(result, np.ndarray)
@@ -95,8 +97,8 @@ class TestExecuteMlx:
         mock_outputs = {"text_embeds": np.array([[0.4, 0.5, 0.6]], dtype=np.float32)}
         mock_model.return_value = mock_outputs
 
-        mock_inputs = MagicMock()
-        mock_tokenizer.encode.return_value = mock_inputs
+        mock_inputs = {"input_ids": MagicMock()}
+        mock_tokenizer._tokenizer.return_value = mock_inputs
 
         result = embedder._execute_mlx(["another text"])
 
@@ -110,8 +112,8 @@ class TestExecuteMlx:
         mock_outputs.text_embeds = np.array([[0.1]], dtype=np.float32)
         mock_model.return_value = mock_outputs
 
-        mock_inputs = MagicMock()
-        mock_tokenizer.encode.return_value = mock_inputs
+        mock_inputs = {"input_ids": MagicMock()}
+        mock_tokenizer._tokenizer.return_value = mock_inputs
 
         # Mock the lock to verify it's used
         mock_lock = MagicMock()
@@ -166,6 +168,21 @@ class TestEmbedBatch:
             with pytest.raises(RuntimeError, match="MLX error"):
                 embedder.embed_batch(["test"])
 
+    def test_embed_batch_with_prefix(self, mock_load):
+        """Test that passage_prefix is prepended correctly."""
+        _, _, _ = mock_load
+        emb = MLXEmbedder(
+            model_name="test",
+            max_token_length=128,
+            dimension=384,
+            passage_prefix="passage: ",
+        )
+
+        with patch.object(emb, "_execute_mlx") as mock_execute:
+            mock_execute.return_value = np.random.rand(2, 384).astype(np.float32)
+            emb.embed_batch(["t1", "t2"])
+            mock_execute.assert_called_once_with(["passage: t1", "passage: t2"])
+
 
 class TestEmbedQuery:
     """Tests for the embed_query method."""
@@ -212,6 +229,21 @@ class TestEmbedQuery:
             # Result should be 1D array with correct shape
             assert result.shape == (384,)
 
+    def test_embed_query_with_prefix(self, mock_load):
+        """Test that query_prefix is prepended correctly."""
+        _, _, _ = mock_load
+        emb = MLXEmbedder(
+            model_name="test",
+            max_token_length=128,
+            dimension=384,
+            query_prefix="query: ",
+        )
+
+        with patch.object(emb, "_execute_mlx") as mock_execute:
+            mock_execute.return_value = np.random.rand(1, 384).astype(np.float32)
+            emb.embed_query("search")
+            mock_execute.assert_called_once_with(["query: search"])
+
 
 class TestIntegrationScenarios:
     """Integration-style tests with mocked MLX."""
@@ -231,15 +263,15 @@ class TestIntegrationScenarios:
         def mock_encode(texts, **kwargs):
             return {"input_ids": np.array([[1, 2, 3]] * len(texts))}
 
-        def mock_forward(inputs):
+        def mock_forward(inputs, **kwargs):
             # Return embeddings matching batch size and dimension
-            batch_size = len(inputs.get("input_ids", [1]))
+            batch_size = len(inputs) if isinstance(inputs, np.ndarray) else 1
             mock_embeds = np.random.rand(batch_size, 768).astype(np.float32)
             outputs = MagicMock()
             outputs.text_embeds = mock_embeds
             return outputs
 
-        mock_tokenizer.encode.side_effect = mock_encode
+        mock_tokenizer._tokenizer.side_effect = mock_encode
         mock_model.side_effect = mock_forward
 
         # Test batch embedding
@@ -265,7 +297,7 @@ class TestIntegrationScenarios:
         outputs.text_embeds = expected_vector.reshape(1, 384)
         mock_model.return_value = outputs
 
-        mock_tokenizer.encode.return_value = {"input_ids": np.array([[1, 2, 3]])}
+        mock_tokenizer._tokenizer.return_value = {"input_ids": np.array([[1, 2, 3]])}
 
         result = embedder.embed_query("what is the meaning of life?")
 

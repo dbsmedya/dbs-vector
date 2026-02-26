@@ -22,6 +22,7 @@ class EngineDeps(NamedTuple):
     embedder: Any
     store: Any
     chunker: Any
+    workflow: str
 
 
 @app.callback()
@@ -60,6 +61,8 @@ def _build_dependencies(engine_name: str) -> EngineDeps:
         model_name=config.model_name,
         max_token_length=config.max_token_length,
         dimension=config.vector_dimension,
+        passage_prefix=config.passage_prefix,
+        query_prefix=config.query_prefix,
     )
 
     # Resolve components via Registry
@@ -75,15 +78,21 @@ def _build_dependencies(engine_name: str) -> EngineDeps:
 
     chunker = ChunkerClass(**chunker_kwargs)
 
-    store = LanceDBStore(
-        db_path=settings.db_path,
-        table_name=config.table_name,
-        vector_dimension=config.vector_dimension,
-        mapper=mapper,
-        nprobes=settings.nprobes,
-    )
+    try:
+        store = LanceDBStore(
+            db_path=settings.db_path,
+            table_name=config.table_name,
+            vector_dimension=config.vector_dimension,
+            mapper=mapper,
+            nprobes=settings.nprobes,
+        )
+    except ValueError as e:
+        if "Schema mismatch" in str(e):
+            typer.echo(f"\n[!] Database Error: {e}", err=True)
+            raise typer.Exit(code=1) from e
+        raise
 
-    return EngineDeps(embedder=embedder, store=store, chunker=chunker)
+    return EngineDeps(embedder=embedder, store=store, chunker=chunker, workflow=config.workflow)
 
 
 @app.command()
@@ -119,7 +128,7 @@ def ingest(
         )
 
     deps = _build_dependencies(engine_name)
-    service = IngestionService(deps.chunker, deps.embedder, deps.store)
+    service = IngestionService(deps.chunker, deps.embedder, deps.store, deps.workflow)
     service.ingest_directory(path, rebuild=rebuild)
 
 

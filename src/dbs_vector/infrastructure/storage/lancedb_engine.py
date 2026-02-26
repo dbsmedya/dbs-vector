@@ -30,19 +30,28 @@ class LanceDBStore:
 
         self.db = lancedb.connect(db_path)
         # Use exist_ok to open existing tables rather than overwriting on app start
-        self.table = self.db.create_table(self.table_name, schema=self.schema, exist_ok=True)
+        try:
+            self.table = self.db.create_table(self.table_name, schema=self.schema, exist_ok=True)
+        except ValueError as e:
+            if "schema does not match" in str(e).lower() or "schema" in str(e).lower():
+                raise ValueError(
+                    f"Schema mismatch detected for table '{self.table_name}'. "
+                    f"The database schema has been updated (e.g., new vector dimensions or fields like 'workflow'). "
+                    f"Please rebuild your index by running: uv run dbs-vector ingest <path> --type <engine> --rebuild --force"
+                ) from e
+            raise
 
     def clear(self) -> None:
         """Drops the table and recreates it with an empty schema."""
         self.db.drop_table(self.table_name, ignore_missing=True)
         self.table = self.db.create_table(self.table_name, schema=self.schema)
 
-    def ingest_chunks(self, chunks: list[Any], vectors: NDArray[np.float32]) -> None:
+    def ingest_chunks(self, chunks: list[Any], vectors: NDArray[np.float32], workflow: str) -> None:
         """Constructs an Arrow RecordBatch to completely bypass Python iterators."""
         if not chunks:
             return
 
-        arrow_batch = self.mapper.to_record_batch(chunks, vectors)
+        arrow_batch = self.mapper.to_record_batch(chunks, vectors, workflow)
 
         self.table.add(arrow_batch)
 

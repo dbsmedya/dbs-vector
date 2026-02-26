@@ -10,71 +10,48 @@ system:
   db_path: "./lancedb_dbs_vector"
   
   # The number of chunks to embed and ingest in a single batch.
-  # Higher values use more GPU memory but increase ingestion speed.
   batch_size: 64
   
   # The number of IVF partitions to probe during a vector search.
-  # Higher values increase recall (accuracy) but slightly decrease search speed.
   nprobes: 20
 
 # ==============================================================================
 # Engine Definitions
 # ==============================================================================
-# Each key under `engines` defines a separate data pipeline (e.g., 'md', 'sql').
-# You can select an engine at runtime using the `--type` flag.
 engines:
   
   # --------------------------------------------------------------------------
-  # Markdown & Prose Document Engine (--type md)
-  # Default engine for standard RAG codebase search.
+  # Markdown & Prose Document Engine (Gemma Search Result Workflow)
   # --------------------------------------------------------------------------
   md:
-    # A human-readable description of the engine's purpose.
-    description: "Markdown & Prose Document Engine"
-    
-    # The HuggingFace/MLX model repository to use for embedding generation.
-    model_name: "mlx-community/all-MiniLM-L6-v2-4bit"
-    
-    # The exact output dimension of the chosen model.
-    # MUST match the model's architecture (e.g., MiniLM is 384).
-    vector_dimension: 384
-    
-    # The maximum number of tokens the model can process in a single chunk.
-    max_token_length: 512
-    
-    # The name of the LanceDB table where this engine's data will be stored.
-    # Different engines MUST use different tables if their schemas/dimensions differ.
+    description: "Markdown & Prose Document Engine (Gemma Search)"
+    model_name: "mlx-community/embeddinggemma-300m-bf16"
+    vector_dimension: 768
+    max_token_length: 2048
     table_name: "knowledge_vault"
-    
-    # The internal Mapper class to use (Registered in ComponentRegistry).
-    # Options: "document", "sql"
     mapper_type: "document"
-    
-    # The internal Chunker class to use (Registered in ComponentRegistry).
-    # Options: "document", "sql"
     chunker_type: "document"
-    
-    # The maximum character length of a single text chunk.
-    # Set to 0 if the chunker does not split by character count (like SQL).
     chunk_max_chars: 1000
 
+    # Task Prefixes for Gemma Search workflow
+    passage_prefix: "title: none | text: "
+    query_prefix: "task: search result | query: "
+    workflow: "md_search"
+
   # --------------------------------------------------------------------------
-  # SQL Slow Query Log Engine (--type sql)
-  # Specialized engine for clustering and analyzing database queries.
+  # SQL Slow Query Log Engine (Gemma Clustering Workflow)
   # --------------------------------------------------------------------------
   sql:
-    description: "SQL Slow Query Log Engine"
-    
-    # Uses a specialized code-aware model for SQL structural embeddings.
-    model_name: "bigcode/starencoder"
-    
-    # StarEncoder outputs 768-dimensional vectors.
+    description: "SQL Slow Query Log Engine (Gemma Clustering)"
+    model_name: "mlx-community/embeddinggemma-300m-bf16"
     vector_dimension: 768
-    
-    max_token_length: 512
+    max_token_length: 2048
     table_name: "query_vault"
     mapper_type: "sql"
     chunker_type: "sql"
-    
-    # Set to 0 because the SqlChunker processes exactly one query object at a time.
     chunk_max_chars: 0
+
+    # Task Prefixes for Gemma Clustering workflow
+    passage_prefix: "task: clustering | query: "
+    query_prefix: "task: clustering | query: "
+    workflow: "sql_clustering"

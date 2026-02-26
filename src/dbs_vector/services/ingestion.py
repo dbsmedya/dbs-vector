@@ -19,10 +19,12 @@ class IngestionService:
         chunker: IChunker,
         embedder: IEmbedder,
         vector_store: IVectorStore,
+        workflow: str = "default",
     ) -> None:
         self.chunker = chunker
         self.embedder = embedder
         self.vector_store = vector_store
+        self.workflow = workflow
 
     def _batched(self, iterable: Iterator[Any], n: int) -> Iterator[list[Any]]:
         """Yields successive n-sized chunks from an iterable (Python 3.12+ backport)."""
@@ -85,7 +87,7 @@ class IngestionService:
             texts = [c.text for c in new_chunks]
             vectors = self.embedder.embed_batch(texts)
 
-            self.vector_store.ingest_chunks(chunks=new_chunks, vectors=vectors)
+            self.vector_store.ingest_chunks(chunks=new_chunks, vectors=vectors, workflow=self.workflow)
             total_chunks += len(new_chunks)
             skipped_chunks += len(batch) - len(new_chunks)
             print(f" -> Streamed {len(new_chunks)} new chunks (Total: {total_chunks}).")

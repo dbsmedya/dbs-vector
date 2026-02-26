@@ -34,7 +34,8 @@ The entire application is driven by `config.yaml`. The CLI and API factory (`_bu
 embeds_mlx = model(inputs)
 vectors_np = np.array(embeds_mlx).astype(np.float32)
 ```
-*   **The Reality of `np.array()`:** This is *not* strictly zero-copy. MLX uses lazy evaluation. When `np.array()` is called, MLX evaluates the computation graph on the GPU. The resulting tensor is then mapped to a NumPy array. Because of Apple's Unified Memory (UMA), this involves a highly optimized memory map of contiguous floats within shared RAM, rather than a slow transfer across a PCIe bus. 
+*   **The Reality of `np.array()`:** This is *not* a true zero-copy operation. MLX and NumPy maintain separate memory allocators and reference counting semantics. When `np.array()` is called, MLX evaluates the lazy computation graph on the GPU and materializes the result. NumPy then performs a fast `memcpy` to own the buffer. Because of Apple's Unified Memory (UMA), this is a highly optimized memory map of contiguous floats within shared RAM, rather than a slow transfer across a PCIe bus, but a copy does occur.
+*   **The Upcast:** Chaining `.astype(np.float32)` creates a second copy to upcast the hardware-optimized `bf16`/`fp16` results to standard 32-bit floats required by the PyArrow schema. Because this only happens on the small, final output matrices (e.g., `64x768`), the cost is in microseconds.
 *   **Safety Assertions:** We strictly validate shapes `if query_vector.shape != (self._dimension,): raise ValueError()` to prevent silent sequence mismatches from the model.
 
 ### D. Streaming Arrow-Native Ingestion (The Python Bypass)
