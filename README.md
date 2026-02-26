@@ -2,7 +2,7 @@
 
 **A High-Performance, Arrow-Native Local Codebase Search Engine for Apple Silicon.**
 
-`dbs-vector` is a production-grade Retrieval-Augmented Generation (RAG) search engine designed specifically for macOS (M-Series chips). It bypasses traditional Python serialization bottlenecks by utilizing Apple's Unified Memory Architecture (UMA) and pure Apache Arrow data pipelines.
+`dbs-vector` is a optimized Retrieval-Augmented Generation (RAG) search engine designed specifically for macOS (M-Series chips). It bypasses traditional Python serialization bottlenecks by utilizing Apple's Unified Memory Architecture (UMA) and pure Apache Arrow data pipelines.
 
 It enables lightning-fast, hybrid (Vector + Full-Text) search across your local codebase, entirely offline.
 
@@ -22,7 +22,7 @@ This project is built using `uv`, an extremely fast Python package manager.
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/your-username/dbs-vector.git
+   git clone https://github.com/dbsmedya/dbs-vector.git
    cd dbs-vector
    ```
 
