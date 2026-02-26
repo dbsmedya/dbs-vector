@@ -30,7 +30,7 @@ class SqlChunker:
 
         for record in records:
             # Safely handle potential missing fields depending on the exact JSON schema
-            raw = record.get("query", "")
+            raw = record.get("query") or ""
             normalized = record.get("normalized_query") or record.get("normalized") or raw
             query_id = (
                 record.get("query_hash")
@@ -38,8 +38,8 @@ class SqlChunker:
                 or hashlib.md5(raw.encode()).hexdigest()
             )
             database = record.get("database") or record.get("source") or "unknown"
-            duration = float(record.get("duration", 0.0) or record.get("execution_time_ms", 0.0))
-            calls = int(record.get("calls", 1))
+            duration = float(record.get("duration") or record.get("execution_time_ms") or 0.0)
+            calls = int(record.get("calls") or 1)
 
             if not normalized.strip():
                 continue

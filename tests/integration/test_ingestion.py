@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 from dbs_vector.config import settings
 from dbs_vector.infrastructure.chunking.document import DocumentChunker
 from dbs_vector.infrastructure.embeddings.mlx_engine import MLXEmbedder
@@ -7,7 +9,22 @@ from dbs_vector.infrastructure.storage.lancedb_engine import LanceDBStore
 from dbs_vector.services.ingestion import IngestionService
 from dbs_vector.services.search import SearchService
 
+# Skip conditions for this E2E test:
+# - CI environment (set via CI=true env var)
+# - Missing docs/ directory
+# - Missing "md" engine in settings
+# - Not running on Apple Silicon (MLX requirement)
+skip_in_ci = pytest.mark.skipif(
+    os.environ.get("CI") == "true"
+    or not os.path.exists("docs/")
+    or "md" not in settings.engines,
+    reason="E2E test requires local docs/, mlx engine, and Apple Silicon - not suitable for CI",
+)
 
+
+@skip_in_ci
+@pytest.mark.slow
+@pytest.mark.e2e
 def test_ingestion_and_search_integration(tmp_path):
     """
     End-to-End integration test using the markdown files in the docs/ directory.
