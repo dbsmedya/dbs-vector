@@ -2,6 +2,8 @@ import hashlib
 import json
 from collections.abc import Iterator
 
+from loguru import logger
+
 from dbs_vector.core.models import Document, SqlChunk
 
 
@@ -21,11 +23,11 @@ class SqlChunker:
         try:
             records = json.loads(document.content)
         except json.JSONDecodeError as e:
-            print(f"Error decoding JSON from {document.filepath}: {e}")
+            logger.error("Error decoding JSON from {}: {}", document.filepath, e)
             return
 
         if not isinstance(records, list):
-            print(f"Warning: Expected a JSON array of query records in {document.filepath}")
+            logger.warning("Expected a JSON array of query records in {}", document.filepath)
             return
 
         for record in records:

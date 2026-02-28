@@ -6,6 +6,8 @@ from itertools import islice
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from dbs_vector.config import settings
 from dbs_vector.core.models import Document
 from dbs_vector.core.ports import IChunker, IEmbedder, IVectorStore
@@ -35,10 +37,10 @@ class IngestionService:
     def ingest_directory(self, target_path: str, rebuild: bool = False) -> None:
         """Reads documents, chunks them, and streams them to the Vector Store."""
         if rebuild:
-            print("\n[!] Rebuilding vector store (clearing existing data)...")
+            logger.warning("Rebuilding vector store (clearing existing data)")
             self.vector_store.clear()
 
-        print(f"\nStarting Streaming Ingestion for {target_path}...")
+        logger.info("Starting streaming ingestion for {}", target_path)
 
         def _chunk_generator() -> Iterator[Any]:
             if os.path.isdir(target_path):
@@ -59,7 +61,7 @@ class IngestionService:
                     with open(filepath_str, encoding="utf-8") as f:
                         content = f.read()
                 except UnicodeDecodeError:
-                    print(f"  [!] Warning: Skipping non-UTF-8 file: {filepath_str}")
+                    logger.warning("Skipping non-UTF-8 file: {}", filepath_str)
                     continue
 
                 # Calculate file hash for delta updates from the already loaded content
@@ -72,7 +74,7 @@ class IngestionService:
                 )
                 yield from self.chunker.process(doc)
 
-        print("\nChecking for existing documents (Deduplication enabled)...")
+        logger.info("Checking for existing documents (deduplication enabled)")
         existing_hashes = self.vector_store.get_existing_hashes()
 
         total_chunks = 0
@@ -96,14 +98,14 @@ class IngestionService:
             )
             total_chunks += len(new_chunks)
             skipped_chunks += len(batch) - len(new_chunks)
-            print(f" -> Streamed {len(new_chunks)} new chunks (Total: {total_chunks}).")
+            logger.info("Streamed {} new chunks (total: {})", len(new_chunks), total_chunks)
 
         if skipped_chunks > 0:
-            print(f" -> Skipped {skipped_chunks} already-indexed chunks.")
+            logger.info("Skipped {} already-indexed chunks", skipped_chunks)
 
-        print("\nCreating Explicit Index Strategies...")
+        logger.info("Creating explicit index strategies")
         self.vector_store.create_indices()
 
-        print("Running Dataset Compaction...")
+        logger.info("Running dataset compaction")
         self.vector_store.compact()
-        print("\nIngestion Complete!")
+        logger.success("Ingestion complete")

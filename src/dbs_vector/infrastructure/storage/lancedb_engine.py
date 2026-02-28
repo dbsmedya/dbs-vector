@@ -3,6 +3,7 @@ from typing import Any
 
 import lancedb  # type: ignore[import-untyped]
 import numpy as np
+from loguru import logger
 from numpy.typing import NDArray
 
 from dbs_vector.core.ports import IStoreMapper
@@ -79,7 +80,7 @@ class LanceDBStore:
         try:
             self.table.create_fts_index("text", replace=True)
         except Exception as e:
-            print(f"Warning: FTS Indexing failed (tantivy missing?): {e}")
+            logger.warning("FTS indexing failed (tantivy missing?): {}", e)
 
     def get_existing_hashes(self) -> set[str]:
         """Queries the table for all unique content hashes using Polars."""
@@ -108,7 +109,7 @@ class LanceDBStore:
                 .limit(limit)
             )
         except Exception as e:
-            print(f"Hybrid search unavailable ({e}). Falling back to pure vector.")
+            logger.warning("Hybrid search unavailable ({}), falling back to pure vector", e)
             search_op = (
                 self.table.search(query_vector).metric("cosine").nprobes(self.nprobes).limit(limit)
             )

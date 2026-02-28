@@ -288,17 +288,16 @@ class TestProcessEdgeCases:
 
         assert chunks == []
 
-    def test_invalid_json(self, chunker, capsys):
+    def test_invalid_json(self, chunker, caplog):
         """Test handling of invalid JSON content."""
         doc = Document(filepath="invalid.json", content="not valid json", content_hash="hash17")
 
         chunks = list(chunker.process(doc))
 
         assert chunks == []
-        captured = capsys.readouterr()
-        assert "Error decoding JSON" in captured.out
+        assert "Error decoding JSON" in caplog.text
 
-    def test_json_object_not_array(self, chunker, capsys):
+    def test_json_object_not_array(self, chunker, caplog):
         """Test handling of JSON object instead of array."""
         doc = Document(
             filepath="object.json", content='{"query": "SELECT 1"}', content_hash="hash18"
@@ -307,8 +306,7 @@ class TestProcessEdgeCases:
         chunks = list(chunker.process(doc))
 
         assert chunks == []
-        captured = capsys.readouterr()
-        assert "Expected a JSON array" in captured.out
+        assert "Expected a JSON array" in caplog.text
 
     def test_null_duration_treated_as_zero(self, chunker):
         """Test that null duration is treated as 0.0."""

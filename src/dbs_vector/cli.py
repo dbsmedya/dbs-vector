@@ -2,17 +2,20 @@ import os
 from typing import Annotated, Any, NamedTuple
 
 import typer
+from loguru import logger
 
 from dbs_vector.config import settings
 from dbs_vector.core.registry import ComponentRegistry
 from dbs_vector.infrastructure.embeddings.mlx_engine import MLXEmbedder
 from dbs_vector.infrastructure.storage.lancedb_engine import LanceDBStore
+from dbs_vector.logger import configure_logger
 from dbs_vector.services.ingestion import IngestionService
 from dbs_vector.services.search import SearchService
 
 app = typer.Typer(
     help="dbs-vector: Local Arrow-Native Codebase Search Engine",
     no_args_is_help=True,
+    rich_markup_mode=None,
 )
 
 
@@ -68,6 +71,11 @@ def main(
     settings.batch_size = new_settings.batch_size
     settings.nprobes = new_settings.nprobes
     settings.engines = new_settings.engines
+    settings.log_level = new_settings.log_level
+    settings.log_serialize = new_settings.log_serialize
+
+    # Configure logger based on settings
+    configure_logger(level=settings.log_level, serialize=settings.log_serialize)
 
 
 def _build_dependencies(engine_name: str) -> EngineDeps:
@@ -210,7 +218,7 @@ def serve(
     """Starts the asynchronous FastAPI search server."""
     import uvicorn
 
-    print(f"Starting dbs-vector API server at http://{host}:{port}...")
+    logger.info("Starting dbs-vector API server at http://{}:{}", host, port)
     uvicorn.run("dbs_vector.api.main:app", host=host, port=port, reload=reload)
 
 
@@ -222,7 +230,6 @@ def mcp(
 ) -> None:
     """Starts the FastMCP standard input/output (stdio) server for integrations."""
     import os
-    import sys
 
     from dbs_vector.api.mcp_server import mcp as mcp_server
     from dbs_vector.api.state import _services
@@ -230,14 +237,14 @@ def mcp(
     # Export to environment so the MCP subprocess inherits it
     os.environ["DBS_CONFIG_FILE"] = config_file
 
-    print("[MCP Startup] Initializing MLX Embedders and LanceDB connections...", file=sys.stderr)
+    logger.info("Initializing MLX Embedders and LanceDB connections")
     try:
         for engine_name in settings.engines.keys():
-            print(f"  -> Loading Engine ({engine_name})...", file=sys.stderr)
+            logger.info("Loading engine: {}", engine_name)
             deps = _build_dependencies(engine_name)
             _services[engine_name] = SearchService(deps.embedder, deps.store)
     except Exception as e:
-        print(f"[MCP Startup] Failed to initialize search services: {e}", file=sys.stderr)
+        logger.error("Failed to initialize search services: {}", e)
         raise
 
     mcp_server.run()

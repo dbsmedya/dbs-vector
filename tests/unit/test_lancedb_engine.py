@@ -203,7 +203,7 @@ class TestCreateIndices:
             replace=True,
         )
 
-    def test_create_indices_fts_failure_handled(self, lancedb_store, capsys):
+    def test_create_indices_fts_failure_handled(self, lancedb_store, caplog):
         """Test that FTS index failure is handled gracefully."""
         store, _, mock_table, _ = lancedb_store
         mock_table.__len__.return_value = 100
@@ -212,8 +212,7 @@ class TestCreateIndices:
         # Should not raise
         store.create_indices()
 
-        captured = capsys.readouterr()
-        assert "FTS Indexing failed" in captured.out
+        assert "FTS indexing failed" in caplog.text
 
     def test_vector_index_partitions_scaling(self, lancedb_store):
         """Test that vector index partitions scale with table size."""

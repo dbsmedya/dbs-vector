@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import yaml
+from loguru import logger
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -31,6 +32,8 @@ class Settings(BaseSettings):
     db_path: str = "./lancedb_dbs_vector"
     batch_size: int = 64
     nprobes: int = 20
+    log_level: str = "INFO"
+    log_serialize: bool = False
 
     # Engines dictionary
     engines: dict[str, EngineConfig] = {}
@@ -64,7 +67,7 @@ def load_settings(config_file: str | None = None) -> Settings:
                 engines = {k: EngineConfig(**v) for k, v in data["engines"].items()}
                 base_settings.engines = engines
     else:
-        print(f"Warning: Configuration file '{yaml_path}' not found. Using defaults.")
+        logger.warning("Configuration file '{}' not found, using defaults", yaml_path)
 
     return base_settings
 

@@ -18,6 +18,13 @@ system:
   
   # The number of IVF partitions to probe during a vector search.
   nprobes: 20
+  
+  # Logging configuration
+  # Log level: DEBUG | INFO | WARNING | ERROR
+  log_level: "INFO"
+  
+  # Serialize logs as JSON lines (useful for structured logging)
+  log_serialize: false
 
 # ==============================================================================
 # Engine Definitions

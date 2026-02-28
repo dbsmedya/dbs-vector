@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dbs-vector"
-version = "0.3.1"
+version = "0.3.2"
 description = "High-performance, local RAG search engine and MCP/API server for Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -12,6 +12,7 @@ dependencies = [
     "fastapi>=0.133.0",
     "lance==1.2.1",
     "lancedb==0.29.2",
+    "loguru>=0.7.3",
     "markdown-it-py>=4.0.0",
     "mcp>=1.26.0",
     "mlx-embeddings>=0.0.5",

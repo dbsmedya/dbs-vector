@@ -132,14 +132,13 @@ class TestExecuteQuery:
 class TestPrintResults:
     """Tests for the print_results method."""
 
-    def test_print_empty_results(self, search_service, capsys):
+    def test_print_empty_results(self, search_service, caplog):
         """Test printing empty results."""
         search_service.print_results([])
 
-        captured = capsys.readouterr()
-        assert "No results found." in captured.out
+        assert "No results found" in caplog.text
 
-    def test_print_document_results(self, search_service, capsys):
+    def test_print_document_results(self, search_service, caplog):
         """Test printing document (non-SQL) results."""
         results = [
             SearchResult(
@@ -160,14 +159,13 @@ class TestPrintResults:
 
         search_service.print_results(results)
 
-        captured = capsys.readouterr()
-        assert "Top Results:" in captured.out
-        assert "docs/readme.md" in captured.out
-        assert "abc123" in captured.out
-        assert "Score/Dist: 0.9500" in captured.out
-        assert "This is the document content" in captured.out
+        assert "Top Results:" in caplog.text
+        assert "docs/readme.md" in caplog.text
+        assert "abc123" in caplog.text
+        assert "Score/Dist: 0.9500" in caplog.text
+        assert "This is the document content" in caplog.text
 
-    def test_print_sql_results(self, search_service, capsys):
+    def test_print_sql_results(self, search_service, caplog):
         """Test printing SQL query results."""
         from dbs_vector.core.models import SqlChunk, SqlSearchResult
 
@@ -190,14 +188,13 @@ class TestPrintResults:
 
         search_service.print_results(results)
 
-        captured = capsys.readouterr()
-        assert "Top Results:" in captured.out
-        assert "production_db" in captured.out
-        assert "Calls: 42" in captured.out
-        assert "Time: 150.5ms" in captured.out
-        assert "SELECT * FROM users" in captured.out
+        assert "Top Results:" in caplog.text
+        assert "production_db" in caplog.text
+        assert "Calls: 42" in caplog.text
+        assert "Time: 150.5ms" in caplog.text
+        assert "SELECT * FROM users" in caplog.text
 
-    def test_print_fts_match_result(self, search_service, capsys):
+    def test_print_fts_match_result(self, search_service, caplog):
         """Test printing FTS match result (no distance score)."""
         results = [
             SearchResult(
@@ -215,11 +212,10 @@ class TestPrintResults:
 
         search_service.print_results(results)
 
-        captured = capsys.readouterr()
-        assert "N/A (FTS Match)" in captured.out
-        assert "Full text search result" in captured.out
+        assert "N/A (FTS Match)" in caplog.text
+        assert "Full text search result" in caplog.text
 
-    def test_print_multiple_results(self, search_service, capsys):
+    def test_print_multiple_results(self, search_service, caplog):
         """Test printing multiple results."""
         results = [
             SearchResult(
@@ -248,7 +244,6 @@ class TestPrintResults:
 
         search_service.print_results(results)
 
-        captured = capsys.readouterr()
-        assert captured.out.count("Source:") == 2
-        assert "hash_a" in captured.out
-        assert "hash_b" in captured.out
+        assert caplog.text.count("Source:") == 2
+        assert "hash_a" in caplog.text
+        assert "hash_b" in caplog.text

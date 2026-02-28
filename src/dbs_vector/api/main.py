@@ -3,6 +3,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from dbs_vector.api.mcp_server import mcp
@@ -16,23 +17,23 @@ from dbs_vector.services.search import SearchService
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup and shutdown events for the API."""
-    print("\\n[Startup] Initializing MLX Embedders and LanceDB connections...")
+    logger.info("Initializing MLX Embedders and LanceDB connections")
 
     try:
         # Dynamically load all configured engines
         for engine_name in settings.engines.keys():
-            print(f"  -> Loading Engine ({engine_name})...")
+            logger.info("Loading engine: {}", engine_name)
             deps = _build_dependencies(engine_name)
             _services[engine_name] = SearchService(deps.embedder, deps.store)
 
-        print("[Startup] API is ready to accept concurrent requests.")
+        logger.success("API is ready to accept concurrent requests")
     except Exception as e:
-        print(f"[Startup] Failed to initialize search services: {e}")
+        logger.error("Failed to initialize search services: {}", e)
         raise
 
     yield
 
-    print("\\n[Shutdown] Cleaning up resources...")
+    logger.info("Cleaning up resources")
     _services.clear()
 
 

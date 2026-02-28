@@ -1,5 +1,7 @@
 from typing import Any
 
+from loguru import logger
+
 from dbs_vector.core.ports import IEmbedder, IVectorStore
 
 
@@ -22,7 +24,7 @@ class SearchService:
         extra_filters: dict[str, Any] | None = None,
     ) -> list[Any]:
         """Embeds the query and fetches top matches from the high-performance store."""
-        print(f"\nExecuting Query: {query}")
+        logger.info("Executing query: {}", query)
 
         if extra_filters is None:
             extra_filters = {}
@@ -43,25 +45,32 @@ class SearchService:
     def print_results(self, results: list[Any]) -> None:
         """Formats and prints the parsed search results."""
         if not results:
-            print("No results found.")
+            logger.info("No results found")
             return
 
-        print("\nTop Results:")
+        logger.info("Top Results:")
         for res in results:
             dist_str = f"{res.distance:.4f}" if res.distance is not None else "N/A (FTS Match)"
 
             # Polymorphic printing
             if hasattr(res.chunk, "raw_query"):
                 # SQL Result
-                print(
-                    f"[Score/Dist: {dist_str} | DB: {res.chunk.source} | Calls: {res.chunk.calls} | Time: {res.chunk.execution_time_ms}ms]"
+                logger.info(
+                    "[Score/Dist: {} | DB: {} | Calls: {} | Time: {}ms]",
+                    dist_str,
+                    res.chunk.source,
+                    res.chunk.calls,
+                    res.chunk.execution_time_ms,
                 )
                 snippet = res.chunk.raw_query[:100].replace("\n", " ")
             else:
                 # Document Result
-                print(
-                    f"[Score/Dist: {dist_str} | Source: {res.chunk.source} | Hash: {res.chunk.content_hash}]"
+                logger.info(
+                    "[Score/Dist: {} | Source: {} | Hash: {}]",
+                    dist_str,
+                    res.chunk.source,
+                    res.chunk.content_hash,
                 )
                 snippet = res.chunk.text[:100].replace("\n", " ")
 
-            print(f'  --> "{snippet}..."\n')
+            logger.info('  --> "{}..."', snippet)

@@ -2,6 +2,7 @@ import threading
 from typing import Any
 
 import numpy as np
+from loguru import logger
 from mlx_embeddings.utils import load
 from numpy.typing import NDArray
 
@@ -30,10 +31,10 @@ class MLXEmbedder:
 
         global _MODEL_CACHE
         if model_name not in _MODEL_CACHE:
-            print(f"Loading MLX model: {model_name}...")
+            logger.info("Loading MLX model: {}", model_name)
             _MODEL_CACHE[model_name] = (*load(model_name), threading.Lock())
         else:
-            print(f"Using cached MLX model: {model_name}...")
+            logger.debug("Using cached MLX model: {}", model_name)
 
         self.model: Any
         self.tokenizer: Any
@@ -86,7 +87,7 @@ class MLXEmbedder:
             vectors = self._execute_mlx(prefixed_texts)
             return vectors
         except Exception as e:
-            print(f"Error embedding batch: {e}")
+            logger.error("Error embedding batch: {}", e)
             raise
 
     def embed_query(self, text: str) -> NDArray[np.float32]:
