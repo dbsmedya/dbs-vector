@@ -35,6 +35,7 @@ def version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     config_file: Annotated[
         str, typer.Option("--config-file", "-c", help="Path to config.yaml file.")
     ] = "config.yaml",
@@ -50,6 +51,10 @@ def main(
     ] = None,
 ) -> None:
     """dbs-vector: Configurable Arrow-Native Search Engine."""
+    # Skip config loading when just showing help or version (no subcommand invoked)
+    if ctx.invoked_subcommand is None:
+        return
+
     import os
 
     from dbs_vector.config import load_settings, settings
