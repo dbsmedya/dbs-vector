@@ -1,10 +1,18 @@
 """Unit tests for MLXEmbedder."""
+
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
+import dbs_vector.infrastructure.embeddings.mlx_engine as mlx_engine_module
 from dbs_vector.infrastructure.embeddings.mlx_engine import MLXEmbedder
+
+
+@pytest.fixture(autouse=True)
+def clear_model_cache():
+    """Clear the global model cache before each test to prevent mock leakage."""
+    mlx_engine_module._MODEL_CACHE.clear()
 
 
 @pytest.fixture

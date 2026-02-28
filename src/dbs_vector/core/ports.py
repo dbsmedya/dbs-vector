@@ -30,7 +30,9 @@ class IStoreMapper(Protocol):
         """Returns the PyArrow schema for the table."""
         ...
 
-    def to_record_batch(self, chunks: list[Any], vectors: NDArray[np.float32], workflow: str) -> Any:
+    def to_record_batch(
+        self, chunks: list[Any], vectors: NDArray[np.float32], workflow: str
+    ) -> Any:
         """Converts domain chunks and vectors into a PyArrow RecordBatch."""
         ...
 

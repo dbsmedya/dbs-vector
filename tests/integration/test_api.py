@@ -1,4 +1,5 @@
 """Integration tests for FastAPI endpoints."""
+
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
@@ -30,8 +31,12 @@ def mocked_client():
 
         # Start patches
         patches.append(patch("dbs_vector.api.main.settings", mock_settings))
-        patches.append(patch("dbs_vector.api.main._build_dependencies", side_effect=mock_build_deps))
-        patches.append(patch("dbs_vector.api.main._services", {"md": mock_md_service, "sql": mock_sql_service}))
+        patches.append(
+            patch("dbs_vector.api.main._build_dependencies", side_effect=mock_build_deps)
+        )
+        patches.append(
+            patch("dbs_vector.api.main._services", {"md": mock_md_service, "sql": mock_sql_service})
+        )
 
         for p in patches:
             p.start()

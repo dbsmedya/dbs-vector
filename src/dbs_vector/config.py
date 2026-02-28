@@ -17,7 +17,7 @@ class EngineConfig(BaseModel):
     mapper_type: str
     chunker_type: str
     chunk_max_chars: int
-    
+
     # Task Prefixes for models like embeddinggemma
     query_prefix: str = ""
     passage_prefix: str = ""

@@ -1,4 +1,3 @@
-
 from dbs_vector.core.models import Document
 from dbs_vector.infrastructure.chunking.document import DocumentChunker
 

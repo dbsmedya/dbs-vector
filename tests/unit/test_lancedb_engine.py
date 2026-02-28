@@ -1,4 +1,5 @@
 """Unit tests for LanceDBStore."""
+
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -26,7 +27,7 @@ def mock_mapper():
 @pytest.fixture
 def lancedb_store(mock_mapper, tmp_path):
     """Create a LanceDBStore with mocked lancedb connection.
-    
+
     Returns a tuple of (store, mock_db, mock_table, mock_lancedb) for test verification.
     """
     db_path = str(tmp_path / "test.db")
@@ -206,9 +207,7 @@ class TestCreateIndices:
         """Test that FTS index failure is handled gracefully."""
         store, _, mock_table, _ = lancedb_store
         mock_table.__len__.return_value = 100
-        mock_table.create_fts_index.side_effect = Exception(
-            "tantivy not installed"
-        )
+        mock_table.create_fts_index.side_effect = Exception("tantivy not installed")
 
         # Should not raise
         store.create_indices()
@@ -269,9 +268,7 @@ class TestGetExistingHashes:
         result = store.get_existing_hashes()
 
         assert result == {"hash1", "hash2", "hash3"}
-        mock_table.to_polars.assert_called_once_with(
-            columns=["content_hash"]
-        )
+        mock_table.to_polars.assert_called_once_with(columns=["content_hash"])
 
 
 class TestSearch:
@@ -334,7 +331,9 @@ class TestSearch:
         mock_search.limit.return_value = mock_search
         mock_search.where.return_value = mock_search
 
-        mock_results = pl.DataFrame({"id": [], "text": [], "source": [], "content_hash": [], "_distance": []})
+        mock_results = pl.DataFrame(
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+        )
         mock_search.to_polars.return_value = mock_results
         mock_table.search.return_value = mock_search
 
@@ -364,7 +363,9 @@ class TestSearch:
         mock_search.limit.return_value = mock_search
         mock_search.where.return_value = mock_search
 
-        mock_results = pl.DataFrame({"id": [], "text": [], "source": [], "content_hash": [], "_distance": []})
+        mock_results = pl.DataFrame(
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+        )
         mock_search.to_polars.return_value = mock_results
         mock_table.search.return_value = mock_search
 
@@ -395,7 +396,9 @@ class TestSearch:
         mock_search.limit.return_value = mock_search
         mock_search.where.return_value = mock_search
 
-        mock_results = pl.DataFrame({"id": [], "text": [], "source": [], "content_hash": [], "_distance": []})
+        mock_results = pl.DataFrame(
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+        )
         mock_search.to_polars.return_value = mock_results
         mock_table.search.return_value = mock_search
 
@@ -428,7 +431,9 @@ class TestSearch:
         mock_vector_search.nprobes.return_value = mock_vector_search
         mock_vector_search.limit.return_value = mock_vector_search
 
-        mock_results = pl.DataFrame({"id": [], "text": [], "source": [], "content_hash": [], "_distance": []})
+        mock_results = pl.DataFrame(
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+        )
         mock_vector_search.to_polars.return_value = mock_results
 
         mock_table.search.side_effect = [
@@ -468,9 +473,7 @@ class TestSearch:
         mock_search.to_polars.return_value = mock_results
         mock_table.search.return_value = mock_search
 
-        store.mapper.from_polars_row = MagicMock(
-            side_effect=lambda row, score: (row["id"], score)
-        )
+        store.mapper.from_polars_row = MagicMock(side_effect=lambda row, score: (row["id"], score))
 
         results = store.search(query="test", query_vector=query_vector)
 

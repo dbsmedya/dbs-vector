@@ -1,4 +1,5 @@
 """Unit tests for the SearchService."""
+
 from unittest.mock import MagicMock
 
 import numpy as np

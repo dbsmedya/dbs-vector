@@ -1,4 +1,5 @@
 """Unit tests for ComponentRegistry."""
+
 import pytest
 
 from dbs_vector.core.registry import ComponentRegistry

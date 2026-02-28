@@ -1,4 +1,5 @@
 """Integration tests for CLI commands."""
+
 import os
 from unittest.mock import MagicMock, patch
 
@@ -138,8 +139,15 @@ class TestMainCallback:
 class TestIngestCommand:
     """Tests for the ingest command."""
 
-    def test_ingest_basic(self, mock_settings, mock_embedder, mock_store, mock_chunker,
-                          mock_mapper, mock_ingestion_service):
+    def test_ingest_basic(
+        self,
+        mock_settings,
+        mock_embedder,
+        mock_store,
+        mock_chunker,
+        mock_mapper,
+        mock_ingestion_service,
+    ):
         """Test basic ingest command."""
         from dbs_vector.cli import app
 
@@ -153,8 +161,15 @@ class TestIngestCommand:
             "docs/*.md", rebuild=False
         )
 
-    def test_ingest_with_engine_type(self, mock_settings, mock_embedder, mock_store,
-                                     mock_chunker, mock_mapper, mock_ingestion_service):
+    def test_ingest_with_engine_type(
+        self,
+        mock_settings,
+        mock_embedder,
+        mock_store,
+        mock_chunker,
+        mock_mapper,
+        mock_ingestion_service,
+    ):
         """Test ingest with specific engine type."""
         from dbs_vector.cli import app
 
@@ -175,8 +190,15 @@ class TestIngestCommand:
         assert result.exit_code == 1
         assert "Unknown engine type" in result.output
 
-    def test_ingest_rebuild_without_force(self, mock_settings, mock_embedder, mock_store,
-                                          mock_chunker, mock_mapper, mock_ingestion_service):
+    def test_ingest_rebuild_without_force(
+        self,
+        mock_settings,
+        mock_embedder,
+        mock_store,
+        mock_chunker,
+        mock_mapper,
+        mock_ingestion_service,
+    ):
         """Test rebuild flag triggers confirmation."""
         from dbs_vector.cli import app
 
@@ -186,8 +208,15 @@ class TestIngestCommand:
         # Should abort when user says no
         assert result.exit_code != 0 or "Aborted" in result.output
 
-    def test_ingest_rebuild_with_force(self, mock_settings, mock_embedder, mock_store,
-                                       mock_chunker, mock_mapper, mock_ingestion_service):
+    def test_ingest_rebuild_with_force(
+        self,
+        mock_settings,
+        mock_embedder,
+        mock_store,
+        mock_chunker,
+        mock_mapper,
+        mock_ingestion_service,
+    ):
         """Test rebuild with force flag bypasses confirmation."""
         from dbs_vector.cli import app
 
@@ -198,8 +227,15 @@ class TestIngestCommand:
             "path", rebuild=True
         )
 
-    def test_ingest_short_options(self, mock_settings, mock_embedder, mock_store,
-                                  mock_chunker, mock_mapper, mock_ingestion_service):
+    def test_ingest_short_options(
+        self,
+        mock_settings,
+        mock_embedder,
+        mock_store,
+        mock_chunker,
+        mock_mapper,
+        mock_ingestion_service,
+    ):
         """Test short options for ingest command."""
         from dbs_vector.cli import app
 
@@ -214,8 +250,15 @@ class TestIngestCommand:
 class TestSearchCommand:
     """Tests for the search command."""
 
-    def test_search_basic(self, mock_settings, mock_embedder, mock_store, mock_chunker,
-                          mock_mapper, mock_search_service):
+    def test_search_basic(
+        self,
+        mock_settings,
+        mock_embedder,
+        mock_store,
+        mock_chunker,
+        mock_mapper,
+        mock_search_service,
+    ):
         """Test basic search command."""
         from dbs_vector.cli import app
 
@@ -228,8 +271,15 @@ class TestSearchCommand:
         assert call_args[1]["source_filter"] is None
         assert call_args[1]["limit"] == 5
 
-    def test_search_with_options(self, mock_settings, mock_embedder, mock_store,
-                                 mock_chunker, mock_mapper, mock_search_service):
+    def test_search_with_options(
+        self,
+        mock_settings,
+        mock_embedder,
+        mock_store,
+        mock_chunker,
+        mock_mapper,
+        mock_search_service,
+    ):
         """Test search with all options."""
         from dbs_vector.cli import app
 
@@ -244,8 +294,15 @@ class TestSearchCommand:
         assert call_args[1]["source_filter"] == "mydb"
         assert call_args[1]["limit"] == 10
 
-    def test_search_sql_with_min_time(self, mock_settings, mock_embedder, mock_store,
-                                      mock_chunker, mock_mapper, mock_search_service):
+    def test_search_sql_with_min_time(
+        self,
+        mock_settings,
+        mock_embedder,
+        mock_store,
+        mock_chunker,
+        mock_mapper,
+        mock_search_service,
+    ):
         """Test SQL search with min_time filter."""
         from dbs_vector.cli import app
 
@@ -258,8 +315,15 @@ class TestSearchCommand:
         call_args = mock_search_service.return_value.execute_query.call_args
         assert call_args[1]["extra_filters"] == {"min_time": 100.5}
 
-    def test_search_md_ignores_min_time(self, mock_settings, mock_embedder, mock_store,
-                                        mock_chunker, mock_mapper, mock_search_service):
+    def test_search_md_ignores_min_time(
+        self,
+        mock_settings,
+        mock_embedder,
+        mock_store,
+        mock_chunker,
+        mock_mapper,
+        mock_search_service,
+    ):
         """Test that min_time is ignored for non-sql engines."""
         from dbs_vector.cli import app
 
@@ -282,8 +346,15 @@ class TestSearchCommand:
         assert result.exit_code == 1
         assert "Unknown engine type" in result.output
 
-    def test_search_results_printed(self, mock_settings, mock_embedder, mock_store,
-                                    mock_chunker, mock_mapper, mock_search_service):
+    def test_search_results_printed(
+        self,
+        mock_settings,
+        mock_embedder,
+        mock_store,
+        mock_chunker,
+        mock_mapper,
+        mock_search_service,
+    ):
         """Test that search results are printed."""
         from dbs_vector.cli import app
 
@@ -357,7 +428,9 @@ class TestServeCommand:
 class TestBuildDependencies:
     """Tests for the _build_dependencies function."""
 
-    def test_build_dependencies_success(self, mock_settings, mock_embedder, mock_store, mock_chunker, mock_mapper):
+    def test_build_dependencies_success(
+        self, mock_settings, mock_embedder, mock_store, mock_chunker, mock_mapper
+    ):
         """Test successful dependency building."""
         from dbs_vector.cli import _build_dependencies
 
@@ -380,8 +453,9 @@ class TestBuildDependencies:
         with pytest.raises(ValueError, match="Unknown engine: 'unknown'"):
             _build_dependencies("unknown")
 
-    def test_build_dependencies_chunker_with_max_chars(self, mock_settings, mock_embedder,
-                                                        mock_store, mock_chunker, mock_mapper):
+    def test_build_dependencies_chunker_with_max_chars(
+        self, mock_settings, mock_embedder, mock_store, mock_chunker, mock_mapper
+    ):
         """Test chunker gets max_chars when > 0."""
         from dbs_vector.cli import _build_dependencies
 
@@ -391,8 +465,9 @@ class TestBuildDependencies:
         mock_chunker_class = mock_get_chunker.return_value
         mock_chunker_class.assert_called_once_with(max_chars=1000)
 
-    def test_build_dependencies_chunker_without_max_chars(self, mock_settings, mock_embedder,
-                                                          mock_store, mock_chunker, mock_mapper):
+    def test_build_dependencies_chunker_without_max_chars(
+        self, mock_settings, mock_embedder, mock_store, mock_chunker, mock_mapper
+    ):
         """Test chunker gets no max_chars when = 0 (SQL)."""
         from dbs_vector.cli import _build_dependencies
 
@@ -402,8 +477,9 @@ class TestBuildDependencies:
         mock_chunker_class = mock_get_chunker.return_value
         mock_chunker_class.assert_called_once_with()  # No kwargs
 
-    def test_store_initialized_correctly(self, mock_settings, mock_embedder, mock_store,
-                                         mock_chunker, mock_mapper):
+    def test_store_initialized_correctly(
+        self, mock_settings, mock_embedder, mock_store, mock_chunker, mock_mapper
+    ):
         """Test that store is initialized with correct parameters."""
         from dbs_vector.cli import _build_dependencies
 

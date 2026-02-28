@@ -25,11 +25,29 @@ class EngineDeps(NamedTuple):
     workflow: str
 
 
+def version_callback(value: bool) -> None:
+    if value:
+        from dbs_vector import __version__
+
+        typer.echo(f"dbs-vector version: {__version__}")
+        raise typer.Exit()
+
+
 @app.callback()
 def main(
     config_file: Annotated[
         str, typer.Option("--config-file", "-c", help="Path to config.yaml file.")
     ] = "config.yaml",
+    version: Annotated[
+        bool | None,
+        typer.Option(
+            "--version",
+            "-v",
+            help="Show the version and exit.",
+            callback=version_callback,
+            is_eager=True,
+        ),
+    ] = None,
 ) -> None:
     """dbs-vector: Configurable Arrow-Native Search Engine."""
     import os
@@ -189,6 +207,35 @@ def serve(
 
     print(f"Starting dbs-vector API server at http://{host}:{port}...")
     uvicorn.run("dbs_vector.api.main:app", host=host, port=port, reload=reload)
+
+
+@app.command()
+def mcp(
+    config_file: Annotated[
+        str, typer.Option("--config-file", "-c", help="Path to config.yaml file.")
+    ] = "config.yaml",
+) -> None:
+    """Starts the FastMCP standard input/output (stdio) server for integrations."""
+    import os
+    import sys
+
+    from dbs_vector.api.mcp_server import mcp as mcp_server
+    from dbs_vector.api.state import _services
+
+    # Export to environment so the MCP subprocess inherits it
+    os.environ["DBS_CONFIG_FILE"] = config_file
+
+    print("[MCP Startup] Initializing MLX Embedders and LanceDB connections...", file=sys.stderr)
+    try:
+        for engine_name in settings.engines.keys():
+            print(f"  -> Loading Engine ({engine_name})...", file=sys.stderr)
+            deps = _build_dependencies(engine_name)
+            _services[engine_name] = SearchService(deps.embedder, deps.store)
+    except Exception as e:
+        print(f"[MCP Startup] Failed to initialize search services: {e}", file=sys.stderr)
+        raise
+
+    mcp_server.run()
 
 
 if __name__ == "__main__":

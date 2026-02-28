@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dbs-vector"
-version = "0.1.0"
-description = "First RAG example"
+version = "0.3.1"
+description = "High-performance, local RAG search engine and MCP/API server for Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -13,6 +13,7 @@ dependencies = [
     "lance==1.2.1",
     "lancedb==0.29.2",
     "markdown-it-py>=4.0.0",
+    "mcp>=1.26.0",
     "mlx-embeddings>=0.0.5",
     "numpy>=2.2.3",
     "polars==1.38.1",
@@ -33,6 +34,7 @@ dbs-vector = "dbs_vector.cli:app"
 dev = [
     "mypy>=1.19.1",
     "poethepoet>=0.42.0",
+    "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.0.0",
     "pytest>=9.0.2",
     "ruff>=0.15.2",
@@ -52,6 +54,7 @@ rm -rf .mypy_cache .pytest_cache .ruff_cache .coverage htmlcov dist build
 find . -type d -name '__pycache__' -exec rm -rf {} +
 """
 check = ["format", "lint", "typecheck", "test"]
+github-release-test = ["check"]
 
 [tool.ruff]
 line-length = 100

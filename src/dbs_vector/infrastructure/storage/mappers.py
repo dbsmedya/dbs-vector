@@ -19,7 +19,9 @@ class DocumentMapper:
                 pa.field("text", pa.string()),
                 pa.field("source", pa.string()),
                 pa.field("content_hash", pa.string()),
-                pa.field("workflow", pa.string()),  # Identifies the exact model/task prefix space used
+                pa.field(
+                    "workflow", pa.string()
+                ),  # Identifies the exact model/task prefix space used
                 pa.field("node_type", pa.string(), nullable=True),
                 pa.field("parent_scope", pa.string(), nullable=True),
                 pa.field("line_range", pa.string(), nullable=True),
@@ -30,7 +32,9 @@ class DocumentMapper:
     def schema(self) -> Any:
         return self._schema
 
-    def to_record_batch(self, chunks: list[Any], vectors: NDArray[np.float32], workflow: str) -> Any:
+    def to_record_batch(
+        self, chunks: list[Any], vectors: NDArray[np.float32], workflow: str
+    ) -> Any:
         ids = [c.id for c in chunks]
         texts = [c.text for c in chunks]
         sources = [c.source for c in chunks]
@@ -84,7 +88,9 @@ class SqlMapper:
                 pa.field("execution_time_ms", pa.float64()),
                 pa.field("calls", pa.int64()),
                 pa.field("content_hash", pa.string()),
-                pa.field("workflow", pa.string()),  # Identifies the exact model/task prefix space used
+                pa.field(
+                    "workflow", pa.string()
+                ),  # Identifies the exact model/task prefix space used
             ]
         )
 
@@ -92,7 +98,9 @@ class SqlMapper:
     def schema(self) -> Any:
         return self._schema
 
-    def to_record_batch(self, chunks: list[Any], vectors: NDArray[np.float32], workflow: str) -> Any:
+    def to_record_batch(
+        self, chunks: list[Any], vectors: NDArray[np.float32], workflow: str
+    ) -> Any:
         ids = [c.id for c in chunks]
         texts = [c.text for c in chunks]
         sources = [c.source for c in chunks]

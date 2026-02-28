@@ -5,19 +5,17 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from dbs_vector.api.mcp_server import mcp
+from dbs_vector.api.state import _services
 from dbs_vector.cli import _build_dependencies
 from dbs_vector.config import settings
 from dbs_vector.core.models import SearchResult, SqlSearchResult
 from dbs_vector.services.search import SearchService
 
-# Global service instances holding the initialized models and databases
-_services: dict[str, SearchService] = {}
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup and shutdown events for the API."""
-    global _services
     print("\\n[Startup] Initializing MLX Embedders and LanceDB connections...")
 
     try:
@@ -44,6 +42,8 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+app.mount("/mcp", mcp.sse_app())
 
 
 class SearchRequest(BaseModel):

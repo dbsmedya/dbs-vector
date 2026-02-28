@@ -9,6 +9,7 @@ wheels/
 # Virtual environments
 .venv
 .ayder
+.coverage
 
 # Configs
 config.yaml

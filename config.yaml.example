@@ -1,7 +1,11 @@
 # ==============================================================================
 # dbs-vector Configuration File Example
 # ==============================================================================
-# To use this configuration, copy it to `config.yaml` or pass it via the CLI:
+# To use this configuration:
+#   1. Copy this file to `config.yaml`
+#   2. Adjust the `db_path` and `model_name` as needed.
+#
+# You can also pass a custom config via the CLI:
 #   uv run dbs-vector --config-file custom_config.yaml <command>
 # ==============================================================================
 
@@ -33,7 +37,9 @@ engines:
     chunker_type: "document"
     chunk_max_chars: 1000
 
-    # Task Prefixes for Gemma Search workflow
+    # Task Prefixes for models like embeddinggemma
+    # 'search_result' is used for the documents (passage_prefix)
+    # 'search_query' or 'search_result' is used for queries (query_prefix)
     passage_prefix: "title: none | text: "
     query_prefix: "task: search result | query: "
     workflow: "md_search"
@@ -51,7 +57,7 @@ engines:
     chunker_type: "sql"
     chunk_max_chars: 0
 
-    # Task Prefixes for Gemma Clustering workflow
+    # Task Prefixes for clustering workflow
     passage_prefix: "task: clustering | query: "
     query_prefix: "task: clustering | query: "
     workflow: "sql_clustering"

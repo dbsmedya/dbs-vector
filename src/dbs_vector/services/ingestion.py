@@ -55,8 +55,12 @@ class IngestionService:
 
                 filepath_str = str(filepath)
 
-                with open(filepath_str, encoding="utf-8") as f:
-                    content = f.read()
+                try:
+                    with open(filepath_str, encoding="utf-8") as f:
+                        content = f.read()
+                except UnicodeDecodeError:
+                    print(f"  [!] Warning: Skipping non-UTF-8 file: {filepath_str}")
+                    continue
 
                 # Calculate file hash for delta updates from the already loaded content
                 file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
@@ -87,7 +91,9 @@ class IngestionService:
             texts = [c.text for c in new_chunks]
             vectors = self.embedder.embed_batch(texts)
 
-            self.vector_store.ingest_chunks(chunks=new_chunks, vectors=vectors, workflow=self.workflow)
+            self.vector_store.ingest_chunks(
+                chunks=new_chunks, vectors=vectors, workflow=self.workflow
+            )
             total_chunks += len(new_chunks)
             skipped_chunks += len(batch) - len(new_chunks)
             print(f" -> Streamed {len(new_chunks)} new chunks (Total: {total_chunks}).")

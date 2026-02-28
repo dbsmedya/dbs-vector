@@ -78,6 +78,17 @@ uv run dbs-vector serve
 For full API specifications and swagger documentation, see:
 👉 **[API Usage & Documentation](docs/README_API.md)**
 
+### Model Context Protocol (MCP) Server
+`dbs-vector` includes a built-in MCP server that allows AI assistants (like Claude Desktop and Cursor) to use your vector database as a tool for codebase and SQL query log search.
+
+```bash
+# Start the MCP stdio server
+uv run dbs-vector mcp
+```
+
+For setup instructions and tool details, see:
+👉 **[MCP Server Documentation](docs/README_MCP.md)**
+
 ## 🏗 Architecture & Roadmap
 
 `dbs-vector` is built upon strict **Clean Architecture** and **SOLID** principles. It utilizes a **Configuration-Driven Registry Pattern**, allowing new data engines (e.g., LibCST, Logs) to be added by simply updating `config.yaml` and registering new mappers/chunkers without modifying core orchestration logic.
@@ -105,3 +116,28 @@ uv run poe check
 # Run tests with coverage
 uv run poe test-cov
 ```
+
+## 🔁 GitHub Actions (CI + Release)
+
+This repository includes two workflows:
+
+*   **CI** (`.github/workflows/ci.yml`): Runs on pushes and pull requests to `main`.
+*   **Release** (`.github/workflows/release.yml`): Runs on tags matching `v*`, verifies the tagged commit is on `main`, builds artifacts, and creates a GitHub Release.
+
+Create a release tag:
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+### PyPI (ready, disabled by default)
+
+The release workflow includes an optional PyPI publish job using trusted publishing (`id-token`).
+
+To enable it later:
+
+1. Configure trusted publishing on PyPI for this GitHub repository and workflow.
+2. Create a repository variable named `PYPI_PUBLISH` with value `true`.
+
+Until then, releases will still build artifacts and publish GitHub Releases without uploading to PyPI.

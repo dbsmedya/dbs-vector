@@ -1,4 +1,5 @@
 """Unit tests for SqlChunker."""
+
 import json
 
 import pytest
@@ -244,7 +245,7 @@ class TestProcessInvalidRecords:
 
     def test_null_query_and_normalized_handled(self, chunker):
         """Test that records with null query and normalized_query are handled gracefully.
-        
+
         Regression test: Previously, if query was None, raw.encode() would fail
         with AttributeError. The fix uses `or ""` to ensure raw is always a string.
         """
@@ -299,7 +300,9 @@ class TestProcessEdgeCases:
 
     def test_json_object_not_array(self, chunker, capsys):
         """Test handling of JSON object instead of array."""
-        doc = Document(filepath="object.json", content='{"query": "SELECT 1"}', content_hash="hash18")
+        doc = Document(
+            filepath="object.json", content='{"query": "SELECT 1"}', content_hash="hash18"
+        )
 
         chunks = list(chunker.process(doc))
 

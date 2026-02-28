@@ -5,6 +5,8 @@ import numpy as np
 from mlx_embeddings.utils import load
 from numpy.typing import NDArray
 
+_MODEL_CACHE: dict[str, tuple[Any, Any, threading.Lock]] = {}
+
 
 class MLXEmbedder:
     """
@@ -25,12 +27,17 @@ class MLXEmbedder:
         self._dimension = dimension
         self._passage_prefix = passage_prefix
         self._query_prefix = query_prefix
-        self._lock = threading.Lock()
 
-        print(f"Loading MLX model: {model_name}...")
+        global _MODEL_CACHE
+        if model_name not in _MODEL_CACHE:
+            print(f"Loading MLX model: {model_name}...")
+            _MODEL_CACHE[model_name] = (*load(model_name), threading.Lock())
+        else:
+            print(f"Using cached MLX model: {model_name}...")
+
         self.model: Any
         self.tokenizer: Any
-        self.model, self.tokenizer = load(model_name)
+        self.model, self.tokenizer, self._lock = _MODEL_CACHE[model_name]
 
     @property
     def dimension(self) -> int:
@@ -42,7 +49,7 @@ class MLXEmbedder:
 
         with self._lock:
             # We call the underlying transformers tokenizer directly to obtain the attention_mask.
-            # Some models (like Gemma bf16) require the mask to be cast to bfloat16 to avoid 
+            # Some models (like Gemma bf16) require the mask to be cast to bfloat16 to avoid
             # type promotion errors during inference.
             inputs = self.tokenizer._tokenizer(
                 texts,

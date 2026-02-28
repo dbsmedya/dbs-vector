@@ -1,4 +1,5 @@
 """Unit tests for the configuration module."""
+
 import os
 import tempfile
 from pathlib import Path
@@ -181,7 +182,7 @@ system:
         """Test that DBS_CONFIG_FILE env var overrides default config path."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = os.path.join(tmp_dir, "from_env.yaml")
-            Path(config_path).write_text("system:\n  db_path: \"./from_env_db\"\n")
+            Path(config_path).write_text('system:\n  db_path: "./from_env_db"\n')
 
             monkeypatch.setenv("DBS_CONFIG_FILE", config_path)
 
@@ -195,8 +196,8 @@ system:
             env_config = os.path.join(tmp_dir, "env.yaml")
             explicit_config = os.path.join(tmp_dir, "explicit.yaml")
 
-            Path(env_config).write_text("system:\n  db_path: \"./env_db\"\n")
-            Path(explicit_config).write_text("system:\n  db_path: \"./explicit_db\"\n")
+            Path(env_config).write_text('system:\n  db_path: "./env_db"\n')
+            Path(explicit_config).write_text('system:\n  db_path: "./explicit_db"\n')
 
             monkeypatch.setenv("DBS_CONFIG_FILE", env_config)
 

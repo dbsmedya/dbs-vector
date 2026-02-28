@@ -15,9 +15,7 @@ from dbs_vector.services.search import SearchService
 # - Missing "md" engine in settings
 # - Not running on Apple Silicon (MLX requirement)
 skip_in_ci = pytest.mark.skipif(
-    os.environ.get("CI") == "true"
-    or not os.path.exists("docs/")
-    or "md" not in settings.engines,
+    os.environ.get("CI") == "true" or not os.path.exists("docs/") or "md" not in settings.engines,
     reason="E2E test requires local docs/, mlx engine, and Apple Silicon - not suitable for CI",
 )
 
