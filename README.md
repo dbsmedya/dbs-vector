@@ -99,7 +99,7 @@ The project is optimized for instruction-tuned models like `embeddinggemma`. It 
 *   **SQL (Clustering)**: Uses the `task: clustering` prefix for both ingestion and search, enabling high-precision semantic grouping of logically similar slow queries.
 
 ### Future Hardware Support (CUDA/TPU)
-Because the core RAG orchestration relies exclusively on the `IEmbedder` Protocol, the application is strictly hardware-agnostic at its core. While currently optimized for Apple Silicon via `MLXEmbedder`, future deployment to cloud GPUs or Linux environments simply requires implementing a new `CudaEmbedder` (using PyTorch/Transformers) that returns standard NumPy arrays. No changes to the ingestion, storage, or API layers are necessary to support new hardware accelerators.
+Because the core RAG orchestration relies exclusively on the `IEmbedder` Protocol, the application is strictly hardware-agnostic at its core. While currently optimized for Apple Silicon via `MLXEmbedder`, future deployment to cloud GPUs or Linux environments simply requires implementing a new `CudaEmbedder` (using PyTorch/Transformers) that returns standard NumPy arrays. No changes to the ingestion, storage, or API layers are necessary to support new hardware accelerators. No access to a CUDA hardware at the moment.
 
 For a deep dive into the engineering, the Apache Arrow ingestion lifecycle, and the blueprint for AST/LibCST integration, see the official documentation:
 
@@ -117,27 +117,3 @@ uv run poe check
 uv run poe test-cov
 ```
 
-## 🔁 GitHub Actions (CI + Release)
-
-This repository includes two workflows:
-
-*   **CI** (`.github/workflows/ci.yml`): Runs on pushes and pull requests to `main`.
-*   **Release** (`.github/workflows/release.yml`): Runs on tags matching `v*`, verifies the tagged commit is on `main`, builds artifacts, and creates a GitHub Release.
-
-Create a release tag:
-
-```bash
-git tag v0.1.1
-git push origin v0.1.1
-```
-
-### PyPI (ready, disabled by default)
-
-The release workflow includes an optional PyPI publish job using trusted publishing (`id-token`).
-
-To enable it later:
-
-1. Configure trusted publishing on PyPI for this GitHub repository and workflow.
-2. Create a repository variable named `PYPI_PUBLISH` with value `true`.
-
-Until then, releases will still build artifacts and publish GitHub Releases without uploading to PyPI.
