@@ -10,7 +10,6 @@ wheels/
 .venv
 .ayder
 .coverage
-uv.lock
 
 # test db
 lancedb_dbs_vector/
