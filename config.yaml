@@ -1,0 +1,31 @@
+system:
+  db_path: "./lancedb_dbs_vector"
+  batch_size: 64
+  nprobes: 20
+
+engines:
+  md:
+    description: "Markdown & Prose Document Engine (Gemma Search)"
+    model_name: "mlx-community/embeddinggemma-300m-bf16"
+    vector_dimension: 768
+    max_token_length: 2048
+    table_name: "knowledge_vault"
+    mapper_type: "document"
+    chunker_type: "document"
+    chunk_max_chars: 1000
+    passage_prefix: "title: none | text: "
+    query_prefix: "task: search result | query: "
+    workflow: "md_search"
+
+  sql:
+    description: "SQL Slow Query Log Engine (Gemma Clustering)"
+    model_name: "mlx-community/embeddinggemma-300m-bf16"
+    vector_dimension: 768
+    max_token_length: 2048
+    table_name: "query_vault"
+    mapper_type: "sql"
+    chunker_type: "sql"
+    chunk_max_chars: 0 
+    passage_prefix: "task: clustering | query: "
+    query_prefix: "task: clustering | query: "
+    workflow: "sql_clustering"

@@ -11,8 +11,5 @@ wheels/
 .ayder
 .coverage
 
-# Configs
-config.yaml
-
 # test db
 lancedb_dbs_vector/
