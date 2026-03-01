@@ -56,8 +56,8 @@ table.add(arrow_batch)
 
 ### A. Dual-Engine Support (Docs vs. SQL)
 The architecture supports specialized parallel pipelines:
-*   **MD Engine:** Uses semantic models (MiniLM) and a robust `markdown-it-py` chunker that guarantees code fences remain atomic.
-*   **SQL Engine:** Uses code-native models (StarEncoder) to cluster parsed execution logs, finding identical logic hidden behind structural query differences.
+*   **MD Engine:** Uses `mlx-community/embeddinggemma-300m-bf16` with a robust `markdown-it-py` chunker that guarantees code fences remain atomic.
+*   **SQL Engine:** Uses the same `mlx-community/embeddinggemma-300m-bf16` model with task-specific prefixes to cluster parsed execution logs, finding identical logic hidden behind structural query differences.
 
 ### B. Deduplication & Delta-Updates
 Before running expensive GPU embeddings, `IngestionService` queries the database for all existing `content_hash` values. Any chunk that hasn't changed is skipped entirely, preventing index bloat and accelerating re-ingestion.
