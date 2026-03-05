@@ -40,7 +40,7 @@ The application is entirely configuration-driven via `config.yaml`. It supports 
 *   `--config-file` / `-c`: Path to your custom `config.yaml` (Defaults to `./config.yaml`).
 
 ### Ingesting Documents
-Index your markdown files or SQL logs into the high-performance local vector store.
+Index your markdown files, JSON SQL logs, or high-performance DuckDB analytical files into the local vector store.
 
 ```bash
 # Ingest all markdown files (default)
@@ -49,8 +49,8 @@ uv run dbs-vector ingest "docs/"
 # Ingest SQL slow query logs (JSON format)
 uv run dbs-vector ingest "slow_queries.json" --type sql
 
-# Completely rebuild an index from scratch
-uv run dbs-vector ingest "docs/" --rebuild
+# Ingest SQL slow queries from DuckDB (High-Performance Columnar)
+uv run dbs-vector ingest "slow_queries.duckdb" --type sql --rebuild
 ```
 
 ### Searching the Codebase
@@ -64,8 +64,9 @@ uv run dbs-vector search "What is MLX?"
 uv run dbs-vector search "SELECT * FROM users" --type sql --min-time 1000
 ```
 
-For detailed specifications on the SQL engine and JSON format requirements, see:
+For detailed specifications on the SQL engine, JSON format, and DuckDB aggregation, see:
 👉 **[SQL Engine Documentation](docs/README_SQL.md)**
+👉 **[DuckDB Ingestion Documentation](docs/README_duckdb.md)**
 
 ### Async API Server
 The application includes a high-performance FastAPI server to expose the search engine over HTTP.

@@ -2,6 +2,7 @@ from typing import Any
 
 from dbs_vector.core.ports import IStoreMapper
 from dbs_vector.infrastructure.chunking.document import DocumentChunker
+from dbs_vector.infrastructure.chunking.duckdb import DuckDBChunker
 from dbs_vector.infrastructure.chunking.sql import SqlChunker
 from dbs_vector.infrastructure.storage.mappers import DocumentMapper, SqlMapper
 
@@ -17,6 +18,7 @@ class ComponentRegistry:
     _chunkers: dict[str, Any] = {
         "document": DocumentChunker,
         "sql": SqlChunker,
+        "duckdb": DuckDBChunker,
     }
 
     @classmethod

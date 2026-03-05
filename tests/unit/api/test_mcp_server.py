@@ -1,3 +1,4 @@
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -82,11 +83,9 @@ async def test_search_sql_logs_success(mock_services):
                 raw_query="SELECT * FROM test;",
                 text="SELECT * FROM test;",
                 content_hash="hash",
-                document_id="doc1",
                 execution_time_ms=500.5,
                 calls=2,
-                query_hash="abc",
-                index=0,
+                latest_ts=datetime.now(),
             ),
             distance=0.5678,
         )

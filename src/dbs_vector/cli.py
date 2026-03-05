@@ -85,7 +85,7 @@ def main(
     configure_logger(level=settings.log_level, serialize=settings.log_serialize)
 
 
-def _build_dependencies(engine_name: str) -> EngineDeps:
+def _build_dependencies(engine_name: str, query_override: str | None = None) -> EngineDeps:
     """Dependency Injection Factory driven by config.yaml configuration."""
     if engine_name not in settings.engines:
         raise ValueError(
@@ -111,7 +111,9 @@ def _build_dependencies(engine_name: str) -> EngineDeps:
 
     # Optional arguments based on chunker type
     chunker_kwargs = {}
-    if config.chunk_max_chars > 0:
+    if config.chunker_type == "duckdb":
+        chunker_kwargs["query"] = query_override or getattr(config, "duckdb_query", None)
+    elif config.chunk_max_chars > 0:
         chunker_kwargs["max_chars"] = config.chunk_max_chars
 
     chunker = ChunkerClass(**chunker_kwargs)
@@ -151,6 +153,10 @@ def ingest(
         bool,
         typer.Option("--force", "-f", help="Bypass confirmation prompt when rebuilding."),
     ] = False,
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "-q", help="Custom SQL query for DuckDB extraction."),
+    ] = None,
 ) -> None:
     """Ingests documents or SQL query logs into the Arrow-native vector store."""
     if engine_name not in settings.engines:
@@ -165,7 +171,7 @@ def ingest(
             abort=True,
         )
 
-    deps = _build_dependencies(engine_name)
+    deps = _build_dependencies(engine_name, query_override=query)
     service = IngestionService(deps.chunker, deps.embedder, deps.store, deps.workflow)
     service.ingest_directory(path, rebuild=rebuild)
 

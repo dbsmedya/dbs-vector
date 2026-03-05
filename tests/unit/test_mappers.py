@@ -1,5 +1,7 @@
 """Unit tests for DocumentMapper and SqlMapper."""
 
+from datetime import datetime
+
 import numpy as np
 import pyarrow as pa
 import pytest
@@ -181,6 +183,7 @@ class TestSqlMapper:
     @pytest.fixture
     def sample_sql_chunks(self):
         """Create sample SQL chunks for testing."""
+        now = datetime.now()
         return [
             SqlChunk(
                 id="sql_0",
@@ -190,6 +193,11 @@ class TestSqlMapper:
                 execution_time_ms=150.5,
                 calls=42,
                 content_hash="sql_hash1",
+                latest_ts=now,
+                tables=["users"],
+                rows_sent=10,
+                rows_examined=100,
+                lock_time_sec=0.01,
             ),
             SqlChunk(
                 id="sql_1",
@@ -199,6 +207,11 @@ class TestSqlMapper:
                 execution_time_ms=89.0,
                 calls=15,
                 content_hash="sql_hash2",
+                latest_ts=now,
+                tables=["orders"],
+                rows_sent=1,
+                rows_examined=1,
+                lock_time_sec=0.005,
             ),
         ]
 
@@ -224,6 +237,13 @@ class TestSqlMapper:
         assert "execution_time_ms" in field_names
         assert "calls" in field_names
         assert "content_hash" in field_names
+        assert "tables" in field_names
+        assert "latest_ts" in field_names
+        assert "user" in field_names
+        assert "host" in field_names
+        assert "rows_sent" in field_names
+        assert "rows_examined" in field_names
+        assert "lock_time_sec" in field_names
 
     def test_vector_dimension(self, mapper):
         """Test that vector field has correct dimension."""
@@ -244,7 +264,7 @@ class TestSqlMapper:
 
         assert isinstance(batch, pa.RecordBatch)
         assert batch.num_rows == 2
-        assert batch.num_columns == 9
+        assert batch.num_columns == 16
 
         assert batch.column("id").to_pylist() == ["sql_0", "sql_1"]
         assert batch.column("text").to_pylist() == [
@@ -258,11 +278,13 @@ class TestSqlMapper:
         assert batch.column("source").to_pylist() == ["db_production", "db_production"]
         assert batch.column("execution_time_ms").to_pylist() == [150.5, 89.0]
         assert batch.column("calls").to_pylist() == [42, 15]
+        assert batch.column("tables").to_pylist() == [["users"], ["orders"]]
 
     def test_from_polars_row(self, mapper):
         """Test converting a polars row dict to SqlSearchResult."""
         from dbs_vector.core.models import SqlSearchResult
 
+        now = datetime.now()
         row = {
             "id": "sql_42",
             "text": "SELECT COUNT(*) FROM orders",
@@ -271,6 +293,13 @@ class TestSqlMapper:
             "execution_time_ms": 245.7,
             "calls": 1000,
             "content_hash": "hash_abc",
+            "latest_ts": now,
+            "tables": ["orders"],
+            "user": "admin",
+            "host": "localhost",
+            "rows_sent": 500,
+            "rows_examined": 5000,
+            "lock_time_sec": 0.1,
         }
 
         result = mapper.from_polars_row(row, score=0.88)
@@ -282,11 +311,19 @@ class TestSqlMapper:
         assert result.chunk.source == "db_analytics"
         assert result.chunk.execution_time_ms == 245.7
         assert result.chunk.calls == 1000
+        assert result.chunk.latest_ts == now
+        assert result.chunk.tables == ["orders"]
+        assert result.chunk.user == "admin"
+        assert result.chunk.host == "localhost"
+        assert result.chunk.rows_sent == 500
+        assert result.chunk.rows_examined == 5000
+        assert result.chunk.lock_time_sec == 0.1
         assert result.score == 0.88
         assert result.is_fts_match is False
 
     def test_from_polars_row_fts_match(self, mapper):
         """Test SqlSearchResult with None score (FTS match)."""
+        now = datetime.now()
         row = {
             "id": "sql_0",
             "text": "INSERT INTO logs",
@@ -295,6 +332,7 @@ class TestSqlMapper:
             "execution_time_ms": 10.0,
             "calls": 5000,
             "content_hash": "hash_xyz",
+            "latest_ts": now,
         }
 
         result = mapper.from_polars_row(row, score=None)
@@ -324,7 +362,7 @@ class TestMapperEdgeCases:
         batch = mapper.to_record_batch([], empty_vectors, workflow="test")
 
         assert batch.num_rows == 0
-        assert batch.num_columns == 9
+        assert batch.num_columns == 16
 
     def test_document_mapper_single_chunk(self):
         """Test DocumentMapper with single chunk."""

@@ -1,5 +1,6 @@
 """Unit tests for the SearchService."""
 
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -179,6 +180,7 @@ class TestPrintResults:
                     execution_time_ms=150.5,
                     calls=42,
                     content_hash="sql_hash_123",
+                    latest_ts=datetime.now(),
                 ),
                 score=0.88,
                 distance=0.88,

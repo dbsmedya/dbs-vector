@@ -56,16 +56,24 @@ class IngestionService:
                     continue
 
                 filepath_str = str(filepath)
+                content = ""
+                
+                # Skip UTF-8 read for binary duckdb files
+                if not filepath_str.endswith(".duckdb"):
+                    try:
+                        with open(filepath_str, encoding="utf-8") as f:
+                            content = f.read()
+                    except UnicodeDecodeError:
+                        logger.warning("Skipping non-UTF-8 file: {}", filepath_str)
+                        continue
 
-                try:
-                    with open(filepath_str, encoding="utf-8") as f:
-                        content = f.read()
-                except UnicodeDecodeError:
-                    logger.warning("Skipping non-UTF-8 file: {}", filepath_str)
-                    continue
-
-                # Calculate file hash for delta updates from the already loaded content
-                file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+                # Calculate file hash for delta updates
+                if content:
+                    file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+                else:
+                    # For duckdb or empty files, use a hash of the filepath and modification time
+                    stat = filepath.stat()
+                    file_hash = hashlib.sha256(f"{filepath_str}{stat.st_mtime}".encode("utf-8")).hexdigest()[:16]
 
                 doc = Document(
                     filepath=filepath_str,

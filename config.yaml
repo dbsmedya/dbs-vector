@@ -24,7 +24,7 @@ engines:
     max_token_length: 2048
     table_name: "query_vault"
     mapper_type: "sql"
-    chunker_type: "sql"
+    chunker_type: "duckdb"
     chunk_max_chars: 0 
     passage_prefix: "task: clustering | query: "
     query_prefix: "task: clustering | query: "

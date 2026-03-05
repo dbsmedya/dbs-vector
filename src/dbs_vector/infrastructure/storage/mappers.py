@@ -91,6 +91,13 @@ class SqlMapper:
                 pa.field(
                     "workflow", pa.string()
                 ),  # Identifies the exact model/task prefix space used
+                pa.field("tables", pa.list_(pa.string())),
+                pa.field("latest_ts", pa.timestamp('us')),
+                pa.field("user", pa.string(), nullable=True),
+                pa.field("host", pa.string(), nullable=True),
+                pa.field("rows_sent", pa.int64(), nullable=True),
+                pa.field("rows_examined", pa.int64(), nullable=True),
+                pa.field("lock_time_sec", pa.float64(), nullable=True),
             ]
         )
 
@@ -109,6 +116,13 @@ class SqlMapper:
         execution_times = [c.execution_time_ms for c in chunks]
         calls = [c.calls for c in chunks]
         workflows = [workflow for _ in chunks]
+        tables = [c.tables for c in chunks]
+        latest_tss = [c.latest_ts for c in chunks]
+        users = [c.user for c in chunks]
+        hosts = [c.host for c in chunks]
+        rows_sent = [c.rows_sent for c in chunks]
+        rows_examined = [c.rows_examined for c in chunks]
+        lock_times = [c.lock_time_sec for c in chunks]
 
         return pa.RecordBatch.from_arrays(
             [
@@ -121,6 +135,13 @@ class SqlMapper:
                 pa.array(calls, type=pa.int64()),
                 pa.array(hashes),
                 pa.array(workflows),
+                pa.array(tables, type=pa.list_(pa.string())),
+                pa.array(latest_tss, type=pa.timestamp('us')),
+                pa.array(users, type=pa.string()),
+                pa.array(hosts, type=pa.string()),
+                pa.array(rows_sent, type=pa.int64()),
+                pa.array(rows_examined, type=pa.int64()),
+                pa.array(lock_times, type=pa.float64()),
             ],
             schema=self._schema,
         )
@@ -134,6 +155,13 @@ class SqlMapper:
             execution_time_ms=row["execution_time_ms"],
             calls=row["calls"],
             content_hash=row["content_hash"],
+            tables=row.get("tables", []),
+            latest_ts=row["latest_ts"],
+            user=row.get("user"),
+            host=row.get("host"),
+            rows_sent=row.get("rows_sent"),
+            rows_examined=row.get("rows_examined"),
+            lock_time_sec=row.get("lock_time_sec"),
         )
         return SqlSearchResult(
             chunk=chunk, score=score, distance=score, is_fts_match=(score is None)

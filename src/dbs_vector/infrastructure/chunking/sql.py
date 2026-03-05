@@ -48,6 +48,8 @@ class SqlChunker:
 
             content_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
+            from datetime import datetime
+
             yield SqlChunk(
                 id=str(query_id),
                 text=normalized,
@@ -56,4 +58,11 @@ class SqlChunker:
                 execution_time_ms=duration,
                 calls=calls,
                 content_hash=content_hash,
+                tables=[],
+                latest_ts=datetime.now(),
+                user=None,
+                host=None,
+                rows_sent=None,
+                rows_examined=None,
+                lock_time_sec=None,
             )

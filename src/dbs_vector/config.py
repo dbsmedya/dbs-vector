@@ -23,6 +23,7 @@ class EngineConfig(BaseModel):
     query_prefix: str = ""
     passage_prefix: str = ""
     workflow: str = "default"
+    duckdb_query: str | None = None
 
 
 class Settings(BaseSettings):

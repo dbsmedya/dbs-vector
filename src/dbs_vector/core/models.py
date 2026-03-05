@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel
 
 
@@ -24,6 +26,13 @@ class SqlChunk(BaseModel):
     execution_time_ms: float
     calls: int
     content_hash: str
+    tables: list[str] = []
+    latest_ts: datetime
+    user: str | None = None
+    host: str | None = None
+    rows_sent: int | None = None
+    rows_examined: int | None = None
+    lock_time_sec: float | None = None
 
 
 class Document(BaseModel):
