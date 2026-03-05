@@ -52,7 +52,7 @@ engines:
     workflow: "md_search"
 
   # --------------------------------------------------------------------------
-  # SQL Slow Query Log Engine (Gemma Clustering Workflow)
+  # SQL Slow Query Log Engine — JSON file source (Gemma Clustering Workflow)
   # --------------------------------------------------------------------------
   sql:
     description: "SQL Slow Query Log Engine (Gemma Clustering)"
@@ -68,3 +68,74 @@ engines:
     passage_prefix: "task: clustering | query: "
     query_prefix: "task: clustering | query: "
     workflow: "sql_clustering"
+
+  # --------------------------------------------------------------------------
+  # SQL Slow Query Log Engine — DuckDB file source
+  # Requires: uv sync --extra sql
+  # Usage:    uv run dbs-vector ingest "slow_logs.duckdb" --type sql-duckdb
+  # --------------------------------------------------------------------------
+  sql-duckdb:
+    description: "SQL Slow Query Log Engine — DuckDB source"
+    model_name: "mlx-community/embeddinggemma-300m-bf16"
+    vector_dimension: 768
+    max_token_length: 2048
+    table_name: "query_vault"
+    mapper_type: "sql"
+    chunker_type: "duckdb"
+    chunk_max_chars: 0
+
+    passage_prefix: "task: clustering | query: "
+    query_prefix: "task: clustering | query: "
+    workflow: "sql_clustering"
+
+    # Optional: override the default aggregation query executed against the
+    # DuckDB file. Leave unset to use the built-in 15-day window query.
+    # duckdb_query: >
+    #   SELECT fingerprint_id AS id, sanitized_sql AS text, db AS source,
+    #          SUM(query_time_sec) * 1000 AS execution_time_ms, COUNT(*) AS calls
+    #   FROM slow_logs GROUP BY fingerprint_id ORDER BY execution_time_ms DESC
+
+  # --------------------------------------------------------------------------
+  # SQL Slow Query Log Engine — Remote HTTP API source
+  # Requires: uv sync --extra api
+  # Usage:    uv run dbs-vector ingest "https://host/api/v1" --type sql-api
+  #
+  # The API key can also be injected via the DBS_API_KEY environment variable
+  # instead of being written to this file.
+  # --------------------------------------------------------------------------
+  sql-api:
+    description: "SQL Slow Query Log Engine — Remote HTTP API source"
+    model_name: "mlx-community/embeddinggemma-300m-bf16"
+    vector_dimension: 768
+    max_token_length: 2048
+    table_name: "query_vault"
+    mapper_type: "sql"
+    chunker_type: "api"
+    chunk_max_chars: 0
+
+    passage_prefix: "task: clustering | query: "
+    query_prefix: "task: clustering | query: "
+    workflow: "sql_clustering"
+
+    # Base URL of the remote slow-query API (including version prefix).
+    api_base_url: "https://slow-log-api.internal/api/v1"
+
+    # Bearer token sent as:  Authorization: Bearer <api_key>
+    # Prefer injecting via environment:  export DBS_API_KEY=sk-...
+    api_key: ""
+
+    # Records requested per GET /sql/queries page (max 1000).
+    api_page_size: 200
+
+    # Fetch queries whose latest_ts falls within the last N days.
+    api_since_days: 15
+
+    # Per-request HTTP timeout in seconds.
+    api_timeout_sec: 30
+
+    # Skip queries whose cumulative execution_time_ms is below this value.
+    api_min_execution_ms: 0
+
+    # Restrict ingestion to a single database/schema name.
+    # Leave empty to fetch from all databases.
+    api_database: ""

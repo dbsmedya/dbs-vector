@@ -1,15 +1,15 @@
-import pytest
 import duckdb
-from datetime import datetime
+import pytest
 
-from dbs_vector.infrastructure.chunking.duckdb import DuckDBChunker
 from dbs_vector.core.models import Document
+from dbs_vector.infrastructure.chunking.duckdb import DuckDBChunker
+
 
 @pytest.fixture
 def temp_duckdb_file(tmp_path):
     filepath = tmp_path / "test.duckdb"
     conn = duckdb.connect(str(filepath))
-    
+
     conn.execute("""
         CREATE TABLE slow_logs(
             fingerprint_id VARCHAR, 
@@ -26,7 +26,7 @@ def temp_duckdb_file(tmp_path):
             lock_time_sec DOUBLE
         );
     """)
-    
+
     # Insert some test data
     conn.execute("""
         INSERT INTO slow_logs VALUES 
@@ -37,14 +37,15 @@ def temp_duckdb_file(tmp_path):
     conn.close()
     return str(filepath)
 
+
 def test_duckdb_chunker_default_query(temp_duckdb_file):
     chunker = DuckDBChunker()
     doc = Document(filepath=temp_duckdb_file, content="", content_hash="")
-    
+
     chunks = list(chunker.process(doc))
-    
+
     assert len(chunks) == 2
-    
+
     # Sort by execution_time_ms DESC (fp1 has 3.5s total, fp2 has 0.5s)
     assert chunks[0].id == "fp1"
     assert chunks[0].calls == 2
@@ -55,7 +56,7 @@ def test_duckdb_chunker_default_query(temp_duckdb_file):
     assert chunks[0].rows_sent == 10
     assert chunks[0].rows_examined == 100
     assert chunks[0].lock_time_sec == 0.01
-    
+
     assert chunks[1].id == "fp2"
     assert chunks[1].calls == 1
     assert chunks[1].execution_time_ms == 500.0
@@ -65,11 +66,12 @@ def test_duckdb_chunker_default_query(temp_duckdb_file):
     assert chunks[1].rows_examined == 1
     assert chunks[1].lock_time_sec == 0.001
 
+
 def test_duckdb_chunker_custom_query(temp_duckdb_file):
-    query = 'SELECT fingerprint_id as id, sanitized_sql as text, db as source, current_date as latest_ts FROM slow_logs LIMIT 1'
+    query = "SELECT fingerprint_id as id, sanitized_sql as text, db as source, current_date as latest_ts FROM slow_logs LIMIT 1"
     chunker = DuckDBChunker(query=query)
     doc = Document(filepath=temp_duckdb_file, content="", content_hash="")
-    
+
     chunks = list(chunker.process(doc))
     assert len(chunks) == 1
     assert chunks[0].id == "fp1"

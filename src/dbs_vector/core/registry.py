@@ -1,6 +1,7 @@
 from typing import Any
 
 from dbs_vector.core.ports import IStoreMapper
+from dbs_vector.infrastructure.chunking.api import ApiChunker
 from dbs_vector.infrastructure.chunking.document import DocumentChunker
 from dbs_vector.infrastructure.chunking.duckdb import DuckDBChunker
 from dbs_vector.infrastructure.chunking.sql import SqlChunker
@@ -19,6 +20,7 @@ class ComponentRegistry:
         "document": DocumentChunker,
         "sql": SqlChunker,
         "duckdb": DuckDBChunker,
+        "api": ApiChunker,
     }
 
     @classmethod

@@ -1,6 +1,7 @@
 """Integration tests for FastAPI endpoints."""
 
 from contextlib import contextmanager
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -155,6 +156,7 @@ class TestSearchSqlEndpoint:
                         execution_time_ms=150.5,
                         calls=42,
                         content_hash="hash1",
+                        latest_ts=datetime(2024, 1, 1),
                     ),
                     score=0.88,
                     distance=0.88,
@@ -248,6 +250,7 @@ class TestResponseModels:
                         execution_time_ms=100.0,
                         calls=50,
                         content_hash="xyz789",
+                        latest_ts=datetime(2024, 1, 1),
                     ),
                     score=None,
                     distance=None,

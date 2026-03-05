@@ -464,7 +464,7 @@ wheels = [
 
 [[package]]
 name = "dbs-vector"
-version = "0.3.2"
+version = "0.4.2"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
@@ -487,6 +487,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+api = [
+    { name = "httpx" },
+]
 sql = [
     { name = "duckdb" },
 ]
@@ -505,6 +508,7 @@ dev = [
 requires-dist = [
     { name = "duckdb", marker = "extra == 'sql'", specifier = ">=1.2.0" },
     { name = "fastapi", specifier = ">=0.133.0" },
+    { name = "httpx", marker = "extra == 'api'", specifier = ">=0.27.0" },
     { name = "lance", specifier = "==1.2.1" },
     { name = "lancedb", specifier = "==0.29.2" },
     { name = "loguru", specifier = ">=0.7.3" },
@@ -522,7 +526,7 @@ requires-dist = [
     { name = "types-pyyaml", specifier = ">=6.0.12.20250915" },
     { name = "uvicorn", specifier = ">=0.41.0" },
 ]
-provides-extras = ["sql"]
+provides-extras = ["sql", "api"]
 
 [package.metadata.requires-dev]
 dev = [

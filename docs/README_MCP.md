@@ -1,6 +1,7 @@
 # Model Context Protocol (MCP) Server
 
-`dbs-vector` includes a built-in MCP server that allows AI assistants (like Claude Desktop, Cursor, and IDEs supporting MCP) to use your vector database as a tool for codebase and SQL query log search.
+`dbs-vector` includes a built-in MCP server that exposes semantic search over
+your vector database as tools for any MCP-compatible AI assistant.
 
 ## Prerequisites
 
@@ -15,40 +16,86 @@ Before using the MCP server, ensure you have:
    uv run dbs-vector ingest "slow_queries.json" --type sql
    ```
 
-2. **macOS with Apple Silicon** (M1/M2/M3) - The current MLX embedder requires Apple Silicon.
+2. **macOS with Apple Silicon** (M1/M2/M3) — the MLX embedder requires Apple Silicon.
 
-> **Note**: On first startup, the MLX model (`embeddinggemma-300m-bf16`) will be downloaded from HuggingFace (~600MB). This may take a few minutes.
+> **Note**: On first startup the MLX model (`embeddinggemma-300m-bf16`) is
+> downloaded from HuggingFace (~600 MB). This happens once and is then cached.
 
-## Features
+---
 
-- **Semantic Document Search**: Search through indexed Markdown, Python, and other documents using natural language.
-- **SQL Log Analysis**: Find historical SQL queries based on their intent or content.
-- **Direct Integration**: No extra API server required; the MCP server communicates via standard input/output (stdio).
+## Transport Methods
 
-## Integration Methods
+`dbs-vector` supports two MCP transport methods:
 
-`dbs-vector` supports two different transport methods for connecting AI assistants: **Standard I/O (stdio)** and **Server-Sent Events (SSE)**.
+| Method | Transport | Endpoint | Use case |
+|--------|-----------|----------|----------|
+| **stdio** | Process I/O | — | Single-user, no open ports, simplest setup |
+| **Streamable HTTP** | HTTP POST | `http://127.0.0.1:8000/mcp` | Shared server, multiple clients, saves VRAM |
 
-| Method | Use Case | Pros | Cons |
-|--------|----------|------|------|
-| **stdio** | Claude Desktop, single user | Secure, no network ports | Each instance loads its own MLX model |
-| **SSE** | Cursor, multiple clients | Shared instance, saves VRAM | Requires running API server |
+The old SSE transport (`/mcp/sse`) has been replaced by **Streamable HTTP**
+(`/mcp`), which uses a single stateless POST endpoint instead of two
+persistent connections. All modern MCP clients support this transport.
 
-### Method 1: Standard I/O (stdio)
+---
 
-In this method, the AI assistant runs the `dbs-vector` CLI as a hidden background process. This is the default and most secure method as it opens no network ports. However, each assistant instance will load its own copy of the MLX models.
+## Method 1: Standard I/O (stdio)
 
-#### Claude Desktop Configuration
+The AI assistant spawns `dbs-vector mcp` as a subprocess and communicates
+over its standard input/output. No network ports are opened. Each client
+process loads its own copy of the MLX models (~1.2 GB GPU memory each).
 
-Add the following to your Claude Desktop configuration file:
+### Start manually (optional — for log inspection)
 
-**macOS:**
 ```bash
-# Open config file
+uv run dbs-vector mcp
+```
+
+Logs go to stderr; the MCP JSON-RPC stream goes to stdout.
+
+---
+
+## Method 2: Streamable HTTP
+
+Start the FastAPI server once; all MCP clients connect to it and share the
+same loaded MLX models.
+
+```bash
+uv run dbs-vector serve --port 8000
+```
+
+The MCP endpoint is mounted at:
+
+```
+http://127.0.0.1:8000/mcp
+```
+
+> Use `--host 0.0.0.0` to accept connections from other machines.
+> The server sets `Access-Control-Allow-Origin: https://claude.ai` by default.
+
+Verify the server is up:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+---
+
+## Integrating with Claude Desktop
+
+Claude Desktop supports both stdio and HTTP transport. Use stdio for a
+self-contained local setup; use HTTP if you already have the server running.
+
+### Option A — stdio (no server required)
+
+Open the Claude Desktop config file:
+
+```bash
+# macOS
 open ~/Library/Application\ Support/Claude/claude_desktop_config.json
 ```
 
-**Configuration:**
+Add the `dbs-vector` entry:
+
 ```json
 {
   "mcpServers": {
@@ -68,98 +115,192 @@ open ~/Library/Application\ Support/Claude/claude_desktop_config.json
 }
 ```
 
-> **Important**: Replace `/ABSOLUTE/PATH/TO/dbs-vector` with your actual installation path. Use absolute paths for both `--directory` and `--config-file`.
+Replace `/ABSOLUTE/PATH/TO/dbs-vector` with the real path. Both
+`--directory` and `--config-file` must be absolute.
 
-#### Verification
+### Option B — Streamable HTTP (server must be running)
 
-1. Restart Claude Desktop
-2. Look for the 🔌 icon in the bottom-right corner
-3. Click it to see available tools (`search_documents`, `search_sql_logs`)
-4. Try asking: "Search for how the ingestion works"
+For newer Claude Desktop builds that support the HTTP transport natively:
 
-### Method 2: Server-Sent Events (SSE)
-
-If you are already running the API server (`uv run dbs-vector serve`), or if you want multiple AI assistants to connect to a single, shared instance (saving MLX VRAM), you can use the SSE endpoint.
-
-#### Start the API Server
-
-```bash
-uv run dbs-vector serve --port 8000
+```json
+{
+  "mcpServers": {
+    "dbs-vector": {
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp"
+    }
+  }
+}
 ```
 
-The MCP endpoints are automatically mounted at `http://127.0.0.1:8000/mcp/sse`.
+If your Claude Desktop version does not yet support `"type": "http"` directly,
+use the `mcp-proxy` shim (no separate install needed with `uvx`):
 
-> The `--port` can be customized (default: 8000). Use `--host 0.0.0.0` to allow remote connections (not recommended for production).
+```json
+{
+  "mcpServers": {
+    "dbs-vector": {
+      "command": "uvx",
+      "args": [
+        "mcp-proxy",
+        "--transport", "streamablehttp",
+        "http://127.0.0.1:8000/mcp"
+      ]
+    }
+  }
+}
+```
 
-#### Cursor Configuration
+### Verification
 
-1. Open **Cursor Settings** → **MCP**
-2. Click **Add new MCP server**
+1. Restart Claude Desktop.
+2. Look for the tools icon (bottom-right of the input box).
+3. Confirm `search_documents` and `search_sql_logs` appear.
+4. Try: *"Search for how the ingestion pipeline works."*
+
+---
+
+## Integrating with Claude Code (CLI)
+
+Claude Code reads MCP server config from three locations, selected by scope:
+
+| Scope | File | Shared with team? |
+|-------|------|-------------------|
+| `local` (default) | `~/.claude.json` | No — machine-specific |
+| `project` | `.mcp.json` in project root | Yes — check it in |
+| `user` | `~/.claude.json` (home) | No — across all projects |
+
+### Add via stdio
+
+```bash
+claude mcp add --transport stdio dbs-vector -- \
+  uv --directory /ABSOLUTE/PATH/TO/dbs-vector \
+     run dbs-vector mcp \
+     --config-file /ABSOLUTE/PATH/TO/dbs-vector/config.yaml
+```
+
+To share with the team (adds to `.mcp.json`):
+
+```bash
+claude mcp add --scope project --transport stdio dbs-vector -- \
+  uv --directory /ABSOLUTE/PATH/TO/dbs-vector \
+     run dbs-vector mcp
+```
+
+### Add via Streamable HTTP (server must be running)
+
+```bash
+claude mcp add --transport http dbs-vector http://127.0.0.1:8000/mcp
+```
+
+With explicit project scope:
+
+```bash
+claude mcp add --scope project --transport http dbs-vector http://127.0.0.1:8000/mcp
+```
+
+This writes the following to `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "dbs-vector": {
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp"
+    }
+  }
+}
+```
+
+### Manage servers
+
+```bash
+# List configured servers
+claude mcp list
+
+# Show details for one server
+claude mcp get dbs-vector
+
+# Remove a server
+claude mcp remove dbs-vector
+```
+
+---
+
+## Integrating with Cursor
+
+1. Start the API server: `uv run dbs-vector serve --port 8000`
+2. Open **Cursor Settings → MCP → Add new MCP server**
 3. Configure:
    - **Name**: `dbs-vector`
-   - **Transport Type**: `SSE`
-   - **URL**: `http://127.0.0.1:8000/mcp/sse`
+   - **Transport Type**: `HTTP`
+   - **URL**: `http://127.0.0.1:8000/mcp`
 4. Click **Connect**
 
-#### Other SSE Clients
-
-For any MCP client supporting SSE transport, use:
-- **Endpoint**: `http://127.0.0.1:8000/mcp/sse`
-- **Session Messages**: `http://127.0.0.1:8000/mcp/messages/?session_id={SESSION_ID}`
+---
 
 ## Tools Provided
 
-### 1. `search_documents`
+### `search_documents`
 
-Searches the document vector store (`md` engine).
+Searches the document vector store (`md` engine) using hybrid
+vector + full-text retrieval.
 
-**Arguments:**
-- `query` (string, **required**): The search query.
-- `limit` (int, optional): Number of results (default: 5, max: 100).
-- `source_filter` (string, optional): Filter by file path or pattern (e.g., `"*.py"` or `"docs/"`).
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `query` | string | yes | Semantic search query |
+| `limit` | int | no | Max results (default 5, max 100) |
+| `source_filter` | string | no | Restrict to a file path or pattern |
 
-**Returns:** Formatted search results with source paths and content snippets.
+Returns formatted results with source path and content snippet.
 
-### 2. `search_sql_logs`
+### `search_sql_logs`
 
 Searches the SQL query log vector store (`sql` engine).
 
-**Arguments:**
-- `query` (string, **required**): The search query or partial SQL.
-- `limit` (int, optional): Number of results (default: 5, max: 100).
-- `source_filter` (string, optional): Filter by database name.
-- `min_time` (float, optional): Filter by minimum execution time in milliseconds.
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `query` | string | yes | Natural language or partial SQL |
+| `limit` | int | no | Max results (default 5, max 100) |
+| `source_filter` | string | no | Restrict to a database name |
+| `min_time` | float | no | Minimum execution time in ms |
 
-**Returns:** SQL queries with execution time, call count, and database source.
+Returns SQL queries with execution time, call count, and database source.
+
+---
 
 ## Usage Examples
 
-### Searching for Code or Documentation Context
+### Document search
 
-You can ask your AI assistant questions like:
-- "Search for how the `IngestionService` is implemented in our codebase."
-- "Find any documentation about the `MLXEmbedder` configuration."
-- "Search for Markdown files that explain the system architecture."
+Ask your assistant:
 
-**Tool call example (internal):**
+- *"Search for how the `IngestionService` is implemented."*
+- *"Find documentation about MLXEmbedder configuration."*
+- *"Search for Markdown files that explain the architecture."*
+
+Internal tool call:
+
 ```json
 {
   "name": "search_documents",
   "arguments": {
-    "query": "how to configure MLX engine",
+    "query": "how to configure the MLX engine",
     "limit": 3
   }
 }
 ```
 
-### Finding Specific SQL Queries
+### SQL log search
 
-You can ask your AI assistant:
-- "Find the SQL query we used for calculating user retention."
-- "Show me any queries that took longer than 500ms and involve the `orders` table."
-- "Find queries that perform a `JOIN` between `users` and `subscriptions`."
+Ask your assistant:
 
-**Tool call example (internal):**
+- *"Find the SQL query used for calculating user retention."*
+- *"Show queries that took longer than 500 ms and involve the orders table."*
+- *"Find queries performing a JOIN between users and subscriptions."*
+
+Internal tool call:
+
 ```json
 {
   "name": "search_sql_logs",
@@ -170,48 +311,59 @@ You can ask your AI assistant:
 }
 ```
 
-## Troubleshooting
+---
 
-### Common Issues
+## Troubleshooting
 
 | Issue | Cause | Solution |
 |-------|-------|----------|
 | "Document search service is not initialized" | No data ingested | Run `uv run dbs-vector ingest` first |
-| "Failed to initialize search services" | Invalid config or missing DB path | Check `config.yaml` exists and `db_path` is valid |
-| Slow first startup | Model downloading | Wait for MLX model download (~600MB) |
-| Connection refused (SSE) | API server not running | Start with `uv run dbs-vector serve` |
-| Tools not appearing in Claude | Config path error | Verify absolute paths in config |
+| "Failed to initialize search services" | Bad config or missing DB path | Check `config.yaml` and `db_path` |
+| Slow first startup | Model downloading | Wait for MLX model download (~600 MB) |
+| HTTP 404 at `/mcp` | Server not running | Start with `uv run dbs-vector serve` |
+| HTTP 404 at `/mcp/sse` | Old SSE path | Update client URL to `/mcp` |
+| Tools not appearing in Claude Desktop | Config path error or JSON syntax | Verify absolute paths; validate JSON |
+| `mcp-proxy` not found | `uvx` not available | Install with `pip install uv` |
 
 ### Logs
 
-Since the MCP server uses `stdio` for communication, application logs and errors are redirected to `stderr`:
+**stdio mode** — logs go to stderr, not stdout (stdout is reserved for the
+JSON-RPC stream):
 
-- **Claude Desktop**: `~/Library/Logs/Claude/mcp.log`
-- **Terminal (stdio mode)**: Run manually to see logs:
-  ```bash
-  uv run dbs-vector mcp 2>&1
-  ```
-- **API Server**: Logs appear in the terminal running the server
-
-### Testing Manually
-
-Test the stdio server directly:
 ```bash
-echo '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}' | uv run dbs-vector mcp
+# See logs in terminal
+uv run dbs-vector mcp 2>&1 | head -50
+
+# Claude Desktop logs
+tail -f ~/Library/Logs/Claude/mcp.log
 ```
 
-Test the SSE endpoint:
+**HTTP mode** — logs appear in the terminal running `uv run dbs-vector serve`.
+
+### Test the Streamable HTTP endpoint
+
 ```bash
-# Terminal 1: Start server
+# Start the server in one terminal
 uv run dbs-vector serve --port 8000
 
-# Terminal 2: Test health
-curl http://127.0.0.1:8000/health
+# In another terminal — list available tools
+curl -s -X POST http://127.0.0.1:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | python3 -m json.tool
 ```
+
+---
 
 ## Architecture Notes
 
-- The MCP server shares the same `SearchService` instances as the CLI and API
-- Both `md` and `sql` engines are loaded at startup
-- SSE mode allows multiple clients to share one model instance (saves ~1.2GB VRAM per client)
-- stdio mode creates isolated instances per client
+- The MCP server is a `FastMCP` instance with `stateless_http=True`.
+- In HTTP mode it is mounted at `/mcp` inside the FastAPI application via
+  `app.mount("/mcp", mcp.streamable_http_app())`. A single POST endpoint
+  handles all JSON-RPC calls; there are no persistent SSE connections.
+- In stdio mode, `mcp_server.run()` is called directly from the `mcp` CLI
+  command — no FastAPI or uvicorn is involved.
+- Both modes share the same two tool implementations (`search_documents`,
+  `search_sql_logs`) defined in `src/dbs_vector/api/mcp_server.py`.
+- HTTP mode: all engines defined in `config.yaml` are loaded once at server
+  startup and shared across all client connections (~1.2 GB VRAM total).
+- stdio mode: each assistant process loads its own engine instances.

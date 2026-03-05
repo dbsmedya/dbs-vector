@@ -3,6 +3,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -44,7 +45,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.mount("/mcp", mcp.sse_app())
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://claude.ai"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+app.mount("/mcp", mcp.streamable_http_app())
 
 
 class SearchRequest(BaseModel):

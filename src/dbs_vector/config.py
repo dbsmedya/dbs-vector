@@ -25,6 +25,15 @@ class EngineConfig(BaseModel):
     workflow: str = "default"
     duckdb_query: str | None = None
 
+    # API chunker fields
+    api_base_url: str = ""
+    api_key: str = ""
+    api_page_size: int = 200
+    api_since_days: int = 15
+    api_timeout_sec: int = 30
+    api_min_execution_ms: float = 0.0
+    api_database: str = ""
+
 
 class Settings(BaseSettings):
     """Global configuration for the dbs-vector application."""

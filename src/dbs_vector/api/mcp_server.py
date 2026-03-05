@@ -2,8 +2,11 @@ from mcp.server.fastmcp import FastMCP
 
 from dbs_vector.api.state import _services
 
-# For SSE we do not use the lifespan here, it is driven by main.py
-mcp = FastMCP("dbs-vector")
+mcp = FastMCP(
+    "dbs-vector",
+    stateless_http=True,
+    streamable_http_path="/",
+)
 
 
 @mcp.tool()

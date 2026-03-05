@@ -113,6 +113,19 @@ def _build_dependencies(engine_name: str, query_override: str | None = None) -> 
     chunker_kwargs = {}
     if config.chunker_type == "duckdb":
         chunker_kwargs["query"] = query_override or getattr(config, "duckdb_query", None)
+    elif config.chunker_type == "api":
+        chunker_kwargs = {
+            "base_url": config.api_base_url,
+            "api_key": config.api_key,
+            "page_size": config.api_page_size,
+            "since_days": config.api_since_days,
+            "timeout_sec": config.api_timeout_sec,
+            "min_execution_ms": config.api_min_execution_ms,
+        }
+        if config.api_database:
+            chunker_kwargs["database"] = config.api_database
+        if query_override:
+            chunker_kwargs["custom_query"] = query_override
     elif config.chunk_max_chars > 0:
         chunker_kwargs["max_chars"] = config.chunk_max_chars
 

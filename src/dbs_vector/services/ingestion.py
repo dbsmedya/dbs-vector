@@ -43,6 +43,12 @@ class IngestionService:
         logger.info("Starting streaming ingestion for {}", target_path)
 
         def _chunk_generator() -> Iterator[Any]:
+            # API mode: target_path is a URL — bypass file discovery entirely
+            if target_path.startswith(("http://", "https://")):
+                doc = Document(filepath=target_path, content="", content_hash="api-chunker")
+                yield from self.chunker.process(doc)
+                return
+
             if os.path.isdir(target_path):
                 files: list[Path] = []
                 base_dir = Path(target_path)
@@ -57,7 +63,7 @@ class IngestionService:
 
                 filepath_str = str(filepath)
                 content = ""
-                
+
                 # Skip UTF-8 read for binary duckdb files
                 if not filepath_str.endswith(".duckdb"):
                     try:
@@ -73,7 +79,9 @@ class IngestionService:
                 else:
                     # For duckdb or empty files, use a hash of the filepath and modification time
                     stat = filepath.stat()
-                    file_hash = hashlib.sha256(f"{filepath_str}{stat.st_mtime}".encode("utf-8")).hexdigest()[:16]
+                    file_hash = hashlib.sha256(
+                        f"{filepath_str}{stat.st_mtime}".encode()
+                    ).hexdigest()[:16]
 
                 doc = Document(
                     filepath=filepath_str,

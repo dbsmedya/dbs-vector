@@ -15,6 +15,7 @@ It enables lightning-fast, hybrid (Vector + Full-Text) search across your local 
 *   **Hybrid Retrieval**: Simultaneously executes Approximate Nearest Neighbor (ANN) cosine vector search and native **Tantivy** Full-Text Search (FTS).
 *   **Code-Aware Chunking**: Intelligently splits documentation and code, respecting markdown fences so that code blocks are indexed as atomic units.
 *   **Production Robustness**: Features dynamic `IVF_PQ` indexing, Rust-level predicate pushdown (metadata filtering), and dataset compaction for delta-updates.
+*   **Remote SQL API Ingestion**: `ApiChunker` pulls pre-aggregated slow-query records from any networked backend over HTTP, replacing local files with a paginated REST API — no changes to the embedding or storage layers.
 
 ## 🚀 Installation
 
@@ -32,6 +33,13 @@ This project is built using `uv`, an extremely fast Python package manager.
    ```
    *This automatically sets up the environment and creates the `dbs-vector` executable in your path.*
 
+   Optional extras unlock additional ingestion sources:
+
+   ```bash
+   uv sync --extra sql  # DuckDB ingestion
+   uv sync --extra api  # Remote HTTP API ingestion
+   ```
+
 ## 💻 Usage
 
 The application is entirely configuration-driven via `config.yaml`. It supports multiple data types (Engines) such as Markdown and SQL.
@@ -40,7 +48,7 @@ The application is entirely configuration-driven via `config.yaml`. It supports 
 *   `--config-file` / `-c`: Path to your custom `config.yaml` (Defaults to `./config.yaml`).
 
 ### Ingesting Documents
-Index your markdown files, JSON SQL logs, or high-performance DuckDB analytical files into the local vector store.
+Index markdown files, JSON SQL logs, DuckDB analytical files, or a remote HTTP slow-query API into the local vector store.
 
 ```bash
 # Ingest all markdown files (default)
@@ -51,6 +59,13 @@ uv run dbs-vector ingest "slow_queries.json" --type sql
 
 # Ingest SQL slow queries from DuckDB (High-Performance Columnar)
 uv run dbs-vector ingest "slow_queries.duckdb" --type sql --rebuild
+
+# Ingest from a remote HTTP API (paginated GET)
+uv run dbs-vector ingest "https://slow-log-api.internal/api/v1" --type sql-api
+
+# Ingest via a custom SELECT sent to the remote API
+uv run dbs-vector ingest "https://slow-log-api.internal/api/v1" --type sql-api \
+  --query "SELECT fingerprint_id AS id, sanitized_sql AS text, db AS source, ..."
 ```
 
 ### Searching the Codebase
@@ -64,9 +79,10 @@ uv run dbs-vector search "What is MLX?"
 uv run dbs-vector search "SELECT * FROM users" --type sql --min-time 1000
 ```
 
-For detailed specifications on the SQL engine, JSON format, and DuckDB aggregation, see:
+For detailed specifications on each ingestion source, see:
 👉 **[SQL Engine Documentation](docs/README_SQL.md)**
 👉 **[DuckDB Ingestion Documentation](docs/README_duckdb.md)**
+👉 **[Remote SQL API Ingestion](docs/README_REMOTE_SQL_API.md)**
 
 ### Async API Server
 The application includes a high-performance FastAPI server to expose the search engine over HTTP.
@@ -80,14 +96,17 @@ For full API specifications and swagger documentation, see:
 👉 **[API Usage & Documentation](docs/README_API.md)**
 
 ### Model Context Protocol (MCP) Server
-`dbs-vector` includes a built-in MCP server that allows AI assistants (like Claude Desktop and Cursor) to use your vector database as a tool for codebase and SQL query log search.
+`dbs-vector` includes a built-in MCP server compatible with Claude Desktop, Claude Code (CLI), and Cursor. Supports both **stdio** (no server required) and **Streamable HTTP** (shared instance, saves VRAM).
 
 ```bash
-# Start the MCP stdio server
+# stdio — each client spawns its own process
 uv run dbs-vector mcp
+
+# HTTP — one shared server for all clients
+uv run dbs-vector serve   # MCP endpoint: http://127.0.0.1:8000/mcp
 ```
 
-For setup instructions and tool details, see:
+For setup instructions for all clients and transport types, see:
 👉 **[MCP Server Documentation](docs/README_MCP.md)**
 
 ## 🏗 Architecture & Roadmap

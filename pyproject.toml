@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dbs-vector"
-version = "0.3.2"
+version = "0.4.2"
 description = "High-performance, local RAG search engine and MCP/API server for Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -34,6 +34,9 @@ dbs-vector = "dbs_vector.cli:app"
 [project.optional-dependencies]
 sql = [
     "duckdb>=1.2.0",
+]
+api = [
+    "httpx>=0.27.0",
 ]
 
 [dependency-groups]
@@ -92,3 +95,7 @@ module = [
 ]
 ignore_missing_imports = true
 ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["httpx", "httpx.*"]
+ignore_missing_imports = true

@@ -92,7 +92,7 @@ class SqlMapper:
                     "workflow", pa.string()
                 ),  # Identifies the exact model/task prefix space used
                 pa.field("tables", pa.list_(pa.string())),
-                pa.field("latest_ts", pa.timestamp('us')),
+                pa.field("latest_ts", pa.timestamp("us")),
                 pa.field("user", pa.string(), nullable=True),
                 pa.field("host", pa.string(), nullable=True),
                 pa.field("rows_sent", pa.int64(), nullable=True),
@@ -136,7 +136,7 @@ class SqlMapper:
                 pa.array(hashes),
                 pa.array(workflows),
                 pa.array(tables, type=pa.list_(pa.string())),
-                pa.array(latest_tss, type=pa.timestamp('us')),
+                pa.array(latest_tss, type=pa.timestamp("us")),
                 pa.array(users, type=pa.string()),
                 pa.array(hosts, type=pa.string()),
                 pa.array(rows_sent, type=pa.int64()),
