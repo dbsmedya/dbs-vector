@@ -1,8 +1,9 @@
-import duckdb
 import pytest
 
 from dbs_vector.core.models import Document
 from dbs_vector.infrastructure.chunking.duckdb import DuckDBChunker
+
+duckdb = pytest.importorskip("duckdb")
 
 
 @pytest.fixture

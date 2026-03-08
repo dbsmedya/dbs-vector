@@ -90,6 +90,8 @@ module = [
     "lancedb.*",
     "pyarrow",
     "pyarrow.*",
+    "duckdb",
+    "duckdb.*",
     "mlx_embeddings",
     "mlx_embeddings.*"
 ]
