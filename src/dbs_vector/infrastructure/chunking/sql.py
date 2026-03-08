@@ -4,7 +4,7 @@ from collections.abc import Iterator
 
 from loguru import logger
 
-from dbs_vector.core.models import Document, SqlChunk
+from dbs_vector.core.models import Document, SqlChunk, sql_chunk_from_record
 
 
 class SqlChunker:
@@ -46,23 +46,20 @@ class SqlChunker:
             if not normalized.strip():
                 continue
 
-            content_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
-
-            from datetime import datetime
-
-            yield SqlChunk(
-                id=str(query_id),
-                text=normalized,
-                raw_query=raw,
-                source=database,
-                execution_time_ms=duration,
-                calls=calls,
-                content_hash=content_hash,
-                tables=[],
-                latest_ts=datetime.now(),
-                user=None,
-                host=None,
-                rows_sent=None,
-                rows_examined=None,
-                lock_time_sec=None,
+            yield sql_chunk_from_record(
+                {
+                    "id": str(query_id),
+                    "text": normalized,
+                    "raw_query": raw,
+                    "source": database,
+                    "execution_time_ms": duration,
+                    "calls": calls,
+                    "tables": record.get("tables"),
+                    "latest_ts": record.get("latest_ts"),
+                    "user": record.get("user"),
+                    "host": record.get("host"),
+                    "rows_sent": record.get("rows_sent"),
+                    "rows_examined": record.get("rows_examined"),
+                    "lock_time_sec": record.get("lock_time_sec"),
+                }
             )

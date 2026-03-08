@@ -5,17 +5,28 @@ dbs-vector Remote API Compatibility Checker  (contract v1)
 Verifies that a remote server correctly implements the HTTP contract that
 ApiChunker depends on.  Run this manually before wiring up a new backend.
 
+The --base-url must include the versioned API prefix (e.g. /api/v1).
+All SQL endpoints are resolved relative to that prefix:
+
+  GET  {base_url}/sql/queries      — paginated slow-query list
+  POST {base_url}/sql/execute      — custom SELECT execution
+  GET  {base_url}/sql/databases    — list available databases
+  GET  {base_url}/health           — liveness / metadata
+
+Note: /health is expected to be reachable at {base_url}/health.
+Some servers also expose it at the root (/health); both are fine.
+
 Usage
 -----
   # Positional args
-  python scripts/check_remote_api.py \\
-      --base-url http://localhost:9000/api/v1 \\
+  uv run python scripts/check_remote_api.py \\
+      --base-url http://localhost:8080/api/v1 \\
       --api-key  sk-dev
 
   # Via environment variables
-  DBS_API_BASE_URL=http://localhost:9000/api/v1 \\
+  DBS_API_BASE_URL=http://localhost:8080/api/v1 \\
   DBS_API_KEY=sk-dev \\
-      python scripts/check_remote_api.py
+      uv run python scripts/check_remote_api.py
 
 Exit codes
 ----------
@@ -362,7 +373,10 @@ def run_checks(base_url: str, api_key: str, timeout: int) -> int:
             s.skip("queries_min_execution_ms_filter_honored",
                    f"request failed: {r.status_code}")
 
-        # 5b — since=future date → must return empty data
+        # 5b — since=future date → must return empty data OR reject with 400
+        # Backends may either return 200+[] or 400 (date out of accepted range).
+        # Both signal that the filter is enforced; ApiChunker never sends future
+        # dates so either behaviour is safe in production.
         r = client.get(f"{base_url}/sql/queries", headers=auth_headers,
                        params={"since": "2099-01-01T00:00:00Z", "limit": 10})
         if r.status_code == 200:
@@ -370,9 +384,12 @@ def run_checks(base_url: str, api_key: str, timeout: int) -> int:
             s.ok("queries_since_future_returns_empty",
                  len(future_data) == 0,
                  f"got {len(future_data)} records with since=2099")
+        elif r.status_code == 400:
+            s.ok("queries_since_future_returns_empty", True,
+                 "backend rejects future since with 400 (acceptable)")
         else:
             s.skip("queries_since_future_returns_empty",
-                   f"request failed: {r.status_code}")
+                   f"unexpected status {r.status_code}")
 
         # 5c — database filter: if health reported databases, pick the first
         available_dbs: list[str] = health.get("databases", [])

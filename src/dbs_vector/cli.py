@@ -85,7 +85,11 @@ def main(
     configure_logger(level=settings.log_level, serialize=settings.log_serialize)
 
 
-def _build_dependencies(engine_name: str, query_override: str | None = None) -> EngineDeps:
+def _build_dependencies(
+    engine_name: str,
+    query_override: str | None = None,
+    url_override: str | None = None,
+) -> EngineDeps:
     """Dependency Injection Factory driven by config.yaml configuration."""
     if engine_name not in settings.engines:
         raise ValueError(
@@ -109,27 +113,9 @@ def _build_dependencies(engine_name: str, query_override: str | None = None) -> 
 
     mapper = MapperClass(vector_dimension=config.vector_dimension)
 
-    # Optional arguments based on chunker type
-    chunker_kwargs = {}
-    if config.chunker_type == "duckdb":
-        chunker_kwargs["query"] = query_override or getattr(config, "duckdb_query", None)
-    elif config.chunker_type == "api":
-        chunker_kwargs = {
-            "base_url": config.api_base_url,
-            "api_key": config.api_key,
-            "page_size": config.api_page_size,
-            "since_days": config.api_since_days,
-            "timeout_sec": config.api_timeout_sec,
-            "min_execution_ms": config.api_min_execution_ms,
-        }
-        if config.api_database:
-            chunker_kwargs["database"] = config.api_database
-        if query_override:
-            chunker_kwargs["custom_query"] = query_override
-    elif config.chunk_max_chars > 0:
-        chunker_kwargs["max_chars"] = config.chunk_max_chars
-
-    chunker = ChunkerClass(**chunker_kwargs)
+    chunker = ChunkerClass(
+        **config.chunker_kwargs(query_override=query_override, url_override=url_override)
+    )
 
     try:
         store = LanceDBStore(
@@ -184,7 +170,8 @@ def ingest(
             abort=True,
         )
 
-    deps = _build_dependencies(engine_name, query_override=query)
+    url_override = path if path.startswith(("http://", "https://")) else None
+    deps = _build_dependencies(engine_name, query_override=query, url_override=url_override)
     service = IngestionService(deps.chunker, deps.embedder, deps.store, deps.workflow)
     service.ingest_directory(path, rebuild=rebuild)
 
@@ -258,17 +245,14 @@ def mcp(
     import os
 
     from dbs_vector.api.mcp_server import mcp as mcp_server
-    from dbs_vector.api.state import _services
+    from dbs_vector.api.state import initialize_services
 
     # Export to environment so the MCP subprocess inherits it
     os.environ["DBS_CONFIG_FILE"] = config_file
 
     logger.info("Initializing MLX Embedders and LanceDB connections")
     try:
-        for engine_name in settings.engines.keys():
-            logger.info("Loading engine: {}", engine_name)
-            deps = _build_dependencies(engine_name)
-            _services[engine_name] = SearchService(deps.embedder, deps.store)
+        initialize_services()
     except Exception as e:
         logger.error("Failed to initialize search services: {}", e)
         raise

@@ -6,6 +6,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
+from dbs_vector.config import EngineConfig
+
 # Need to import after setting up mocks
 runner = CliRunner()
 
@@ -15,8 +17,9 @@ def mock_settings():
     """Create mock settings with engines."""
     with patch("dbs_vector.cli.settings") as mock:
         mock.engines = {
-            "md": MagicMock(
+            "md": EngineConfig(
                 model_name="test-model",
+                description="Markdown Engine",
                 vector_dimension=384,
                 max_token_length=512,
                 table_name="md_table",
@@ -27,8 +30,9 @@ def mock_settings():
                 query_prefix="query: ",
                 workflow="test_md",
             ),
-            "sql": MagicMock(
+            "sql": EngineConfig(
                 model_name="sql-model",
+                description="SQL Engine",
                 vector_dimension=768,
                 max_token_length=256,
                 table_name="sql_table",

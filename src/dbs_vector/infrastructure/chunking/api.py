@@ -1,11 +1,10 @@
-import hashlib
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 
 from loguru import logger
 
-from dbs_vector.core.models import Document, SqlChunk
+from dbs_vector.core.models import Document, SqlChunk, sql_chunk_from_record
 
 
 class ApiChunker:
@@ -137,34 +136,4 @@ class ApiChunker:
         return self._to_sql_chunk(record)
 
     def _to_sql_chunk(self, record: dict) -> SqlChunk:
-        content_hash = hashlib.sha256(record["text"].encode()).hexdigest()[:16]
-
-        latest_ts_raw = record.get("latest_ts")
-        if latest_ts_raw:
-            try:
-                latest_ts = datetime.fromisoformat(latest_ts_raw.replace("Z", "+00:00"))
-            except (ValueError, AttributeError):
-                latest_ts = datetime.now(UTC)
-        else:
-            latest_ts = datetime.now(UTC)
-
-        return SqlChunk(
-            id=str(record["id"]),
-            text=record["text"],
-            raw_query=record.get("raw_query", ""),
-            source=record["source"],
-            execution_time_ms=float(record.get("execution_time_ms", 0.0)),
-            calls=int(record.get("calls", 1)),
-            content_hash=content_hash,
-            tables=list(record.get("tables") or []),
-            latest_ts=latest_ts,
-            user=record.get("user"),
-            host=record.get("host"),
-            rows_sent=int(record["rows_sent"]) if record.get("rows_sent") is not None else None,
-            rows_examined=int(record["rows_examined"])
-            if record.get("rows_examined") is not None
-            else None,
-            lock_time_sec=float(record["lock_time_sec"])
-            if record.get("lock_time_sec") is not None
-            else None,
-        )
+        return sql_chunk_from_record(record)

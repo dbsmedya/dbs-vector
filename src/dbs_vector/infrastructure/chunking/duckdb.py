@@ -1,9 +1,8 @@
-import hashlib
 from collections.abc import Iterator
 
 from loguru import logger
 
-from dbs_vector.core.models import Document, SqlChunk
+from dbs_vector.core.models import Document, SqlChunk, sql_chunk_from_record
 
 
 class DuckDBChunker:
@@ -89,41 +88,22 @@ class DuckDBChunker:
                     )
                     continue
 
-                # Derived hash
-                text = str(row_dict["text"])
-                content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-
-                # calls defaults to 1 when NULL
-                calls = row_dict.get("calls")
-                if calls is None:
-                    calls = 1
-
-                # Safe fallback for optional fields
-                tables = row_dict.get("tables", [])
-                if tables is None:
-                    tables = []
-
-                yield SqlChunk(
-                    id=str(row_dict["id"]),
-                    text=text,
-                    raw_query=str(row_dict.get("raw_query", "")),
-                    source=str(row_dict["source"]),
-                    execution_time_ms=float(row_dict.get("execution_time_ms") or 0.0),
-                    calls=int(calls),
-                    content_hash=content_hash,
-                    tables=list(tables),
-                    latest_ts=row_dict["latest_ts"],
-                    user=str(row_dict["user"]) if row_dict.get("user") is not None else None,
-                    host=str(row_dict["host"]) if row_dict.get("host") is not None else None,
-                    rows_sent=int(row_dict["rows_sent"])
-                    if row_dict.get("rows_sent") is not None
-                    else None,
-                    rows_examined=int(row_dict["rows_examined"])
-                    if row_dict.get("rows_examined") is not None
-                    else None,
-                    lock_time_sec=float(row_dict["lock_time_sec"])
-                    if row_dict.get("lock_time_sec") is not None
-                    else None,
+                yield sql_chunk_from_record(
+                    {
+                        "id": row_dict["id"],
+                        "text": row_dict["text"],
+                        "raw_query": row_dict.get("raw_query", ""),
+                        "source": row_dict["source"],
+                        "execution_time_ms": row_dict.get("execution_time_ms"),
+                        "calls": row_dict.get("calls"),
+                        "tables": row_dict.get("tables"),
+                        "latest_ts": row_dict.get("latest_ts"),
+                        "user": row_dict.get("user"),
+                        "host": row_dict.get("host"),
+                        "rows_sent": row_dict.get("rows_sent"),
+                        "rows_examined": row_dict.get("rows_examined"),
+                        "lock_time_sec": row_dict.get("lock_time_sec"),
+                    }
                 )
 
         except Exception as e:

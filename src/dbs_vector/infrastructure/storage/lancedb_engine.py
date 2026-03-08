@@ -83,13 +83,13 @@ class LanceDBStore:
             logger.warning("FTS indexing failed (tantivy missing?): {}", e)
 
     def get_existing_hashes(self) -> set[str]:
-        """Queries the table for all unique content hashes using Polars."""
+        """Queries the table for all content hashes and deduplicates in Python."""
         if len(self.table) == 0:
             return set()
 
         # Select just the content_hash column to minimize I/O
         df = self.table.to_polars(columns=["content_hash"])
-        return set(df["content_hash"].unique().to_list())
+        return set(df["content_hash"].to_list())
 
     def search(
         self,

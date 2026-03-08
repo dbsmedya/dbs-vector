@@ -32,6 +32,69 @@ class TestEngineConfig:
         assert config.chunker_type == "document"
         assert config.chunk_max_chars == 1000
 
+    def test_chunker_kwargs_document(self):
+        """Test document chunker kwargs resolution."""
+        config = EngineConfig(
+            description="Doc Engine",
+            model_name="test-model",
+            vector_dimension=384,
+            max_token_length=512,
+            table_name="test_table",
+            mapper_type="document",
+            chunker_type="document",
+            chunk_max_chars=1000,
+        )
+
+        assert config.chunker_kwargs() == {"max_chars": 1000}
+
+    def test_chunker_kwargs_duckdb_query_override(self):
+        """Test duckdb chunker kwargs with override."""
+        config = EngineConfig(
+            description="DuckDB Engine",
+            model_name="test-model",
+            vector_dimension=384,
+            max_token_length=512,
+            table_name="test_table",
+            mapper_type="document",
+            chunker_type="duckdb",
+            chunk_max_chars=0,
+            duckdb_query="SELECT 1",
+        )
+
+        assert config.chunker_kwargs() == {"query": "SELECT 1"}
+        assert config.chunker_kwargs(query_override="SELECT 2") == {"query": "SELECT 2"}
+
+    def test_chunker_kwargs_api(self):
+        """Test API chunker kwargs resolution."""
+        config = EngineConfig(
+            description="API Engine",
+            model_name="test-model",
+            vector_dimension=384,
+            max_token_length=512,
+            table_name="test_table",
+            mapper_type="document",
+            chunker_type="api",
+            chunk_max_chars=0,
+            api_base_url="https://example/api",
+            api_key="secret",
+            api_page_size=100,
+            api_since_days=30,
+            api_timeout_sec=60,
+            api_min_execution_ms=12.5,
+            api_database="prod",
+        )
+
+        assert config.chunker_kwargs(query_override="SELECT 3") == {
+            "base_url": "https://example/api",
+            "api_key": "secret",
+            "page_size": 100,
+            "since_days": 30,
+            "timeout_sec": 60,
+            "min_execution_ms": 12.5,
+            "database": "prod",
+            "custom_query": "SELECT 3",
+        }
+
 
 class TestSettingsDefaults:
     """Tests for Settings default values."""

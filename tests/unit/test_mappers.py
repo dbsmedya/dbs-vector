@@ -381,3 +381,32 @@ class TestMapperEdgeCases:
 
         assert batch.num_rows == 1
         assert batch.column("id").to_pylist() == ["single"]
+
+    def test_document_mapper_vector_dimension_mismatch(self):
+        """Test DocumentMapper raises on vector shape mismatch."""
+        mapper = DocumentMapper(vector_dimension=3)
+        chunks = [Chunk(id="chunk", text="Content", source="file.md", content_hash="hash")]
+        vectors = np.array([[0.1, 0.2]], dtype=np.float32)
+
+        with pytest.raises(AssertionError, match=r"Expected vectors shape \(1, 3\), got \(1, 2\)"):
+            mapper.to_record_batch(chunks, vectors, workflow="test")
+
+    def test_sql_mapper_vector_dimension_mismatch(self):
+        """Test SqlMapper raises on vector shape mismatch."""
+        mapper = SqlMapper(vector_dimension=4)
+        chunks = [
+            SqlChunk(
+                id="sql",
+                text="SELECT 1",
+                raw_query="SELECT 1",
+                source="db",
+                execution_time_ms=1.0,
+                calls=1,
+                content_hash="hash",
+                latest_ts=datetime.now(),
+            )
+        ]
+        vectors = np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
+
+        with pytest.raises(AssertionError, match=r"Expected vectors shape \(1, 4\), got \(1, 3\)"):
+            mapper.to_record_batch(chunks, vectors, workflow="test")

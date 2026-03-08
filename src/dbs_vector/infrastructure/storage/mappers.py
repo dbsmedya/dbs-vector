@@ -35,6 +35,9 @@ class DocumentMapper:
     def to_record_batch(
         self, chunks: list[Any], vectors: NDArray[np.float32], workflow: str
     ) -> Any:
+        assert vectors.shape == (len(chunks), self.vector_dimension), (
+            f"Expected vectors shape ({len(chunks)}, {self.vector_dimension}), got {vectors.shape}"
+        )
         ids = [c.id for c in chunks]
         texts = [c.text for c in chunks]
         sources = [c.source for c in chunks]
@@ -108,6 +111,9 @@ class SqlMapper:
     def to_record_batch(
         self, chunks: list[Any], vectors: NDArray[np.float32], workflow: str
     ) -> Any:
+        assert vectors.shape == (len(chunks), self.vector_dimension), (
+            f"Expected vectors shape ({len(chunks)}, {self.vector_dimension}), got {vectors.shape}"
+        )
         ids = [c.id for c in chunks]
         texts = [c.text for c in chunks]
         sources = [c.source for c in chunks]

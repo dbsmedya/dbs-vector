@@ -8,11 +8,9 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from dbs_vector.api.mcp_server import mcp
-from dbs_vector.api.state import _services
-from dbs_vector.cli import _build_dependencies
+from dbs_vector.api.state import _services, initialize_services
 from dbs_vector.config import settings
 from dbs_vector.core.models import SearchResult, SqlSearchResult
-from dbs_vector.services.search import SearchService
 
 
 @asynccontextmanager
@@ -21,18 +19,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Initializing MLX Embedders and LanceDB connections")
 
     try:
-        # Dynamically load all configured engines
-        for engine_name in settings.engines.keys():
-            logger.info("Loading engine: {}", engine_name)
-            deps = _build_dependencies(engine_name)
-            _services[engine_name] = SearchService(deps.embedder, deps.store)
-
+        initialize_services()
         logger.success("API is ready to accept concurrent requests")
     except Exception as e:
         logger.error("Failed to initialize search services: {}", e)
         raise
 
-    yield
+    async with mcp.session_manager.run():
+        yield
 
     logger.info("Cleaning up resources")
     _services.clear()

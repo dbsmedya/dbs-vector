@@ -27,14 +27,9 @@ def mocked_client():
         mock_md_service = MagicMock()
         mock_sql_service = MagicMock()
 
-        def mock_build_deps(engine_name):
-            return MagicMock(embedder=MagicMock(), store=MagicMock())
-
         # Start patches
         patches.append(patch("dbs_vector.api.main.settings", mock_settings))
-        patches.append(
-            patch("dbs_vector.api.main._build_dependencies", side_effect=mock_build_deps)
-        )
+        patches.append(patch("dbs_vector.api.main.initialize_services"))
         patches.append(
             patch("dbs_vector.api.main._services", {"md": mock_md_service, "sql": mock_sql_service})
         )
@@ -278,14 +273,14 @@ class TestServiceUnavailable:
             mock_settings.db_path = "./test_db"
 
             with patch("dbs_vector.api.main._services", {"sql": MagicMock()}):
-                with patch("dbs_vector.api.main._build_dependencies"):
+                with patch("dbs_vector.api.main.initialize_services"):
                     from dbs_vector.api.main import app
 
-                    with TestClient(app) as client:
-                        response = client.post("/search/md", json={"query": "test"})
+                    client = TestClient(app)
+                    response = client.post("/search/md", json={"query": "test"})
 
-                        assert response.status_code == 503
-                        assert "not initialized" in response.json()["detail"]
+                    assert response.status_code == 503
+                    assert "not initialized" in response.json()["detail"]
 
     def test_search_sql_service_not_initialized(self):
         """Test search returns 503 when sql service is not available."""
@@ -293,14 +288,14 @@ class TestServiceUnavailable:
             mock_settings.engines = {"md": MagicMock()}
 
             with patch("dbs_vector.api.main._services", {"md": MagicMock()}):
-                with patch("dbs_vector.api.main._build_dependencies"):
+                with patch("dbs_vector.api.main.initialize_services"):
                     from dbs_vector.api.main import app
 
-                    with TestClient(app) as client:
-                        response = client.post("/search/sql", json={"query": "test"})
+                    client = TestClient(app)
+                    response = client.post("/search/sql", json={"query": "test"})
 
-                        assert response.status_code == 503
-                        assert "not initialized" in response.json()["detail"]
+                    assert response.status_code == 503
+                    assert "not initialized" in response.json()["detail"]
 
 
 class TestLifespan:
@@ -311,7 +306,7 @@ class TestLifespan:
         with patch("dbs_vector.api.main.settings") as mock_settings:
             mock_settings.engines = {"md": MagicMock()}
 
-            with patch("dbs_vector.api.main._build_dependencies"):
+            with patch("dbs_vector.api.main.initialize_services"):
                 from contextlib import AbstractAsyncContextManager
 
                 from dbs_vector.api.main import lifespan

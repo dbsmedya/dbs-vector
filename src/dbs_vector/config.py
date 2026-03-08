@@ -34,6 +34,30 @@ class EngineConfig(BaseModel):
     api_min_execution_ms: float = 0.0
     api_database: str = ""
 
+    def chunker_kwargs(
+        self, query_override: str | None = None, url_override: str | None = None
+    ) -> dict[str, object]:
+        """Resolve chunker initialization kwargs from engine config."""
+        if self.chunker_type == "duckdb":
+            return {"query": query_override or self.duckdb_query}
+        if self.chunker_type == "api":
+            kwargs: dict[str, object] = {
+                "base_url": url_override or self.api_base_url,
+                "api_key": self.api_key,
+                "page_size": self.api_page_size,
+                "since_days": self.api_since_days,
+                "timeout_sec": self.api_timeout_sec,
+                "min_execution_ms": self.api_min_execution_ms,
+            }
+            if self.api_database:
+                kwargs["database"] = self.api_database
+            if query_override:
+                kwargs["custom_query"] = query_override
+            return kwargs
+        if self.chunk_max_chars > 0:
+            return {"max_chars": self.chunk_max_chars}
+        return {}
+
 
 class Settings(BaseSettings):
     """Global configuration for the dbs-vector application."""

@@ -29,3 +29,24 @@ engines:
     passage_prefix: "task: clustering | query: "
     query_prefix: "task: clustering | query: "
     workflow: "sql_clustering"
+
+  sql-api:
+    description: "Remote slow query log via HTTP API"
+    model_name: "mlx-community/embeddinggemma-300m-bf16"
+    vector_dimension: 768
+    max_token_length: 2048
+    table_name: "query_vault"
+    mapper_type: "sql"
+    chunker_type: "api"
+    chunk_max_chars: 0
+    passage_prefix: "task: clustering | query: "
+    query_prefix: "task: clustering | query: "
+    workflow: "sql_clustering"
+    # --- ApiChunker-specific fields ---
+    api_base_url: "http://localhost:8080/api/v1"
+    api_key: "0Byuf9P9e5UxUNIsngNjr6b9u8sldoHd1ek_ImBbxiI"          # set via DBS_API_KEY env var in production
+    api_page_size: 200         # records per GET request (max 1000)
+    api_since_days: 60         # lower bound on latest_ts  (default: 15)
+    api_timeout_sec: 30        # HTTP request timeout in seconds
+    api_min_execution_ms: 0    # filter: skip queries below this threshold
+    api_database: ""           # leave empty to fetch all databases
