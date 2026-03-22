@@ -247,27 +247,25 @@ class TestGetExistingHashes:
         result = store.get_existing_hashes()
 
         assert result == set()
-        mock_table.to_polars.assert_not_called()
+        mock_table.to_arrow.assert_not_called()
 
     def test_get_hashes_returns_unique_set(self, lancedb_store):
         """Test getting hashes returns set of unique hashes."""
-        import polars as pl
+        import pyarrow as pa
 
         store, _, mock_table, _ = lancedb_store
         mock_table.__len__.return_value = 10
 
-        # Mock polars DataFrame
-        mock_df = pl.DataFrame(
-            {
-                "content_hash": ["hash1", "hash2", "hash1", "hash3"]  # hash1 is duplicated
-            }
+        # Mock pyarrow Table
+        mock_tbl = pa.table(
+            {"content_hash": ["hash1", "hash2", "hash1", "hash3"]}  # hash1 is duplicated
         )
-        mock_table.to_polars.return_value = mock_df
+        mock_table.to_arrow.return_value = mock_tbl
 
         result = store.get_existing_hashes()
 
         assert result == {"hash1", "hash2", "hash3"}
-        mock_table.to_polars.assert_called_once_with(columns=["content_hash"])
+        mock_table.to_arrow.assert_called_once()
 
 
 class TestSearch:

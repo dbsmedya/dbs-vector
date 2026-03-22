@@ -79,6 +79,16 @@ uv run dbs-vector search "What is MLX?"
 uv run dbs-vector search "SELECT * FROM users" --type sql --min-time 1000
 ```
 
+> **Indexes are built automatically at the end of every `ingest` run.** Two indexes are created:
+> - **IVF_PQ** vector index (only when the table has > 256 rows)
+> - **Tantivy FTS** inverted index (required for hybrid search)
+>
+> If you see a *"Cannot perform full text search unless an INVERTED index has been created"* error, it means the FTS index was never built for your table. Fix it by re-running ingestion — use `--rebuild` to wipe and re-index from scratch:
+> ```bash
+> uv run dbs-vector ingest "docs/" --rebuild
+> uv run dbs-vector ingest "slow_queries.json" --type sql --rebuild
+> ```
+
 For detailed specifications on each ingestion source, see:
 👉 **[SQL Engine Documentation](docs/README_SQL.md)**
 👉 **[DuckDB Ingestion Documentation](docs/README_duckdb.md)**

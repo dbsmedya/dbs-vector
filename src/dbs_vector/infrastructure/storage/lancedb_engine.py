@@ -87,9 +87,8 @@ class LanceDBStore:
         if len(self.table) == 0:
             return set()
 
-        # Select just the content_hash column to minimize I/O
-        df = self.table.to_polars(columns=["content_hash"])
-        return set(df["content_hash"].to_list())
+        tbl = self.table.to_arrow()
+        return set(tbl.column("content_hash").to_pylist())
 
     def search(
         self,
@@ -125,7 +124,17 @@ class LanceDBStore:
         if min_time is not None:
             search_op = search_op.where(f"execution_time_ms >= {min_time}", prefilter=True)
 
-        results_df = search_op.to_polars()
+        try:
+            results_df = search_op.to_polars()
+        except Exception as e:
+            logger.warning(
+                "Hybrid search failed (FTS index likely missing — re-run ingest to rebuild): {}",
+                e,
+            )
+            search_op = (
+                self.table.search(query_vector).metric("cosine").nprobes(self.nprobes).limit(limit)
+            )
+            results_df = search_op.to_polars()
 
         mapped_results: list[Any] = []
         for row in results_df.iter_rows(named=True):
