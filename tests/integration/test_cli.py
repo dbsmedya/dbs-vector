@@ -14,46 +14,55 @@ runner = CliRunner()
 
 @pytest.fixture
 def mock_settings():
-    """Create mock settings with engines."""
-    with patch("dbs_vector.cli.settings") as mock:
-        mock.engines = {
-            "md": EngineConfig(
-                model_name="test-model",
-                description="Markdown Engine",
-                vector_dimension=384,
-                max_token_length=512,
-                table_name="md_table",
-                mapper_type="document",
-                chunker_type="document",
-                chunk_max_chars=1000,
-                passage_prefix="passage: ",
-                query_prefix="query: ",
-                workflow="test_md",
-            ),
-            "sql": EngineConfig(
-                model_name="sql-model",
-                description="SQL Engine",
-                vector_dimension=768,
-                max_token_length=256,
-                table_name="sql_table",
-                mapper_type="sql",
-                chunker_type="sql",
-                chunk_max_chars=0,
-                passage_prefix="",
-                query_prefix="",
-                workflow="test_sql",
-            ),
-        }
-        mock.db_path = "./test_db"
-        mock.batch_size = 64
-        mock.nprobes = 20
-        yield mock
+    """Create mock settings with engines.
+
+    Patches both `dbs_vector.cli.settings` (used for CLI-level engine validation)
+    and `dbs_vector.services.bootstrap.settings` (used by the DI factory).
+    """
+    engines = {
+        "md": EngineConfig(
+            model_name="test-model",
+            description="Markdown Engine",
+            vector_dimension=384,
+            max_token_length=512,
+            table_name="md_table",
+            mapper_type="document",
+            chunker_type="document",
+            chunk_max_chars=1000,
+            passage_prefix="passage: ",
+            query_prefix="query: ",
+            workflow="test_md",
+        ),
+        "sql": EngineConfig(
+            model_name="sql-model",
+            description="SQL Engine",
+            vector_dimension=768,
+            max_token_length=256,
+            table_name="sql_table",
+            mapper_type="sql",
+            chunker_type="sql",
+            chunk_max_chars=0,
+            passage_prefix="",
+            query_prefix="",
+            workflow="test_sql",
+        ),
+    }
+    with (
+        patch("dbs_vector.cli.settings") as cli_mock,
+        patch("dbs_vector.services.bootstrap.settings") as bootstrap_mock,
+    ):
+        for mock in (cli_mock, bootstrap_mock):
+            mock.engines = engines
+            mock.db_path = "./test_db"
+            mock.batch_size = 64
+            mock.nprobes = 20
+        yield cli_mock
 
 
 @pytest.fixture
 def mock_embedder():
     """Mock MLXEmbedder to avoid loading actual models."""
-    with patch("dbs_vector.cli.MLXEmbedder") as mock:
+    with patch("dbs_vector.services.bootstrap.MLXEmbedder") as mock:
         mock_instance = MagicMock()
         mock_instance.dimension = 384
         mock.return_value = mock_instance
@@ -63,7 +72,7 @@ def mock_embedder():
 @pytest.fixture
 def mock_store():
     """Mock LanceDBStore."""
-    with patch("dbs_vector.cli.LanceDBStore") as mock:
+    with patch("dbs_vector.services.bootstrap.LanceDBStore") as mock:
         mock_instance = MagicMock()
         mock_instance.mapper = MagicMock()
         mock.return_value = mock_instance
@@ -73,7 +82,7 @@ def mock_store():
 @pytest.fixture
 def mock_chunker():
     """Mock chunker classes."""
-    with patch("dbs_vector.cli.ComponentRegistry.get_chunker") as mock_get:
+    with patch("dbs_vector.services.bootstrap.ComponentRegistry.get_chunker") as mock_get:
         mock_chunker_class = MagicMock()
         mock_chunker_instance = MagicMock()
         mock_chunker_class.return_value = mock_chunker_instance
@@ -84,7 +93,7 @@ def mock_chunker():
 @pytest.fixture
 def mock_mapper():
     """Mock mapper classes."""
-    with patch("dbs_vector.cli.ComponentRegistry.get_mapper") as mock_get:
+    with patch("dbs_vector.services.bootstrap.ComponentRegistry.get_mapper") as mock_get:
         mock_mapper_class = MagicMock()
         mock_mapper_instance = MagicMock()
         mock_mapper_class.return_value = mock_mapper_instance

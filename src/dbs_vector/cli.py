@@ -6,16 +6,14 @@ os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"  # Disable hf-transfer to use standard downloads
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 
-from typing import Annotated, Any, NamedTuple
+from typing import Annotated
 
 import typer
 from loguru import logger
 
 from dbs_vector.config import settings
-from dbs_vector.core.registry import ComponentRegistry
-from dbs_vector.infrastructure.embeddings.mlx_engine import MLXEmbedder
-from dbs_vector.infrastructure.storage.lancedb_engine import LanceDBStore
 from dbs_vector.logger import configure_logger
+from dbs_vector.services.bootstrap import EngineDeps, build_dependencies
 from dbs_vector.services.ingestion import IngestionService
 from dbs_vector.services.search import SearchService
 
@@ -24,15 +22,6 @@ app = typer.Typer(
     no_args_is_help=True,
     rich_markup_mode=None,
 )
-
-
-class EngineDeps(NamedTuple):
-    """Container for resolved engine dependencies."""
-
-    embedder: Any
-    store: Any
-    chunker: Any
-    workflow: str
 
 
 def version_callback(value: bool) -> None:
@@ -90,48 +79,18 @@ def _build_dependencies(
     query_override: str | None = None,
     url_override: str | None = None,
 ) -> EngineDeps:
-    """Dependency Injection Factory driven by config.yaml configuration."""
-    if engine_name not in settings.engines:
-        raise ValueError(
-            f"Unknown engine: '{engine_name}'. Check {os.environ.get('DBS_CONFIG_FILE', 'config.yaml')}."
-        )
-
-    config = settings.engines[engine_name]
-
-    # Initialize Embedder
-    embedder = MLXEmbedder(
-        model_name=config.model_name,
-        max_token_length=config.max_token_length,
-        dimension=config.vector_dimension,
-        passage_prefix=config.passage_prefix,
-        query_prefix=config.query_prefix,
-    )
-
-    # Resolve components via Registry
-    MapperClass = ComponentRegistry.get_mapper(config.mapper_type)
-    ChunkerClass = ComponentRegistry.get_chunker(config.chunker_type)
-
-    mapper = MapperClass(vector_dimension=config.vector_dimension)
-
-    chunker = ChunkerClass(
-        **config.chunker_kwargs(query_override=query_override, url_override=url_override)
-    )
-
+    """CLI-facing wrapper: converts schema-mismatch errors to typer exits."""
     try:
-        store = LanceDBStore(
-            db_path=settings.db_path,
-            table_name=config.table_name,
-            vector_dimension=config.vector_dimension,
-            mapper=mapper,
-            nprobes=settings.nprobes,
+        return build_dependencies(
+            engine_name,
+            query_override=query_override,
+            url_override=url_override,
         )
     except ValueError as e:
         if "Schema mismatch" in str(e):
             typer.echo(f"\n[!] Database Error: {e}", err=True)
             raise typer.Exit(code=1) from e
         raise
-
-    return EngineDeps(embedder=embedder, store=store, chunker=chunker, workflow=config.workflow)
 
 
 @app.command()
