@@ -34,6 +34,8 @@ def test_ingest_skips_chunker_when_doc_hash_already_present(tmp_path):
     chunker.process.assert_not_called()
     # And no vectors were embedded for it
     embedder.embed_batch.assert_not_called()
+    # The hoist: get_existing_hashes must be called exactly once per ingest
+    store.get_existing_hashes.assert_called_once()
 
 
 def test_ingest_still_chunks_when_doc_hash_is_new(tmp_path):
