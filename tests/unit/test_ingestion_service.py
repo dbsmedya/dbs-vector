@@ -1,0 +1,64 @@
+"""Unit tests for IngestionService."""
+
+import hashlib
+from unittest.mock import MagicMock
+
+from dbs_vector.services.ingestion import IngestionService
+
+
+def test_ingest_skips_chunker_when_doc_hash_already_present(tmp_path):
+    """If a markdown file's content_hash is already in the store, the
+    chunker must not be called for that file at all."""
+
+    # Build a 1-file directory
+    md_file = tmp_path / "doc.md"
+    md_file.write_text("# Hello\n\nBody paragraph.")
+
+    chunker = MagicMock()
+    chunker.supported_extensions = [".md"]
+
+    embedder = MagicMock()
+    store = MagicMock()
+
+    # Pre-compute the file hash the service will compute
+    content = md_file.read_text()
+    expected_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+
+    # Pretend the store already contains that hash
+    store.get_existing_hashes.return_value = {expected_hash}
+
+    svc = IngestionService(chunker, embedder, store, workflow="md_search")
+    svc.ingest_directory(str(tmp_path))
+
+    # The chunker must never see this document
+    chunker.process.assert_not_called()
+    # And no vectors were embedded for it
+    embedder.embed_batch.assert_not_called()
+
+
+def test_ingest_still_chunks_when_doc_hash_is_new(tmp_path):
+    """If a file's hash is NOT in the store, the chunker IS called."""
+
+    md_file = tmp_path / "doc.md"
+    md_file.write_text("# New content\n\nNot seen before.")
+
+    chunker = MagicMock()
+    chunker.supported_extensions = [".md"]
+    # Simulate chunker yielding one chunk
+    fake_chunk = MagicMock()
+    fake_chunk.content_hash = "new_file_hash"
+    fake_chunk.text = "chunk text"
+    chunker.process.return_value = iter([fake_chunk])
+
+    embedder = MagicMock()
+    embedder.embed_batch.return_value = [[0.1, 0.2, 0.3]]
+
+    store = MagicMock()
+    store.get_existing_hashes.return_value = set()  # empty
+
+    svc = IngestionService(chunker, embedder, store, workflow="md_search")
+    svc.ingest_directory(str(tmp_path))
+
+    chunker.process.assert_called_once()
+    embedder.embed_batch.assert_called_once()
+    store.ingest_chunks.assert_called_once()

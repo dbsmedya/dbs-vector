@@ -41,6 +41,8 @@ class IngestionService:
             self.vector_store.clear()
 
         logger.info("Starting streaming ingestion for {}", target_path)
+        logger.info("Checking for existing documents (deduplication enabled)")
+        existing_hashes = self.vector_store.get_existing_hashes()
 
         def _chunk_generator() -> Iterator[Any]:
             # API mode: target_path is a URL — bypass file discovery entirely
@@ -83,15 +85,21 @@ class IngestionService:
                         f"{filepath_str}{stat.st_mtime}".encode()
                     ).hexdigest()[:16]
 
+                # Short-circuit: DocumentChunker propagates this file_hash to every
+                # chunk, so if the hash is already in the store the whole file is
+                # already indexed. Safe no-op for per-chunk-hash chunkers (SQL /
+                # DuckDB / API): their chunk hashes are per-record SHA-256s so a
+                # file hash never matches.
+                if file_hash in existing_hashes:
+                    logger.debug("Skipping unchanged file {}", filepath_str)
+                    continue
+
                 doc = Document(
                     filepath=filepath_str,
                     content=content,
                     content_hash=file_hash,
                 )
                 yield from self.chunker.process(doc)
-
-        logger.info("Checking for existing documents (deduplication enabled)")
-        existing_hashes = self.vector_store.get_existing_hashes()
 
         total_chunks = 0
         skipped_chunks = 0
