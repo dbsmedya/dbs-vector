@@ -14,7 +14,7 @@ This project is built using strict Clean Architecture principles and a Configura
 ```text
 src/dbs_vector/
 ├── config.py              # YAML Configuration Loader (Pydantic validated)
-├── cli.py                 # Typer Entrypoint (DI Factory)
+├── cli.py                 # Typer Entrypoint (thin wrapper over bootstrap factory)
 ├── api/                   # FastAPI Search Service (Async offloading)
 │
 ├── core/                  # Domain Layer (Strictly logic & Interfaces)
@@ -33,6 +33,7 @@ src/dbs_vector/
 │       └── mappers.py     # Domain-to-Arrow Adapters (Document & SQL)
 │
 └── services/              # Application Orchestration
+    ├── bootstrap.py       # DI factory (build_dependencies) used by CLI & API
     ├── ingestion.py       # Manages batching -> deduplication -> storage stream
     └── search.py          # Manages embedding queries -> generic store search
 ```

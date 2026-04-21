@@ -26,7 +26,7 @@ Instead of hardcoding database schemas or branching logic (`if is_sql: ... else:
 *   **Why this matters:** The database engine only knows how to append Arrow arrays and execute searches. It has zero knowledge of the domain objects (`SqlChunk`, `Chunk`), making it infinitely reusable.
 
 ### B. Dynamic Engine Registry (OCP)
-The entire application is driven by `config.yaml`. The CLI and API factory (`_build_dependencies`) dynamically instantiate the correct Embedder, Mapper, and Chunker based on the `--type` flag (e.g., `md` or `sql`) by looking them up in `ComponentRegistry`.
+The entire application is driven by `config.yaml`. The shared DI factory (`services/bootstrap.build_dependencies`, used by both the CLI and the API via `api/state.initialize_services`) dynamically instantiates the correct Embedder, Mapper, and Chunker based on the `--type` flag (e.g., `md` or `sql`) by looking them up in `ComponentRegistry`. `cli._build_dependencies` is a thin wrapper that only converts schema-mismatch errors into `typer.Exit`.
 *   **Why this matters:** Adding a new engine (like an AST parser) requires *zero* modifications to the core orchestration code. You simply write the new parser, register it, and add its YAML configuration.
 
 ### C. The Unified Memory Bridge (Compute to Transfer)

@@ -508,7 +508,7 @@ Both chunkers yield `SqlChunk` objects and flow into the same
 | `src/dbs_vector/core/registry.py` | Added `"api": ApiChunker` |
 | `src/dbs_vector/config.py` | Added 7 optional `api_*` fields to `EngineConfig` |
 | `src/dbs_vector/services/ingestion.py` | URL bypass at top of `_chunk_generator()` |
-| `src/dbs_vector/cli.py` | `elif chunker_type == "api"` branch in `_build_dependencies` |
+| `src/dbs_vector/services/bootstrap.py` | `api` branch resolved via `ComponentRegistry` in `build_dependencies` (factory shared by CLI and API; originally lived in `cli.py`) |
 | `pyproject.toml` | `api = ["httpx>=0.27.0"]` optional extra; mypy ignore for httpx |
 | `tests/unit/test_api_chunker.py` | New — 10 unit tests (all mock-based) |
 | `scripts/check_remote_api.py` | New — standalone compatibility checker (46 checks) |
