@@ -247,7 +247,7 @@ class TestGetExistingHashes:
         result = store.get_existing_hashes()
 
         assert result == set()
-        mock_table.to_arrow.assert_not_called()
+        mock_table.to_lance.assert_not_called()
 
     def test_get_hashes_returns_unique_set(self, lancedb_store):
         """Test getting hashes returns set of unique hashes."""
@@ -256,16 +256,35 @@ class TestGetExistingHashes:
         store, _, mock_table, _ = lancedb_store
         mock_table.__len__.return_value = 10
 
-        # Mock pyarrow Table
-        mock_tbl = pa.table(
-            {"content_hash": ["hash1", "hash2", "hash1", "hash3"]}  # hash1 is duplicated
-        )
-        mock_table.to_arrow.return_value = mock_tbl
+        mock_lance = MagicMock()
+        mock_tbl = pa.table({"content_hash": ["hash1", "hash2", "hash1", "hash3"]})
+        mock_lance.to_table.return_value = mock_tbl
+        mock_table.to_lance.return_value = mock_lance
 
         result = store.get_existing_hashes()
 
         assert result == {"hash1", "hash2", "hash3"}
-        mock_table.to_arrow.assert_called_once()
+        mock_lance.to_table.assert_called_once_with(columns=["content_hash"])
+
+    def test_get_hashes_projects_only_content_hash(self, lancedb_store):
+        """get_existing_hashes must project only the content_hash column,
+        not materialise the full table (which would include the vector column).
+        """
+        import pyarrow as pa
+
+        store, _, mock_table, _ = lancedb_store
+        mock_table.__len__.return_value = 3
+
+        mock_lance = MagicMock()
+        mock_projected = pa.table({"content_hash": ["h1", "h2", "h3"]})
+        mock_lance.to_table.return_value = mock_projected
+        mock_table.to_lance.return_value = mock_lance
+
+        result = store.get_existing_hashes()
+
+        assert result == {"h1", "h2", "h3"}
+        mock_lance.to_table.assert_called_once_with(columns=["content_hash"])
+        mock_table.to_arrow.assert_not_called()
 
 
 class TestSearch:

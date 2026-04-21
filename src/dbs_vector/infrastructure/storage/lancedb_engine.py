@@ -83,11 +83,12 @@ class LanceDBStore:
             logger.warning("FTS indexing failed (tantivy missing?): {}", e)
 
     def get_existing_hashes(self) -> set[str]:
-        """Queries the table for all content hashes and deduplicates in Python."""
+        """Returns all existing content hashes, projecting a single column
+        to avoid materialising the vector column into memory."""
         if len(self.table) == 0:
             return set()
 
-        tbl = self.table.to_arrow()
+        tbl = self.table.to_lance().to_table(columns=["content_hash"])
         return set(tbl.column("content_hash").to_pylist())
 
     def search(
