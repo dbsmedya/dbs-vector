@@ -444,8 +444,12 @@ class TestSearch:
         assert mock_table.search.call_count == 2
         mock_vector_search.metric.assert_called_once_with("cosine")
 
-    def test_search_handles_null_distance(self, lancedb_store):
-        """Test that search handles null _distance values (FTS matches)."""
+    def test_search_reads_relevance_score_for_hybrid(self, lancedb_store):
+        """Hybrid search rows carry _relevance_score, not _distance.
+
+        The mapper must receive the relevance score as `score` (not None),
+        and is_fts_match must be False for genuine hybrid hits.
+        """
         import polars as pl
 
         store, _, mock_table, _ = lancedb_store
@@ -457,22 +461,55 @@ class TestSearch:
         mock_search.nprobes.return_value = mock_search
         mock_search.limit.return_value = mock_search
 
-        # Result with null distance (FTS match)
+        # Hybrid result: _relevance_score column, no _distance column
+        mock_results = pl.DataFrame(
+            {
+                "id": ["chunk_0"],
+                "text": ["content"],
+                "source": ["file.md"],
+                "content_hash": ["hash1"],
+                "_relevance_score": [0.82],
+            }
+        )
+        mock_search.to_polars.return_value = mock_results
+        mock_table.search.return_value = mock_search
+
+        store.mapper.from_polars_row = MagicMock(
+            side_effect=lambda row, score, distance: (row["id"], score, distance)
+        )
+
+        results = store.search(query="test", query_vector=query_vector)
+
+        assert results == [("chunk_0", 0.82, None)]
+
+    def test_search_handles_fts_only_match(self, lancedb_store):
+        """Rows with neither _relevance_score nor _distance are FTS-only matches."""
+        import polars as pl
+
+        store, _, mock_table, _ = lancedb_store
+        query_vector = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        mock_search = MagicMock()
+        mock_search.vector.return_value = mock_search
+        mock_search.text.return_value = mock_search
+        mock_search.nprobes.return_value = mock_search
+        mock_search.limit.return_value = mock_search
+
         mock_results = pl.DataFrame(
             {
                 "id": ["chunk_0", "chunk_1"],
                 "text": ["content1", "content2"],
                 "source": ["file1.md", "file2.md"],
                 "content_hash": ["hash1", "hash2"],
-                "_distance": [0.9, None],  # None for FTS match
+                "_distance": [0.9, None],
             }
         )
         mock_search.to_polars.return_value = mock_results
         mock_table.search.return_value = mock_search
 
-        store.mapper.from_polars_row = MagicMock(side_effect=lambda row, score: (row["id"], score))
+        store.mapper.from_polars_row = MagicMock(
+            side_effect=lambda row, score, distance: (row["id"], score, distance)
+        )
 
         results = store.search(query="test", query_vector=query_vector)
-
-        # Verify both results are returned with correct scores
-        assert results == [("chunk_0", 0.9), ("chunk_1", None)]
+        assert results == [("chunk_0", None, 0.9), ("chunk_1", None, None)]

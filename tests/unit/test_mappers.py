@@ -126,7 +126,7 @@ class TestDocumentMapper:
             "line_range": "5-15",
         }
 
-        result = mapper.from_polars_row(row, score=0.95)
+        result = mapper.from_polars_row(row, score=0.95, distance=0.95)
 
         assert isinstance(result, SearchResult)
         assert result.chunk.id == "chunk_42"

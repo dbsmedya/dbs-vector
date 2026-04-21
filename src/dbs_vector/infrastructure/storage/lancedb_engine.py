@@ -138,8 +138,10 @@ class LanceDBStore:
 
         mapped_results: list[Any] = []
         for row in results_df.iter_rows(named=True):
+            rel = row.get("_relevance_score")
             dist = row.get("_distance")
-            score = float(dist) if isinstance(dist, float) else None
-            mapped_results.append(self.mapper.from_polars_row(row, score))
+            score = float(rel) if isinstance(rel, float) else None
+            distance = float(dist) if isinstance(dist, float) else None
+            mapped_results.append(self.mapper.from_polars_row(row, score=score, distance=distance))
 
         return mapped_results

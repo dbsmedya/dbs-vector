@@ -36,8 +36,17 @@ class IStoreMapper(Protocol):
         """Converts domain chunks and vectors into a PyArrow RecordBatch."""
         ...
 
-    def from_polars_row(self, row: dict[str, Any], score: float | None) -> Any:
-        """Converts a Polars row back into a domain SearchResult."""
+    def from_polars_row(
+        self,
+        row: dict[str, Any],
+        score: float | None = None,
+        distance: float | None = None,
+    ) -> Any:
+        """Converts a Polars row back into a domain SearchResult.
+
+        score    — LanceDB hybrid `_relevance_score` (None for pure-vector search)
+        distance — LanceDB vector `_distance` (None for hybrid search)
+        """
         ...
 
 

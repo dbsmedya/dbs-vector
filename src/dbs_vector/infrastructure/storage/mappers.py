@@ -62,7 +62,12 @@ class DocumentMapper:
             schema=self._schema,
         )
 
-    def from_polars_row(self, row: dict[str, Any], score: float | None) -> Any:
+    def from_polars_row(
+        self,
+        row: dict[str, Any],
+        score: float | None = None,
+        distance: float | None = None,
+    ) -> Any:
         chunk = Chunk(
             id=row["id"],
             text=row["text"],
@@ -72,8 +77,12 @@ class DocumentMapper:
             parent_scope=row.get("parent_scope"),
             line_range=row.get("line_range"),
         )
-        # Assuming workflow might be needed in SearchResult in future, not added now for simplicity
-        return SearchResult(chunk=chunk, score=score, distance=score, is_fts_match=(score is None))
+        return SearchResult(
+            chunk=chunk,
+            score=score,
+            distance=distance,
+            is_fts_match=(score is None and distance is None),
+        )
 
 
 class SqlMapper:
@@ -152,7 +161,12 @@ class SqlMapper:
             schema=self._schema,
         )
 
-    def from_polars_row(self, row: dict[str, Any], score: float | None) -> Any:
+    def from_polars_row(
+        self,
+        row: dict[str, Any],
+        score: float | None = None,
+        distance: float | None = None,
+    ) -> Any:
         chunk = SqlChunk(
             id=row["id"],
             text=row["text"],
@@ -170,5 +184,8 @@ class SqlMapper:
             lock_time_sec=row.get("lock_time_sec"),
         )
         return SqlSearchResult(
-            chunk=chunk, score=score, distance=score, is_fts_match=(score is None)
+            chunk=chunk,
+            score=score,
+            distance=distance,
+            is_fts_match=(score is None and distance is None),
         )
