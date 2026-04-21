@@ -99,41 +99,40 @@ class LanceDBStore:
         **kwargs: Any,
     ) -> list[Any]:
         """Executes Hybrid (or pure Vector) search, filtering natively in Rust."""
-        try:
-            search_op = (
+
+        min_time = kwargs.get("min_time")
+
+        def _apply_filters(op: Any) -> Any:
+            if source_filter:
+                safe_filter = source_filter.replace("'", "''")
+                op = op.where(f"source = '{safe_filter}'", prefilter=True)
+            if min_time is not None:
+                op = op.where(f"execution_time_ms >= {min_time}", prefilter=True)
+            return op
+
+        def _build_vector() -> Any:
+            return (
+                self.table.search(query_vector).metric("cosine").nprobes(self.nprobes).limit(limit)
+            )
+
+        def _build_hybrid() -> Any:
+            return (
                 self.table.search(query_type="hybrid")
                 .vector(query_vector)
                 .text(query)
                 .nprobes(self.nprobes)
                 .limit(limit)
             )
-        except Exception as e:
-            logger.warning("Hybrid search unavailable ({}), falling back to pure vector", e)
-            search_op = (
-                self.table.search(query_vector).metric("cosine").nprobes(self.nprobes).limit(limit)
-            )
 
-        # Metadata Filtering (Rust-Level Pushdown)
-        if source_filter:
-            # SQL Injection Prevention
-            safe_filter = source_filter.replace("'", "''")
-            search_op = search_op.where(f"source = '{safe_filter}'", prefilter=True)
-
-        # SQL specific pushdowns
-        min_time = kwargs.get("min_time")
-        if min_time is not None:
-            search_op = search_op.where(f"execution_time_ms >= {min_time}", prefilter=True)
-
+        # First attempt: hybrid (builder + execute)
         try:
+            search_op = _apply_filters(_build_hybrid())
             results_df = search_op.to_polars()
         except Exception as e:
             logger.warning(
-                "Hybrid search failed (FTS index likely missing — re-run ingest to rebuild): {}",
-                e,
+                "Hybrid search unavailable or failed ({}), falling back to pure vector", e
             )
-            search_op = (
-                self.table.search(query_vector).metric("cosine").nprobes(self.nprobes).limit(limit)
-            )
+            search_op = _apply_filters(_build_vector())
             results_df = search_op.to_polars()
 
         mapped_results: list[Any] = []

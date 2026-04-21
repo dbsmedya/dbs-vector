@@ -482,6 +482,53 @@ class TestSearch:
 
         assert results == [("chunk_0", 0.82, None)]
 
+    def test_search_fallback_preserves_filters(self, lancedb_store):
+        """When hybrid to_polars() fails and falls back to vector search,
+        the source_filter and min_time constraints must still be applied.
+        """
+        import polars as pl
+
+        store, _, mock_table, _ = lancedb_store
+        query_vector = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        # First (hybrid) search object — .to_polars() blows up
+        hybrid_op = MagicMock(name="hybrid_op")
+        hybrid_op.vector.return_value = hybrid_op
+        hybrid_op.text.return_value = hybrid_op
+        hybrid_op.nprobes.return_value = hybrid_op
+        hybrid_op.limit.return_value = hybrid_op
+        hybrid_op.where.return_value = hybrid_op
+        hybrid_op.to_polars.side_effect = RuntimeError("FTS index missing")
+
+        # Second (vector fallback) search object — must also receive .where() calls
+        fallback_op = MagicMock(name="fallback_op")
+        fallback_op.metric.return_value = fallback_op
+        fallback_op.nprobes.return_value = fallback_op
+        fallback_op.limit.return_value = fallback_op
+        fallback_op.where.return_value = fallback_op
+        fallback_op.to_polars.return_value = pl.DataFrame(
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+        )
+
+        # First call → hybrid_op, second call (fallback) → fallback_op
+        mock_table.search.side_effect = [hybrid_op, fallback_op]
+
+        store.search(
+            query="test",
+            query_vector=query_vector,
+            source_filter="some/file.md",
+            min_time=100.0,
+        )
+
+        # The fallback vector op MUST have received both filter pushdowns
+        where_calls = [c.args[0] for c in fallback_op.where.call_args_list]
+        assert any("source = 'some/file.md'" in w for w in where_calls), (
+            f"source filter not applied on fallback; got where calls: {where_calls}"
+        )
+        assert any("execution_time_ms >= 100.0" in w for w in where_calls), (
+            f"min_time filter not applied on fallback; got where calls: {where_calls}"
+        )
+
     def test_search_handles_fts_only_match(self, lancedb_store):
         """Rows with neither _relevance_score nor _distance are FTS-only matches."""
         import polars as pl
