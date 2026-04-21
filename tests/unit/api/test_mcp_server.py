@@ -42,9 +42,7 @@ async def test_search_documents_success(mock_services):
 
     result_str = await search_documents(query="test", limit=1)
 
-    mock_service.execute_query.assert_called_once_with(
-        query="test", source_filter=None, limit=1, extra_filters={}
-    )
+    mock_service.execute_query.assert_called_once_with("test", None, 1, {})
 
     assert "Found 1 results for 'test'" in result_str
     assert "Score: 0.1234" in result_str
@@ -93,9 +91,7 @@ async def test_search_sql_logs_success(mock_services):
 
     result_str = await search_sql_logs(query="select test", limit=2, min_time=100.0)
 
-    mock_service.execute_query.assert_called_once_with(
-        query="select test", source_filter=None, limit=2, extra_filters={"min_time": 100.0}
-    )
+    mock_service.execute_query.assert_called_once_with("select test", None, 2, {"min_time": 100.0})
 
     assert "Found 1 results for 'select test'" in result_str
     assert "Score: 0.5678" in result_str

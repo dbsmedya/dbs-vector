@@ -1,3 +1,5 @@
+import asyncio
+
 from mcp.server.fastmcp import FastMCP
 
 from dbs_vector.api.state import _services
@@ -24,12 +26,12 @@ async def search_documents(query: str, limit: int = 5, source_filter: str | None
         return "Error: Document search service ('md' engine) is not initialized."
 
     try:
-        # execute_query is synchronous, but we can call it directly since MCP runs locally
-        results = service.execute_query(
-            query=query,
-            source_filter=source_filter,
-            limit=limit,
-            extra_filters={},
+        results = await asyncio.to_thread(
+            service.execute_query,
+            query,
+            source_filter,
+            limit,
+            {},
         )
 
         if not results:
@@ -73,11 +75,12 @@ async def search_sql_logs(
         extra_filters["min_time"] = min_time
 
     try:
-        results = service.execute_query(
-            query=query,
-            source_filter=source_filter,
-            limit=limit,
-            extra_filters=extra_filters,
+        results = await asyncio.to_thread(
+            service.execute_query,
+            query,
+            source_filter,
+            limit,
+            extra_filters,
         )
 
         if not results:
