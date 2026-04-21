@@ -84,11 +84,11 @@ class LanceDBStore:
 
     def get_existing_hashes(self) -> set[str]:
         """Returns all existing content hashes, projecting a single column
-        to avoid materialising the vector column into memory."""
+        via LanceDB's query builder to avoid materialising the vector column."""
         if len(self.table) == 0:
             return set()
 
-        tbl = self.table.to_lance().to_table(columns=["content_hash"])
+        tbl = self.table.search().select(["content_hash"]).to_arrow()
         return set(tbl.column("content_hash").to_pylist())
 
     def search(
