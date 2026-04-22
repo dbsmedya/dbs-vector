@@ -39,7 +39,12 @@ async def search_documents(query: str, limit: int = 5, source_filter: str | None
 
         output = [f"Found {len(results)} results for '{query}':\n"]
         for res in results:
-            dist_str = f"{res.distance:.4f}" if res.distance is not None else "N/A (FTS)"
+            if res.distance is not None:
+                dist_str = f"{res.distance:.4f}"
+            elif res.score is not None:
+                dist_str = f"{res.score:.4f}"
+            else:
+                dist_str = "N/A (FTS)"
             chunk = res.chunk
             output.append(
                 f"--- Result (Score: {dist_str}) ---\n"
@@ -88,7 +93,12 @@ async def search_sql_logs(
 
         output = [f"Found {len(results)} results for '{query}':\n"]
         for res in results:
-            dist_str = f"{res.distance:.4f}" if res.distance is not None else "N/A (FTS)"
+            if res.distance is not None:
+                dist_str = f"{res.distance:.4f}"
+            elif res.score is not None:
+                dist_str = f"{res.score:.4f}"
+            else:
+                dist_str = "N/A (FTS)"
             chunk = res.chunk
             output.append(
                 f"--- Result (Score: {dist_str}) ---\n"

@@ -196,6 +196,28 @@ class TestPrintResults:
         assert "Time: 150.5ms" in caplog.text
         assert "SELECT * FROM users" in caplog.text
 
+    def test_print_hybrid_result_shows_relevance_score(self, search_service, caplog):
+        """Hybrid reranker populates score but leaves distance None; the
+        rendered label must show the score, not be mislabeled as FTS."""
+        results = [
+            SearchResult(
+                chunk=Chunk(
+                    id="hyb_chunk",
+                    text="Hybrid search result",
+                    source="docs/file.md",
+                    content_hash="hyb_hash",
+                ),
+                score=0.0325,
+                distance=None,
+                is_fts_match=False,
+            )
+        ]
+
+        search_service.print_results(results)
+
+        assert "0.0325" in caplog.text
+        assert "FTS" not in caplog.text
+
     def test_print_fts_match_result(self, search_service, caplog):
         """Test printing FTS match result (no distance score)."""
         results = [

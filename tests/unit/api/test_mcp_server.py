@@ -51,6 +51,31 @@ async def test_search_documents_success(mock_services):
 
 
 @pytest.mark.asyncio
+async def test_search_documents_hybrid_shows_relevance_score(mock_services):
+    """Hybrid reranker results have score set and distance None. The MCP
+    output must show the score rather than mislabelling as FTS."""
+    mock_service = mock_services["md"]
+    mock_service.execute_query.return_value = [
+        SearchResult(
+            chunk=Chunk(
+                id="hyb_0",
+                source="doc1.md",
+                text="hybrid content",
+                content_hash="abc",
+            ),
+            score=0.0325,
+            distance=None,
+            is_fts_match=False,
+        )
+    ]
+
+    result_str = await search_documents(query="test", limit=1)
+
+    assert "0.0325" in result_str
+    assert "FTS" not in result_str
+
+
+@pytest.mark.asyncio
 async def test_search_documents_no_results(mock_services):
     """Test that search_documents handles empty results gracefully."""
     mock_service = mock_services["md"]

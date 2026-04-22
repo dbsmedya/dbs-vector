@@ -50,7 +50,12 @@ class SearchService:
 
         logger.info("Top Results:")
         for res in results:
-            dist_str = f"{res.distance:.4f}" if res.distance is not None else "N/A (FTS Match)"
+            if res.distance is not None:
+                dist_str = f"{res.distance:.4f}"
+            elif res.score is not None:
+                dist_str = f"{res.score:.4f}"
+            else:
+                dist_str = "N/A (FTS Match)"
 
             # Polymorphic printing
             if hasattr(res.chunk, "raw_query"):
