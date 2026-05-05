@@ -297,3 +297,36 @@ system:
             # Should use defaults
             assert settings.db_path == "./lancedb_dbs_vector"
             assert settings.engines == {}
+
+
+class TestAttentionMaskDtype:
+    """Tests for the new attention_mask_dtype field on EngineConfig."""
+
+    def test_attention_mask_dtype_defaults_to_none(self):
+        from dbs_vector.config import EngineConfig
+        cfg = EngineConfig(
+            description="t",
+            model_name="m",
+            vector_dimension=8,
+            max_token_length=64,
+            table_name="t",
+            mapper_type="document",
+            chunker_type="document",
+            chunk_max_chars=100,
+        )
+        assert cfg.attention_mask_dtype is None
+
+    def test_attention_mask_dtype_accepts_string(self):
+        from dbs_vector.config import EngineConfig
+        cfg = EngineConfig(
+            description="t",
+            model_name="m",
+            vector_dimension=8,
+            max_token_length=64,
+            table_name="t",
+            mapper_type="document",
+            chunker_type="document",
+            chunk_max_chars=100,
+            attention_mask_dtype="float16",
+        )
+        assert cfg.attention_mask_dtype == "float16"

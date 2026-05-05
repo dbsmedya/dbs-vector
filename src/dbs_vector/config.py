@@ -34,6 +34,11 @@ class EngineConfig(BaseModel):
     api_min_execution_ms: float = 0.0
     api_database: str = ""
 
+    # Some MLX models (e.g. embeddinggemma-bf16) require the attention_mask cast
+    # to a specific dtype to avoid type-promotion errors. Leave unset for models
+    # that accept the default integer mask (e.g. ModernBERT / Granite).
+    attention_mask_dtype: str | None = None  # accepted: None, "float16", "bfloat16", "float32"
+
     def chunker_kwargs(
         self, query_override: str | None = None, url_override: str | None = None
     ) -> dict[str, object]:
