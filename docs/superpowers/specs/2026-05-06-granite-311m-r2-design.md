@@ -57,15 +57,18 @@ Confirmed:
 | `config.yaml` | Add three new engine blocks: `md-granite`, `sql-granite`, `sql-api-granite`. Add `attention_mask_dtype: "float16"` to existing `md`, `sql`, `sql-api` blocks. |
 | `src/dbs_vector/config.py` | Add `attention_mask_dtype: str \| None = None` field to `EngineConfig`. |
 | `src/dbs_vector/services/bootstrap.py` | Pass `attention_mask_dtype` through to `MLXEmbedder`. |
+| `src/dbs_vector/cli.py` | One-line change: `--min-time` filter currently applies only when `engine_name == "sql"`; widen the predicate so it applies to any SQL-family engine (`engine_name in {"sql", "sql-api", "sql-granite", "sql-api-granite"}` *or* the more robust `settings.engines[engine_name].mapper_type == "sql"`). Required so the new SQL Granite engines have feature parity with Gemma SQL for A/B comparisons. |
 | `src/dbs_vector/infrastructure/embeddings/mlx_engine.py` | Two edits: truncation alarm; config-driven attention-mask cast with `try/except` mapping promotion errors to a config-recommendation message. |
 | `tests/unit/test_mlx_engine.py` | Cover the new behaviour (mocked, no model download). |
 | `tests/integration/` | Add slow-marked end-to-end tests for the Granite engines (md and sql variants). |
-| `docs/README_EMBEDDINGS.md` | **New** — embeddings-focused doc covering supported models, prefixes, `attention_mask_dtype`, truncation alarm. |
-| `docs/README_DOCS.md` | Add a paragraph noting that Granite is used without task prefixes (treated as a symmetric encoder, see §4 rationale); link to new embeddings doc. |
+| `docs/README_EMBEDDINGS.md` | **New** — embeddings-focused doc covering supported models, prefixes, `attention_mask_dtype`, truncation alarm, the API/MCP CLI-only constraint. |
+| `docs/README_DOCS.md` | Add a paragraph noting Granite is used without task prefixes for all three Granite engines (treated as a symmetric encoder, see §4 rationale); link to new embeddings doc. |
+| `docs/README_SQL.md` | Note `sql-granite` as an alternative SQL engine; mention separate table and `--min-time` filter parity (see cli.py change above). |
+| `docs/README_REMOTE_SQL_API.md` | Note `sql-api-granite` as the Granite-backed sibling of `sql-api`. |
 | `docs/README_ARCHITECTURE.md` | One-line update in §3.A noting the three new Granite engines alongside the existing `md`/`sql`/`sql-api`. |
 | `docs/README.md` | Add link to `README_EMBEDDINGS.md`. |
-| `README.md` (root) | Update engine list if present. |
-| `CLAUDE.md` | Add `attention_mask_dtype` to `EngineConfig` description; mention the Granite engines in example commands; note that API/MCP currently expose only Gemma engines. |
+| `README.md` (root) | Update engine list if present (include all three Granite engines). |
+| `CLAUDE.md` | Add `attention_mask_dtype` to `EngineConfig` description; mention all three Granite engines in example commands; note that API/MCP currently expose only Gemma engines. |
 
 ### Out of scope (deliberately unchanged)
 
@@ -360,18 +363,20 @@ uv run dbs-vector ingest "docs/" --type md-granite
 uv run dbs-vector search "Türkçe doküman araması" --type md-granite
 uv run dbs-vector search "Türkçe doküman araması" --type md
 
-# sql-granite — ingest from DuckDB fixture and A/B vs. Gemma
-uv run dbs-vector ingest "queries.json" --type sql-granite
-uv run dbs-vector search "find users by email" --type sql-granite
-uv run dbs-vector search "find users by email" --type sql
+# sql-granite — DuckDBChunker only supports `.duckdb`; pass a slow-log DuckDB file
+uv run dbs-vector ingest "slow_log.duckdb" --type sql-granite
+uv run dbs-vector search "find users by email" --type sql-granite --min-time 100
+uv run dbs-vector search "find users by email" --type sql        --min-time 100
 
-# sql-api-granite — exercise the remote-API path
-uv run dbs-vector ingest "" --type sql-api-granite        # ApiChunker pulls from configured endpoint
-uv run dbs-vector search "slow join on orders" --type sql-api-granite
+# sql-api-granite — IngestionService routes to the API chunker only when target_path
+# is an http(s):// URL. The URL must be passed explicitly even though api_base_url
+# is also set in config (the URL on the CLI is what triggers the API code path).
+uv run dbs-vector ingest "http://localhost:8080/api/v1" --type sql-api-granite
+uv run dbs-vector search "slow join on orders" --type sql-api-granite --min-time 50
 
 # Regression smoke checks for Gemma engines after the attention_mask_dtype migration
 uv run dbs-vector search "anything" --type md
-uv run dbs-vector search "anything" --type sql
+uv run dbs-vector search "anything" --type sql --min-time 100   # also verifies --min-time still works on plain sql
 ```
 
 ---
@@ -380,12 +385,14 @@ uv run dbs-vector search "anything" --type sql
 
 | File | Action |
 |---|---|
-| `docs/README_EMBEDDINGS.md` | **New.** Covers: supported models (Gemma, Granite); MLX backend constraints; symmetric vs asymmetric models; the `attention_mask_dtype` config field with model-by-model recommendations; the truncation alarm and how to interpret it; how to add a new model. |
-| `docs/README_DOCS.md` | Add a paragraph in the "Task Prefixes" section: Granite is symmetric (empty prefixes), with a pointer to `README_EMBEDDINGS.md`. |
-| `docs/README_ARCHITECTURE.md` | One-line addition in §3.A — mention `md-granite` alongside `md`/`sql`. |
+| `docs/README_EMBEDDINGS.md` | **New.** Covers: supported models (Gemma, Granite); MLX backend constraints; symmetric vs asymmetric models with the rationale used here; the `attention_mask_dtype` config field with model-by-model recommendations; the truncation alarm and how to interpret it; how to add a new model. List all three Granite engines (`md-granite`, `sql-granite`, `sql-api-granite`) and note the API/MCP CLI-only constraint. |
+| `docs/README_DOCS.md` | Add a paragraph in the "Task Prefixes" section: Granite is used without task prefixes (treated as a symmetric encoder, see §4 rationale); applies to all three Granite engines (`md-granite`, `sql-granite`, `sql-api-granite`). Pointer to `README_EMBEDDINGS.md`. |
+| `docs/README_SQL.md` | Add a note that `sql-granite` and `sql-api-granite` are alternative engines using IBM Granite, with separate tables (`query_vault_granite`, `query_vault_granite_api`). Same `--min-time` filter applies (after the cli.py predicate fix in §3). |
+| `docs/README_REMOTE_SQL_API.md` | Add a note that `sql-api-granite` is the Granite-backed sibling of `sql-api`; same chunker config fields, separate table, separate workflow tag. |
+| `docs/README_ARCHITECTURE.md` | One-line addition in §3.A — mention all three Granite engines (`md-granite`, `sql-granite`, `sql-api-granite`) alongside the existing `md`/`sql`/`sql-api`, and note that they're CLI-reachable only this PR. |
 | `docs/README.md` | Add link to `README_EMBEDDINGS.md`. |
-| `README.md` (root) | Update engine list/table if present. |
-| `CLAUDE.md` | Add `attention_mask_dtype` to `EngineConfig` description; add `md-granite` to example commands. |
+| `README.md` (root) | Update engine list/table if present to include all three Granite engines. |
+| `CLAUDE.md` | Add `attention_mask_dtype` to `EngineConfig` description. Add the three Granite engines to example commands. Note that the FastAPI / MCP surfaces currently expose only Gemma engines (`md`, `sql`); generalizing the routes is a tracked follow-up. |
 
 ---
 
@@ -420,11 +427,12 @@ This is a separate brainstorm/spec because it changes the public API contract.
 
 - [ ] `uv run poe check` passes (format, lint, typecheck, all tests).
 - [ ] `uv run dbs-vector ingest "docs/" --type md-granite` ingests successfully and creates the `knowledge_vault_granite` table.
-- [ ] `uv run dbs-vector ingest <fixture> --type sql-granite` ingests successfully and creates the `query_vault_granite` table.
-- [ ] `uv run dbs-vector ingest "" --type sql-api-granite` ingests successfully from the configured remote API and creates `query_vault_granite_api`.
+- [ ] `uv run dbs-vector ingest <slow_log.duckdb> --type sql-granite` ingests successfully and creates the `query_vault_granite` table (DuckDBChunker only accepts `.duckdb` files).
+- [ ] `uv run dbs-vector ingest "http://<host>/api/v1" --type sql-api-granite` ingests successfully from the remote API and creates `query_vault_granite_api`. Note: the URL must be passed as the CLI `target_path` (IngestionService dispatches to the API chunker only when `target_path.startswith(("http://", "https://"))`).
 - [ ] `uv run dbs-vector search "<query>" --type md-granite|sql-granite|sql-api-granite` returns ranked results.
 - [ ] `uv run dbs-vector search "<query>" --type md|sql|sql-api` (existing Gemma engines) returns identical behaviour to the pre-change baseline — no schema rebuild, no quality regression.
-- [ ] FastAPI `/search/md` and `/search/sql` continue to serve only the Gemma engines (Granite engines are not exposed over HTTP/MCP this PR — verify both routes return Gemma-tagged results, and that no `/search/md-granite` route exists).
+- [ ] FastAPI `/search/md` and `/search/sql` continue to delegate to `_services.get("md")` / `_services.get("sql")` (verifiable by code review of `api/main.py`). No `/search/md-granite`, `/search/sql-granite`, or `/search/sql-api-granite` route is registered — verify with `grep -E "/search/(md-granite|sql-granite|sql-api-granite)" src/dbs_vector/api/main.py` (returns empty) or by introspecting `app.routes` at runtime. Note: the `workflow` column is not surfaced in `SearchResult` / `SqlSearchResult`, so we cannot assert "Gemma-tagged" from the API response payload — route-wiring verification is sufficient.
+- [ ] `--min-time` filter is honoured for all SQL-family engines (`sql`, `sql-api`, `sql-granite`, `sql-api-granite`) — fixes the prior `cli.py:169` predicate that hardcoded `engine_name == "sql"`. Verified by an integration test or by `--min-time 999999` returning zero results on a known-populated table for every SQL-family engine.
 - [ ] Truncation alarm fires when an input exceeds `max_token_length`; produces a single warning line per batch.
 - [ ] Promotion-error path raises a `RuntimeError` recommending `attention_mask_dtype` — verified for both the eager-forward path and the lazy `np.array(...)` materialization path.
 - [ ] All new and updated docs are linked from `docs/README.md`.
