@@ -304,6 +304,7 @@ class TestAttentionMaskDtype:
 
     def test_attention_mask_dtype_defaults_to_none(self):
         from dbs_vector.config import EngineConfig
+
         cfg = EngineConfig(
             description="t",
             model_name="m",
@@ -318,6 +319,7 @@ class TestAttentionMaskDtype:
 
     def test_attention_mask_dtype_accepts_string(self):
         from dbs_vector.config import EngineConfig
+
         cfg = EngineConfig(
             description="t",
             model_name="m",

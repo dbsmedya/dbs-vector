@@ -166,7 +166,7 @@ def search(
     service = SearchService(deps.embedder, deps.store)
 
     extra_filters = {}
-    if min_time is not None and engine_name == "sql":
+    if min_time is not None and settings.engines[engine_name].mapper_type == "sql":
         extra_filters["min_time"] = min_time
 
     results = service.execute_query(
