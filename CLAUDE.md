@@ -36,6 +36,11 @@ uv run dbs-vector ingest "queries.json" --type sql
 uv run dbs-vector search "query text" --type md
 uv run dbs-vector serve
 uv run dbs-vector mcp
+
+# Granite engine commands
+uv run dbs-vector ingest "docs/" --type md-granite
+uv run dbs-vector ingest "slow_log.duckdb" --type sql-granite
+uv run dbs-vector ingest "http://<host>/api/v1" --type sql-api-granite
 ```
 
 ## Architecture
@@ -65,7 +70,9 @@ This is a Clean Architecture, configuration-driven RAG search engine for Apple S
 - `mcp_server.py`: `FastMCP` server exposing search as MCP tools.
 - `state.py`: Shared `_services` dict (engine name → `SearchService`) used by both the FastAPI lifespan and the MCP command.
 
-**`config.py`** — `Settings` (pydantic-settings) + `EngineConfig` per engine. Loaded from `config.yaml` at startup. Env prefix: `DBS_`. The path can be overridden with `--config-file` or `DBS_CONFIG_FILE` env var.
+The FastAPI routes (`/search/md`, `/search/sql`) and MCP tools (`search_documents`, `search_sql_logs`) are currently hardcoded to the Gemma engines. The Granite engines (`md-granite`, `sql-granite`, `sql-api-granite`) are CLI-only this PR; generalizing the routes is a tracked Phase 2 follow-up. Note that `initialize_services()` still loads every configured engine on startup, so adding Granite engines to `config.yaml` increases `serve`/`mcp` startup time and memory.
+
+**`config.py`** — `Settings` (pydantic-settings) + `EngineConfig` per engine. Loaded from `config.yaml` at startup. Env prefix: `DBS_`. The path can be overridden with `--config-file` or `DBS_CONFIG_FILE` env var. The `attention_mask_dtype` field (`str | None`, default `None`) controls whether `MLXEmbedder` casts the tokenizer's attention mask to a specific dtype — required for `embeddinggemma-bf16` (`"float16"`), unset for ModernBERT-based encoders like Granite.
 
 ### Configuration-Driven Registry Pattern
 

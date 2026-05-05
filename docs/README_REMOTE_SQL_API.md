@@ -513,3 +513,16 @@ Both chunkers yield `SqlChunk` objects and flow into the same
 | `tests/unit/test_api_chunker.py` | New — 10 unit tests (all mock-based) |
 | `scripts/check_remote_api.py` | New — standalone compatibility checker (46 checks) |
 | `claude_api_contract.md` | Contract spec for remote server implementors |
+
+---
+
+## Granite alternative: `sql-api-granite`
+
+The Granite-backed sibling of `sql-api`. Same chunker config fields (`api_base_url`, `api_key`, `api_page_size`, …), separate table (`query_vault_granite_api`), separate workflow tag (`sql_clustering_granite`). Useful for evaluating Granite's SQL/code semantics on remote slow-query streams.
+
+```bash
+uv run dbs-vector ingest "http://<host>/api/v1" --type sql-api-granite
+uv run dbs-vector search "slow join on orders" --type sql-api-granite --min-time 50
+```
+
+See [README_EMBEDDINGS.md](README_EMBEDDINGS.md) for model details.

@@ -58,6 +58,7 @@ table.add(arrow_batch)
 The architecture supports specialized parallel pipelines:
 *   **MD Engine:** Uses `mlx-community/embeddinggemma-300m-bf16` with a robust `markdown-it-py` chunker that guarantees code fences remain atomic.
 *   **SQL Engine:** Uses the same `mlx-community/embeddinggemma-300m-bf16` model with task-specific prefixes to cluster parsed execution logs, finding identical logic hidden behind structural query differences.
+*   **Granite engines (`md-granite`, `sql-granite`, `sql-api-granite`):** Use `ibm-granite/granite-embedding-311m-multilingual-r2` (ModernBERT, dim 768, 32 768-token context, 52 enhanced languages including Turkish). Same code path as the Gemma engines; selected per `--type` flag. **Currently CLI-only** — the FastAPI / MCP routes still expose only the Gemma engines (Phase 2 generalizes them). See [README_EMBEDDINGS.md](README_EMBEDDINGS.md).
 
 ### B. Deduplication & Delta-Updates
 Before running expensive GPU embeddings, `IngestionService` queries the database for all existing `content_hash` values. Any chunk that hasn't changed is skipped entirely, preventing index bloat and accelerating re-ingestion.

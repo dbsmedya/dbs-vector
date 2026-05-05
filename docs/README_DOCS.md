@@ -34,6 +34,8 @@ The Markdown engine uses an **Asymmetric** retrieval strategy:
 This teaches the model to project short questions and long, factual answers into the same mathematical space, drastically improving RAG retrieval accuracy compared to naive embeddings.
 *   **Important:** These prefixes are strictly used for vector generation. They are *never* stored in the `text` column in LanceDB, ensuring your LLM prompt remains clean and your Full-Text Search index isn't polluted by the word "title" or "query."
 
+> **Granite engines.** The `md-granite` (and `sql-granite`, `sql-api-granite`) engines use IBM's Granite Multilingual R2 model with **empty `passage_prefix` and `query_prefix`**. The model card's examples don't specify task instructions; we treat it as a symmetric encoder. See [README_EMBEDDINGS.md](README_EMBEDDINGS.md) for the supported-models list and the rationale.
+
 ---
 
 ## Batching & Memory Management

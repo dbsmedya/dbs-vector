@@ -123,6 +123,19 @@ For setup instructions for all clients and transport types, see:
 
 `dbs-vector` is built upon strict **Clean Architecture** and **SOLID** principles. It utilizes a **Configuration-Driven Registry Pattern**, allowing new data engines (e.g., LibCST, Logs) to be added by simply updating `config.yaml` and registering new mappers/chunkers without modifying core orchestration logic.
 
+### Engines
+
+| Type | Model | Notes |
+|---|---|---|
+| `md` | embeddinggemma-300m-bf16 | Markdown/prose, default |
+| `sql` | embeddinggemma-300m-bf16 | DuckDB slow-query log |
+| `sql-api` | embeddinggemma-300m-bf16 | Remote slow-query API |
+| `md-granite` | granite-embedding-311m-multilingual-r2 | 32K context, multilingual (CLI-only) |
+| `sql-granite` | granite-embedding-311m-multilingual-r2 | DuckDB log, Granite (CLI-only) |
+| `sql-api-granite` | granite-embedding-311m-multilingual-r2 | Remote API, Granite (CLI-only) |
+
+See `docs/README_EMBEDDINGS.md` for model details.
+
 ### Specialized Gemma Workflows
 The project is optimized for instruction-tuned models like `embeddinggemma`. It supports asymmetric task-based workflows defined in `config.yaml`:
 *   **Markdown (Search Result)**: Uses the `task: search result` prefix for queries and `title: none | text: ` for documents, maximizing retrieval accuracy for RAG.

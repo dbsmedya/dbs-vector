@@ -82,6 +82,18 @@ uv run dbs-vector search "SELECT * FROM users" --type sql --min-time 1000
 
 ---
 
+---
+
+## Docs Index
+
+- [README_DOCS.md](README_DOCS.md) — Markdown document engine, chunking strategy, asymmetric embeddings
+- [README_SQL.md](README_SQL.md) — SQL slow-query log engine (JSON format)
+- [README_REMOTE_SQL_API.md](README_REMOTE_SQL_API.md) — Remote HTTP API ingestion (ApiChunker)
+- [README_ARCHITECTURE.md](README_ARCHITECTURE.md) — Deep dive: Arrow pipeline, zero-copy, SOLID design
+- [README_EMBEDDINGS.md](README_EMBEDDINGS.md) — supported embedding models, attention-mask dtype config, truncation alarm
+
+---
+
 ## 4. Roadmap
 
 ### Phase 2: Structural AST Parsing (LibCST Integration)

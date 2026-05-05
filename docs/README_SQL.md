@@ -64,3 +64,16 @@ uv run dbs-vector search "SELECT * FROM users" --type sql --min-time 1000
 Traditional structural analysis often relies on exact hash matching of normalized queries. While useful, it misses queries that are **logically identical but structurally different** (e.g., a `JOIN` written in a different order, or different aliasing). 
 
 Vector similarity captures the **semantic intent** of the SQL, grouping together queries that touch the same tables and indices even if the syntax varies slightly.
+
+---
+
+## Granite alternative: `sql-granite`
+
+A second SQL engine, `sql-granite`, uses IBM Granite 311m R2 instead of embeddinggemma. It writes to a separate table (`query_vault_granite`) so you can A/B compare against the existing `sql` engine on the same DuckDB slow-query fixture without index mixing. The `--min-time` filter applies identically to both engines.
+
+```bash
+uv run dbs-vector ingest "slow_log.duckdb" --type sql-granite
+uv run dbs-vector search "find users by email" --type sql-granite --min-time 100
+```
+
+See [README_EMBEDDINGS.md](README_EMBEDDINGS.md) for model details.
