@@ -16,6 +16,7 @@ engines:
     passage_prefix: "title: none | text: "
     query_prefix: "task: search result | query: "
     workflow: "md_search"
+    attention_mask_dtype: "float16"  # embeddinggemma-bf16 requires this cast
 
   sql:
     description: "SQL Slow Query Log Engine (Gemma Clustering)"
@@ -29,6 +30,7 @@ engines:
     passage_prefix: "task: clustering | query: "
     query_prefix: "task: clustering | query: "
     workflow: "sql_clustering"
+    attention_mask_dtype: "float16"  # embeddinggemma-bf16 requires this cast
 
   sql-api:
     description: "Remote slow query log via HTTP API"
@@ -42,6 +44,7 @@ engines:
     passage_prefix: "task: clustering | query: "
     query_prefix: "task: clustering | query: "
     workflow: "sql_clustering"
+    attention_mask_dtype: "float16"  # embeddinggemma-bf16 requires this cast
     # --- ApiChunker-specific fields ---
     api_base_url: "http://localhost:8080/api/v1"
     api_key: "0Byuf9P9e5UxUNIsngNjr6b9u8sldoHd1ek_ImBbxiI"          # set via DBS_API_KEY env var in production

@@ -22,12 +22,14 @@ class MLXEmbedder:
         dimension: int,
         passage_prefix: str = "",
         query_prefix: str = "",
+        attention_mask_dtype: str | None = None,
     ) -> None:
         self._model_name = model_name
         self._max_token_length = max_token_length
         self._dimension = dimension
         self._passage_prefix = passage_prefix
         self._query_prefix = query_prefix
+        self._attention_mask_dtype = attention_mask_dtype
 
         global _MODEL_CACHE
         if model_name not in _MODEL_CACHE:
@@ -81,17 +83,43 @@ class MLXEmbedder:
                 return_tensors="mlx",
             )
 
-            if hasattr(inputs, "attention_mask"):
-                inputs["attention_mask"] = inputs["attention_mask"].astype(mx.float16)
+            if self._attention_mask_dtype and "attention_mask" in inputs:
+                dtype_map = {
+                    "float16": mx.float16,
+                    "bfloat16": mx.bfloat16,
+                    "float32": mx.float32,
+                }
+                if self._attention_mask_dtype not in dtype_map:
+                    raise ValueError(
+                        f"Unsupported attention_mask_dtype '{self._attention_mask_dtype}'. "
+                        f"Allowed: {list(dtype_map)}"
+                    )
+                inputs["attention_mask"] = inputs["attention_mask"].astype(
+                    dtype_map[self._attention_mask_dtype]
+                )
 
-            outputs = self.model(inputs["input_ids"], attention_mask=inputs.get("attention_mask"))
-
-            if hasattr(outputs, "text_embeds"):
-                embeds_mlx = outputs.text_embeds
-            else:
-                embeds_mlx = outputs["text_embeds"]
-
-            vectors_np: NDArray[np.float32] = np.array(embeds_mlx).astype(np.float32)
+            try:
+                outputs = self.model(
+                    inputs["input_ids"], attention_mask=inputs.get("attention_mask")
+                )
+                embeds_mlx = (
+                    outputs.text_embeds
+                    if hasattr(outputs, "text_embeds")
+                    else outputs["text_embeds"]
+                )
+                # np.array(...) forces MLX lazy evaluation. Type-promotion errors can
+                # surface here rather than at the model() call.
+                vectors_np: NDArray[np.float32] = np.array(embeds_mlx).astype(np.float32)
+            except Exception as e:
+                if "promote" in str(e).lower():
+                    raise RuntimeError(
+                        f"MLX type-promotion error while running model '{self._model_name}'. "
+                        f"This usually means the model requires the attention_mask cast "
+                        f"to a specific dtype. Set `attention_mask_dtype` in this engine's "
+                        f'block in config.yaml — try "float16" (common for bf16 models '
+                        f'like embeddinggemma) or "bfloat16". Original error: {e}'
+                    ) from e
+                raise
         return vectors_np
 
     def embed_batch(self, texts: list[str]) -> NDArray[np.float32]:

@@ -457,6 +457,7 @@ class TestBuildDependencies:
             dimension=384,
             passage_prefix="passage: ",
             query_prefix="query: ",
+            attention_mask_dtype=None,
         )
 
     def test_build_dependencies_unknown_engine(self, mock_settings):

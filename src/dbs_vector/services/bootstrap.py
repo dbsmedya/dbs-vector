@@ -42,6 +42,7 @@ def build_dependencies(
         dimension=config.vector_dimension,
         passage_prefix=config.passage_prefix,
         query_prefix=config.query_prefix,
+        attention_mask_dtype=config.attention_mask_dtype,
     )
 
     MapperClass = ComponentRegistry.get_mapper(config.mapper_type)

@@ -51,3 +51,39 @@ def test_build_dependencies_returns_engine_deps(mock_settings):
     assert deps.embedder == MockEmbedder.return_value
     assert deps.store == MockStore.return_value
     assert deps.workflow == "default"
+
+
+def test_build_dependencies_passes_attention_mask_dtype(mock_settings):
+    """attention_mask_dtype on EngineConfig is forwarded to MLXEmbedder."""
+    mock_settings.engines["md"].attention_mask_dtype = "float16"
+
+    with (
+        patch("dbs_vector.services.bootstrap.MLXEmbedder") as MockEmbedder,
+        patch("dbs_vector.services.bootstrap.LanceDBStore"),
+        patch("dbs_vector.services.bootstrap.ComponentRegistry") as MockRegistry,
+    ):
+        MockRegistry.get_mapper.return_value = MagicMock()
+        MockRegistry.get_chunker.return_value = MagicMock()
+
+        build_dependencies("md")
+
+    _, kwargs = MockEmbedder.call_args
+    assert kwargs["attention_mask_dtype"] == "float16"
+
+
+def test_build_dependencies_defaults_attention_mask_dtype_to_none(mock_settings):
+    """When the field is None, it's still forwarded as None (not omitted)."""
+    mock_settings.engines["md"].attention_mask_dtype = None
+
+    with (
+        patch("dbs_vector.services.bootstrap.MLXEmbedder") as MockEmbedder,
+        patch("dbs_vector.services.bootstrap.LanceDBStore"),
+        patch("dbs_vector.services.bootstrap.ComponentRegistry") as MockRegistry,
+    ):
+        MockRegistry.get_mapper.return_value = MagicMock()
+        MockRegistry.get_chunker.return_value = MagicMock()
+
+        build_dependencies("md")
+
+    _, kwargs = MockEmbedder.call_args
+    assert kwargs["attention_mask_dtype"] is None

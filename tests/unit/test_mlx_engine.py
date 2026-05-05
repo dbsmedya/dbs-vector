@@ -401,3 +401,118 @@ class TestTruncationAlarm:
             embedder._execute_mlx(["x"])
 
         assert not any("Truncating" in rec.message for rec in caplog.records)
+
+
+class TestAttentionMaskDtype:
+    """Tests for config-driven attention-mask dtype + promotion-error mapping."""
+
+    def _setup_tokenizer(self, mock_tokenizer, attention_mask_value):
+        """Helper: tokenizer returns short ids on the pre-check, then the real inputs."""
+        mock_tokenizer._tokenizer.side_effect = [
+            {"input_ids": [list(range(5))]},
+            {"input_ids": MagicMock(), "attention_mask": attention_mask_value},
+        ]
+
+    def test_dtype_none_does_not_cast(self, mock_load):
+        _, mock_model, mock_tokenizer = mock_load
+        emb = MLXEmbedder(
+            model_name="granite",
+            max_token_length=128,
+            dimension=384,
+            attention_mask_dtype=None,
+        )
+        mask = MagicMock()
+        self._setup_tokenizer(mock_tokenizer, mask)
+        mock_outputs = MagicMock()
+        mock_outputs.text_embeds = np.array([[0.1] * 384], dtype=np.float32)
+        mock_model.return_value = mock_outputs
+
+        emb._execute_mlx(["x"])
+
+        mask.astype.assert_not_called()
+
+    def test_dtype_float16_casts_mask(self, mock_load):
+        import mlx.core as mx
+
+        _, mock_model, mock_tokenizer = mock_load
+        emb = MLXEmbedder(
+            model_name="gemma",
+            max_token_length=128,
+            dimension=384,
+            attention_mask_dtype="float16",
+        )
+        mask = MagicMock()
+        casted_mask = MagicMock()
+        mask.astype.return_value = casted_mask
+        self._setup_tokenizer(mock_tokenizer, mask)
+        mock_outputs = MagicMock()
+        mock_outputs.text_embeds = np.array([[0.1] * 384], dtype=np.float32)
+        mock_model.return_value = mock_outputs
+
+        emb._execute_mlx(["x"])
+
+        mask.astype.assert_called_once_with(mx.float16)
+
+    def test_invalid_dtype_raises_value_error(self, mock_load):
+        _, mock_model, mock_tokenizer = mock_load
+        emb = MLXEmbedder(
+            model_name="weird",
+            max_token_length=128,
+            dimension=384,
+            attention_mask_dtype="int8",
+        )
+        self._setup_tokenizer(mock_tokenizer, MagicMock())
+
+        with pytest.raises(ValueError, match="Unsupported attention_mask_dtype 'int8'"):
+            emb._execute_mlx(["x"])
+
+    def test_promote_error_in_forward_remapped_to_config_hint(self, mock_load):
+        _, mock_model, mock_tokenizer = mock_load
+        emb = MLXEmbedder(
+            model_name="gemma",
+            max_token_length=128,
+            dimension=384,
+            attention_mask_dtype=None,
+        )
+        self._setup_tokenizer(mock_tokenizer, MagicMock())
+        mock_model.side_effect = ValueError("Cannot promote types: bf16, int32")
+
+        with pytest.raises(RuntimeError, match="attention_mask_dtype"):
+            emb._execute_mlx(["x"])
+
+    def test_promote_error_during_materialization_remapped(self, mock_load):
+        """Lazy MLX evaluation can defer the promotion error to np.array(...)."""
+        _, mock_model, mock_tokenizer = mock_load
+        emb = MLXEmbedder(
+            model_name="gemma",
+            max_token_length=128,
+            dimension=384,
+            attention_mask_dtype=None,
+        )
+        self._setup_tokenizer(mock_tokenizer, MagicMock())
+
+        # Forward "succeeds" but returns an MLX-like object whose materialization fails.
+        class _LazyEmbeds:
+            def __array__(self, dtype=None):
+                raise ValueError("Cannot promote types: bf16, int32")
+
+        mock_outputs = MagicMock()
+        mock_outputs.text_embeds = _LazyEmbeds()
+        mock_model.return_value = mock_outputs
+
+        with pytest.raises(RuntimeError, match="attention_mask_dtype"):
+            emb._execute_mlx(["x"])
+
+    def test_unrelated_error_passes_through(self, mock_load):
+        _, mock_model, mock_tokenizer = mock_load
+        emb = MLXEmbedder(
+            model_name="m",
+            max_token_length=128,
+            dimension=384,
+            attention_mask_dtype=None,
+        )
+        self._setup_tokenizer(mock_tokenizer, MagicMock())
+        mock_model.side_effect = RuntimeError("disk full")
+
+        with pytest.raises(RuntimeError, match="disk full"):
+            emb._execute_mlx(["x"])
