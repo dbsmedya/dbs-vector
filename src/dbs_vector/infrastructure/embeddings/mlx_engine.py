@@ -1,12 +1,19 @@
 import threading
 from typing import Any
 
+import mlx.core as mx
 import numpy as np
 from loguru import logger
 from mlx_embeddings.utils import load
 from numpy.typing import NDArray
 
 _MODEL_CACHE: dict[str, tuple[Any, Any, threading.Lock]] = {}
+
+_MASK_DTYPE_MAP: dict[str, Any] = {
+    "float16": mx.float16,
+    "bfloat16": mx.bfloat16,
+    "float32": mx.float32,
+}
 
 
 class MLXEmbedder:
@@ -48,8 +55,6 @@ class MLXEmbedder:
 
     def _execute_mlx(self, texts: list[str]) -> NDArray[np.float32]:
         """Internal helper to tokenize, run the MLX model, and extract the tensor."""
-        import mlx.core as mx
-
         with self._lock:
             # Pre-tokenize without truncation/padding to detect over-budget inputs.
             # Cost: one extra fast tokenizer pass; negligible vs. the model forward.
@@ -83,22 +88,17 @@ class MLXEmbedder:
                 return_tensors="mlx",
             )
 
-            if self._attention_mask_dtype and "attention_mask" in inputs:
-                dtype_map = {
-                    "float16": mx.float16,
-                    "bfloat16": mx.bfloat16,
-                    "float32": mx.float32,
-                }
-                if self._attention_mask_dtype not in dtype_map:
-                    raise ValueError(
-                        f"Unsupported attention_mask_dtype '{self._attention_mask_dtype}'. "
-                        f"Allowed: {list(dtype_map)}"
-                    )
-                inputs["attention_mask"] = inputs["attention_mask"].astype(
-                    dtype_map[self._attention_mask_dtype]
-                )
-
             try:
+                if self._attention_mask_dtype and "attention_mask" in inputs:
+                    if self._attention_mask_dtype not in _MASK_DTYPE_MAP:
+                        raise ValueError(
+                            f"Unsupported attention_mask_dtype '{self._attention_mask_dtype}'. "
+                            f"Allowed: {list(_MASK_DTYPE_MAP)}"
+                        )
+                    inputs["attention_mask"] = inputs["attention_mask"].astype(
+                        _MASK_DTYPE_MAP[self._attention_mask_dtype]
+                    )
+
                 outputs = self.model(
                     inputs["input_ids"], attention_mask=inputs.get("attention_mask")
                 )
@@ -111,6 +111,8 @@ class MLXEmbedder:
                 # surface here rather than at the model() call.
                 vectors_np: NDArray[np.float32] = np.array(embeds_mlx).astype(np.float32)
             except Exception as e:
+                # "promote" matches "Cannot promote types: …" — the MLX type-promotion
+                # error string. No more-specific exception class is available from MLX.
                 if "promote" in str(e).lower():
                     raise RuntimeError(
                         f"MLX type-promotion error while running model '{self._model_name}'. "

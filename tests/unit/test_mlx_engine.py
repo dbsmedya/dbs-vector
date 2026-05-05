@@ -442,8 +442,7 @@ class TestAttentionMaskDtype:
             attention_mask_dtype="float16",
         )
         mask = MagicMock()
-        casted_mask = MagicMock()
-        mask.astype.return_value = casted_mask
+        mask.astype.return_value = MagicMock()
         self._setup_tokenizer(mock_tokenizer, mask)
         mock_outputs = MagicMock()
         mock_outputs.text_embeds = np.array([[0.1] * 384], dtype=np.float32)
@@ -465,6 +464,8 @@ class TestAttentionMaskDtype:
 
         with pytest.raises(ValueError, match="Unsupported attention_mask_dtype 'int8'"):
             emb._execute_mlx(["x"])
+
+        mock_model.assert_not_called()
 
     def test_promote_error_in_forward_remapped_to_config_hint(self, mock_load):
         _, mock_model, mock_tokenizer = mock_load
