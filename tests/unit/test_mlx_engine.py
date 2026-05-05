@@ -80,19 +80,33 @@ class TestExecuteMlx:
         mock_inputs = {"input_ids": MagicMock(), "attention_mask": MagicMock()}
         mock_tokenizer._tokenizer.side_effect = [
             {"input_ids": [list(range(3))]},  # pre-check
-            mock_inputs,                       # real tokenize
+            mock_inputs,  # real tokenize
         ]
 
         result = embedder._execute_mlx(["test text"])
 
-        # Verify the real tokenizer call (second call) was made with correct args
-        mock_tokenizer._tokenizer.assert_called_with(
-            ["test text"],
-            padding=True,
-            truncation=True,
-            max_length=128,
-            return_tensors="mlx",
-        )
+        # Verify both tokenizer calls happened with the right arguments.
+        assert mock_tokenizer._tokenizer.call_count == 2
+
+        # Pre-check call (first): truncation=False, padding=False, add_special_tokens=True
+        pre_check_call = mock_tokenizer._tokenizer.call_args_list[0]
+        assert pre_check_call.args == (["test text"],)
+        assert pre_check_call.kwargs == {
+            "padding": False,
+            "truncation": False,
+            "add_special_tokens": True,
+        }
+
+        # Real tokenize call (second): truncation=True, padding=True, max_length, return_tensors
+        real_call = mock_tokenizer._tokenizer.call_args_list[1]
+        assert real_call.args == (["test text"],)
+        assert real_call.kwargs == {
+            "padding": True,
+            "truncation": True,
+            "max_length": 128,
+            "return_tensors": "mlx",
+        }
+
         mock_model.assert_called_once()
 
         # Verify result
@@ -109,7 +123,10 @@ class TestExecuteMlx:
         mock_model.return_value = mock_outputs
 
         mock_inputs = {"input_ids": MagicMock()}
-        mock_tokenizer._tokenizer.return_value = mock_inputs
+        mock_tokenizer._tokenizer.side_effect = [
+            {"input_ids": [list(range(3))]},  # pre-check
+            mock_inputs,  # real tokenize
+        ]
 
         result = embedder._execute_mlx(["another text"])
 
@@ -124,7 +141,10 @@ class TestExecuteMlx:
         mock_model.return_value = mock_outputs
 
         mock_inputs = {"input_ids": MagicMock()}
-        mock_tokenizer._tokenizer.return_value = mock_inputs
+        mock_tokenizer._tokenizer.side_effect = [
+            {"input_ids": [list(range(3))]},  # pre-check
+            mock_inputs,  # real tokenize
+        ]
 
         # Mock the lock to verify it's used
         mock_lock = MagicMock()
@@ -308,7 +328,10 @@ class TestIntegrationScenarios:
         outputs.text_embeds = expected_vector.reshape(1, 384)
         mock_model.return_value = outputs
 
-        mock_tokenizer._tokenizer.return_value = {"input_ids": np.array([[1, 2, 3]])}
+        mock_tokenizer._tokenizer.side_effect = [
+            {"input_ids": [list(range(3))]},  # pre-check
+            {"input_ids": np.array([[1, 2, 3]])},  # real tokenize
+        ]
 
         result = embedder.embed_query("what is the meaning of life?")
 
@@ -324,10 +347,10 @@ class TestTruncationAlarm:
 
         # First tokenizer call (no truncation) returns long input_ids; second call (with
         # truncation) returns the trimmed version. _execute_mlx makes both calls.
-        long_ids = list(range(200))   # 200 tokens — exceeds embedder's 128 limit
-        short_ids = list(range(50))   # 50 tokens — within limit
+        long_ids = list(range(200))  # 200 tokens — exceeds embedder's 128 limit
+        short_ids = list(range(50))  # 50 tokens — within limit
         mock_tokenizer._tokenizer.side_effect = [
-            {"input_ids": [long_ids, short_ids]},                 # pre-check pass
+            {"input_ids": [long_ids, short_ids]},  # pre-check pass
             {"input_ids": MagicMock(), "attention_mask": MagicMock()},  # real tokenize
         ]
         mock_outputs = MagicMock()
@@ -349,7 +372,7 @@ class TestTruncationAlarm:
         short_ids_a = list(range(10))
         short_ids_b = list(range(20))
         mock_tokenizer._tokenizer.side_effect = [
-            {"input_ids": [short_ids_a, short_ids_b]},            # pre-check pass
+            {"input_ids": [short_ids_a, short_ids_b]},  # pre-check pass
             {"input_ids": MagicMock(), "attention_mask": MagicMock()},  # real tokenize
         ]
         mock_outputs = MagicMock()
@@ -358,5 +381,23 @@ class TestTruncationAlarm:
 
         with caplog.at_level("WARNING"):
             embedder._execute_mlx(["a", "b"])
+
+        assert not any("Truncating" in rec.message for rec in caplog.records)
+
+    def test_no_warning_when_input_at_exact_limit(self, embedder, mock_load, caplog):
+        """Predicate is strict >; an input of exactly max_token_length must not warn."""
+        _, mock_model, mock_tokenizer = mock_load
+
+        at_limit_ids = list(range(128))  # exactly equals embedder's max_token_length=128
+        mock_tokenizer._tokenizer.side_effect = [
+            {"input_ids": [at_limit_ids]},
+            {"input_ids": MagicMock(), "attention_mask": MagicMock()},
+        ]
+        mock_outputs = MagicMock()
+        mock_outputs.text_embeds = np.array([[0.1]], dtype=np.float32)
+        mock_model.return_value = mock_outputs
+
+        with caplog.at_level("WARNING"):
+            embedder._execute_mlx(["x"])
 
         assert not any("Truncating" in rec.message for rec in caplog.records)
