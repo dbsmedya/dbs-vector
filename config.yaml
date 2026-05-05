@@ -53,3 +53,49 @@ engines:
     api_timeout_sec: 30        # HTTP request timeout in seconds
     api_min_execution_ms: 0    # filter: skip queries below this threshold
     api_database: ""           # leave empty to fetch all databases
+
+  md-granite:
+    description: "Markdown & Prose Engine (Granite Multilingual R2 - long context)"
+    model_name: "ibm-granite/granite-embedding-311m-multilingual-r2"
+    vector_dimension: 768
+    max_token_length: 8192
+    table_name: "knowledge_vault_granite"
+    mapper_type: "document"
+    chunker_type: "document"
+    chunk_max_chars: 24000
+    passage_prefix: ""
+    query_prefix: ""
+    workflow: "md_search_granite"
+
+  sql-granite:
+    description: "SQL Slow Query Log Engine (Granite Clustering)"
+    model_name: "ibm-granite/granite-embedding-311m-multilingual-r2"
+    vector_dimension: 768
+    max_token_length: 8192
+    table_name: "query_vault_granite"
+    mapper_type: "sql"
+    chunker_type: "duckdb"
+    chunk_max_chars: 0
+    passage_prefix: ""
+    query_prefix: ""
+    workflow: "sql_clustering_granite"
+
+  sql-api-granite:
+    description: "Remote slow query log via HTTP API (Granite)"
+    model_name: "ibm-granite/granite-embedding-311m-multilingual-r2"
+    vector_dimension: 768
+    max_token_length: 8192
+    table_name: "query_vault_granite_api"
+    mapper_type: "sql"
+    chunker_type: "api"
+    chunk_max_chars: 0
+    passage_prefix: ""
+    query_prefix: ""
+    workflow: "sql_clustering_granite"
+    api_base_url: "http://localhost:8080/api/v1"
+    api_key: "0Byuf9P9e5UxUNIsngNjr6b9u8sldoHd1ek_ImBbxiI"
+    api_page_size: 200
+    api_since_days: 60
+    api_timeout_sec: 30
+    api_min_execution_ms: 0
+    api_database: ""
