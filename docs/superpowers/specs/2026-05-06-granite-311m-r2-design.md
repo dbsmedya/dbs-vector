@@ -449,10 +449,13 @@ The hardcoded `/search/md` and `/search/sql` FastAPI routes plus the `search_doc
 
 ### 12.2 Startup load cost — selective engine loading
 
-`api/state.py:initialize_services()` iterates `settings.engines.keys()`. After this PR, that means six models loaded on every `dbs-vector serve` / `dbs-vector mcp` start. Phase 2 fix:
+`api/state.py:initialize_services()` iterates `settings.engines.keys()`. After this PR, that means six models loaded on every `dbs-vector serve` / `dbs-vector mcp` start. Phase 2 *enables operators to mitigate this* (it does not solve it unconditionally — the operator chooses):
 
-- Add a top-level config option (e.g. `system.preload_engines: list[str] | "all"`, default `"all"` for backwards compatibility) that filters which engines `initialize_services()` actually loads. Other engines are loaded lazily on first request via the dynamic route's `_services.setdefault(engine, build_dependencies(engine))`.
-- Lazy loading runs under a per-engine `asyncio.Lock` so concurrent first-request traffic doesn't double-load.
+- Add a top-level config option `system.preload_engines: list[str]` to filter which engines `initialize_services()` actually loads. **Default: `["md", "sql"]`** — matches the engines the existing hardcoded routes already exposed pre-Phase-2, so out-of-the-box `serve`/`mcp` returns to the original two-model startup cost. Operators who want all engines warm at startup set `preload_engines: ["md", "sql", "sql-api", "md-granite", "sql-granite", "sql-api-granite"]` (or omit the field and we treat absence as "all" for explicit opt-in to the old behaviour — to be decided in the Phase 2 brainstorm).
+- Engines outside `preload_engines` are loaded lazily on first request via the dynamic `/search/{engine}` route's `_services.setdefault(engine, build_dependencies(engine))`. First request to a cold engine pays the load cost; subsequent requests are warm.
+- Lazy loading runs under a per-engine `asyncio.Lock` so concurrent first-request traffic doesn't double-load the same model.
+
+The default of `["md", "sql"]` is the conservative choice: an operator who upgrades to Phase 2 with no config change sees identical startup behaviour to pre-Phase-1, with Granite available on demand.
 
 ### 12.3 Out of scope for Phase 2
 
