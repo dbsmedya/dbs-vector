@@ -49,9 +49,30 @@ class MLXEmbedder:
         import mlx.core as mx
 
         with self._lock:
-            # We call the underlying transformers tokenizer directly to obtain the attention_mask.
-            # Some models (like Gemma bf16) require the mask to be cast to bfloat16 to avoid
-            # type promotion errors during inference.
+            # Pre-tokenize without truncation/padding to detect over-budget inputs.
+            # Cost: one extra fast tokenizer pass; negligible vs. the model forward.
+            no_trunc = self.tokenizer._tokenizer(
+                texts,
+                padding=False,
+                truncation=False,
+                add_special_tokens=True,
+            )
+            lengths = [len(ids) for ids in no_trunc["input_ids"]]
+            max_len = max(lengths) if lengths else 0
+            if max_len > self._max_token_length:
+                over_count = sum(1 for n in lengths if n > self._max_token_length)
+                logger.warning(
+                    "Truncating {}/{} inputs above max_token_length={} for model '{}' "
+                    "(longest observed: {} tokens, includes task prefix). "
+                    "Consider raising max_token_length or lowering chunk_max_chars.",
+                    over_count,
+                    len(texts),
+                    self._max_token_length,
+                    self._model_name,
+                    max_len,
+                )
+
+            # Existing tokenizer call — performs truncation+padding for the model.
             inputs = self.tokenizer._tokenizer(
                 texts,
                 padding=True,
@@ -63,7 +84,6 @@ class MLXEmbedder:
             if hasattr(inputs, "attention_mask"):
                 inputs["attention_mask"] = inputs["attention_mask"].astype(mx.float16)
 
-            # We pass the input_ids as the first positional argument and attention_mask as a keyword.
             outputs = self.model(inputs["input_ids"], attention_mask=inputs.get("attention_mask"))
 
             if hasattr(outputs, "text_embeds"):
@@ -71,8 +91,6 @@ class MLXEmbedder:
             else:
                 embeds_mlx = outputs["text_embeds"]
 
-            # Unified Memory mapping (Forces MLX Lazy Evaluation)
-            # Note: This involves a memcpy within Unified Memory due to different allocators.
             vectors_np: NDArray[np.float32] = np.array(embeds_mlx).astype(np.float32)
         return vectors_np
 

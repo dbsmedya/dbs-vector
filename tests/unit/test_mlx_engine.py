@@ -76,14 +76,17 @@ class TestExecuteMlx:
         mock_outputs.text_embeds = np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
         mock_model.return_value = mock_outputs
 
-        # Setup tokenizer return (must have input_ids and optional attention_mask)
+        # Setup tokenizer side_effect: first call is the pre-check, second is the real tokenize.
         mock_inputs = {"input_ids": MagicMock(), "attention_mask": MagicMock()}
-        mock_tokenizer._tokenizer.return_value = mock_inputs
+        mock_tokenizer._tokenizer.side_effect = [
+            {"input_ids": [list(range(3))]},  # pre-check
+            mock_inputs,                       # real tokenize
+        ]
 
         result = embedder._execute_mlx(["test text"])
 
-        # Verify tokenizer was called correctly
-        mock_tokenizer._tokenizer.assert_called_once_with(
+        # Verify the real tokenizer call (second call) was made with correct args
+        mock_tokenizer._tokenizer.assert_called_with(
             ["test text"],
             padding=True,
             truncation=True,
@@ -310,3 +313,50 @@ class TestIntegrationScenarios:
         result = embedder.embed_query("what is the meaning of life?")
 
         np.testing.assert_array_equal(result, expected_vector)
+
+
+class TestTruncationAlarm:
+    """Tests for the truncation alarm in _execute_mlx."""
+
+    def test_truncation_warning_emitted_when_over_budget(self, embedder, mock_load, caplog):
+        """Warning fires when at least one input exceeds max_token_length."""
+        _, mock_model, mock_tokenizer = mock_load
+
+        # First tokenizer call (no truncation) returns long input_ids; second call (with
+        # truncation) returns the trimmed version. _execute_mlx makes both calls.
+        long_ids = list(range(200))   # 200 tokens — exceeds embedder's 128 limit
+        short_ids = list(range(50))   # 50 tokens — within limit
+        mock_tokenizer._tokenizer.side_effect = [
+            {"input_ids": [long_ids, short_ids]},                 # pre-check pass
+            {"input_ids": MagicMock(), "attention_mask": MagicMock()},  # real tokenize
+        ]
+        mock_outputs = MagicMock()
+        mock_outputs.text_embeds = np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=np.float32)
+        mock_model.return_value = mock_outputs
+
+        with caplog.at_level("WARNING"):
+            embedder._execute_mlx(["long text", "short text"])
+
+        assert any("Truncating 1/2" in rec.message for rec in caplog.records)
+        assert any("max_token_length=128" in rec.message for rec in caplog.records)
+        assert any("test-model" in rec.message for rec in caplog.records)
+        assert any("longest observed: 200" in rec.message for rec in caplog.records)
+
+    def test_no_warning_when_all_inputs_under_budget(self, embedder, mock_load, caplog):
+        """No warning when every input is within max_token_length."""
+        _, mock_model, mock_tokenizer = mock_load
+
+        short_ids_a = list(range(10))
+        short_ids_b = list(range(20))
+        mock_tokenizer._tokenizer.side_effect = [
+            {"input_ids": [short_ids_a, short_ids_b]},            # pre-check pass
+            {"input_ids": MagicMock(), "attention_mask": MagicMock()},  # real tokenize
+        ]
+        mock_outputs = MagicMock()
+        mock_outputs.text_embeds = np.array([[0.1], [0.2]], dtype=np.float32)
+        mock_model.return_value = mock_outputs
+
+        with caplog.at_level("WARNING"):
+            embedder._execute_mlx(["a", "b"])
+
+        assert not any("Truncating" in rec.message for rec in caplog.records)
