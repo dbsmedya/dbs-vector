@@ -20,7 +20,7 @@ Add IBM `granite-embedding-311m-multilingual-r2` as a supported embedding model 
 
 - Replacing embeddinggemma. Both models stay supported.
 - Adding a second embedding *runtime* (e.g. GGUF / `llama-cpp-python`). The pre-implementation spike confirmed Granite loads cleanly via the existing MLX path; GGUF stays as a documented fallback only if MLX support regresses.
-- **Exposing Granite engines via FastAPI or MCP.** The routes in `api/main.py` (`/search/md`, `/search/sql`) and the MCP tools in `api/mcp_server.py` are hardcoded to `_services.get("md")` / `_services.get("sql")`. New engines load at startup (DI is dynamic) but are not reachable over HTTP/MCP without route changes. **This PR is CLI-only for the new engines**; making the API engine-agnostic (e.g. one generalized `/search/{engine}` route + an `engine` param on MCP tools) is its own design effort and tracked as a follow-up.
+- **Exposing Granite engines via FastAPI or MCP.** The routes in `api/main.py` (`/search/md`, `/search/sql`) and the MCP tools in `api/mcp_server.py` are hardcoded to `_services.get("md")` / `_services.get("sql")`, so the new engines are not *reachable* over HTTP/MCP without route changes. **This PR is CLI-only for the new engines** at the route level; generalizing the routes is Phase 2 (§12). **Caveat — startup is *not* unaffected**: `api/state.initialize_services()` iterates `settings.engines.keys()` and calls `build_dependencies()` for every configured engine, so `dbs-vector serve` and `dbs-vector mcp` will load **all six** models (three Gemma + three Granite) on startup. Operationally this adds the Granite download (one-time, ~1 GB) and the per-process memory cost of the additional MLX models, even though their routes don't exist yet. Operators who run `serve`/`mcp` without needing Granite this PR should comment out the three Granite engine blocks in `config.yaml` until Phase 2 ships. Phase 2 will solve this properly via selective loading.
 
 ---
 
@@ -283,7 +283,8 @@ except Exception as e:
 2. Existing tables (`knowledge_vault`, `query_vault`) are untouched — schema, dim, and workflow tag are unchanged. The Gemma engines see only an explicit `attention_mask_dtype` in config that produces identical behaviour to today's hardcoded cast.
 3. First Granite ingest creates fresh tables: `knowledge_vault_granite`, `query_vault_granite`, `query_vault_granite_api`. Model download is one-time (~60 s); the same model file is shared across all three Granite engines via the in-process `_MODEL_CACHE`.
 4. Search via CLI: `uv run dbs-vector search … --type md-granite|sql-granite|sql-api-granite`. The Gemma engines (`md`, `sql`, `sql-api`) continue to work in parallel — direct A/B.
-5. **API/MCP traffic is unaffected** — the existing routes still point at the Gemma engines. New engines are CLI-only this PR.
+5. **API/MCP routing is unaffected** — the existing routes still point at the Gemma engines. New engines are CLI-only this PR.
+6. **API/MCP startup *is* affected** — `initialize_services()` iterates every engine in `settings.engines`, so `dbs-vector serve` and `dbs-vector mcp` will download Granite once (~1 GB) and hold all six models in memory after the change, even though Granite's routes do not exist yet. Operators who don't want this memory/download cost in this PR's window should temporarily comment out the three Granite engine blocks in `config.yaml`. Phase 2 (§12) introduces selective loading.
 
 ### Rollback (single revert)
 
@@ -412,14 +413,9 @@ uv run dbs-vector search "anything" --type sql --min-time 100   # also verifies 
 
 If MLX-native loading regresses or pooling proves wrong: a published GGUF variant (`mykor/granite-embedding-311m-multilingual-r2-GGUF`) declares `modernbert` architecture, ships a working `llama_cpp.Llama(embedding=True)` example, and the BF16 build cosine-matches fp32 at 0.9999. Adopting it would require a new `LlamaCppEmbedder` implementation of `IEmbedder` and a `llama-cpp-python` dependency — a follow-up design, not part of this work.
 
-### Known follow-up: API/MCP engine generalization
+### Phase 2 reference
 
-The hardcoded `/search/md` and `/search/sql` FastAPI routes (and `search_documents` / `search_sql_logs` MCP tools) prevent any non-`md`/`sql` engine — including the three new Granite engines — from being reachable over HTTP/MCP. The right fix is *not* to add three more hardcoded routes/tools (that doubles the surface and entrenches the wrong abstraction) but to generalize:
-
-- One `/search/{engine}` POST route that resolves `_services.get(engine)` dynamically. Request schema picks `SqlSearchRequest` shape vs `SearchRequest` shape based on the engine's `mapper_type`.
-- One `search` MCP tool that takes an `engine` parameter (with discriminated-union response shape).
-
-This is a separate brainstorm/spec because it changes the public API contract.
+The hardcoded route problem is owned by the Phase 2 follow-up — see §12.
 
 ---
 
@@ -436,3 +432,34 @@ This is a separate brainstorm/spec because it changes the public API contract.
 - [ ] Truncation alarm fires when an input exceeds `max_token_length`; produces a single warning line per batch.
 - [ ] Promotion-error path raises a `RuntimeError` recommending `attention_mask_dtype` — verified for both the eager-forward path and the lazy `np.array(...)` materialization path.
 - [ ] All new and updated docs are linked from `docs/README.md`.
+
+---
+
+## 12. Phase 2 — API/MCP engine generalization (separate PR)
+
+Phase 2 is a follow-up that does *not* block this PR but is required before the Granite engines are usable over HTTP/MCP and before the startup-load cost of unused engines is mitigated. Two distinct problems, one PR:
+
+### 12.1 Reachability — generalized routes and tools
+
+The hardcoded `/search/md` and `/search/sql` FastAPI routes plus the `search_documents` / `search_sql_logs` MCP tools each `_services.get("md"|"sql")`. Adding three more hardcoded routes/tools for the Granite siblings would double the surface area and entrench the wrong abstraction. Instead:
+
+- **FastAPI:** one generalized `POST /search/{engine}` route that resolves `_services.get(engine)` dynamically and validates `engine` is a known engine name. Request body uses a discriminated union (or two routes that share a base) so `mapper_type == "sql"` engines accept `min_time` and `mapper_type == "document"` engines accept the document-shaped fields. Response model picks the matching `SearchResult` / `SqlSearchResult` shape from the resolved engine's mapper type.
+- **MCP:** one `search` tool with an `engine` parameter (defaulting to `md` for backward compatibility) plus an `extra_filters` dict; the tool inspects `mapper_type` to decide which formatter to use.
+- **Backwards compatibility:** keep the existing `/search/md`, `/search/sql`, `search_documents`, `search_sql_logs` routes/tools as thin proxies to the generalized form for one release, then deprecate.
+
+### 12.2 Startup load cost — selective engine loading
+
+`api/state.py:initialize_services()` iterates `settings.engines.keys()`. After this PR, that means six models loaded on every `dbs-vector serve` / `dbs-vector mcp` start. Phase 2 fix:
+
+- Add a top-level config option (e.g. `system.preload_engines: list[str] | "all"`, default `"all"` for backwards compatibility) that filters which engines `initialize_services()` actually loads. Other engines are loaded lazily on first request via the dynamic route's `_services.setdefault(engine, build_dependencies(engine))`.
+- Lazy loading runs under a per-engine `asyncio.Lock` so concurrent first-request traffic doesn't double-load.
+
+### 12.3 Out of scope for Phase 2
+
+- Changing the LanceDB schema or mapper layer.
+- Changing the IEmbedder protocol.
+- The CLI surface — Phase 1 already covers `--type` for all engines.
+
+### 12.4 Trigger to start Phase 2
+
+Once Phase 1 ships and the Granite engines have a week of usage data via the CLI, Phase 2 is unblocked. A separate brainstorm + spec + plan cycle is run for it; this section is a placeholder, not a detailed plan.
