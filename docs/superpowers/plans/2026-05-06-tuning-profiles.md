@@ -20,7 +20,7 @@
 - `src/dbs_vector/infrastructure/hardware.py` — `detect_memory_budget_gb`, `resolve_memory_budget_gb`. Lazy `mlx.core` import.
 
 ### Modified source files
-- `src/dbs_vector/config.py` — add `TuningProfile`, `Settings.profiles`, `Settings.memory_budget_gb`; remove `Settings.batch_size`; shrink `EngineConfig` (remove model-contract fields, add `model` + `tuning_profile`); update `chunker_kwargs()` signature; replace module-bottom `settings = load_settings()` with `settings = Settings()`; flip `load_settings(config_file: str | None = None, validate: bool = False)`; add `_apply_system_config`, `_raise_migration_hint`, `_validate_config`.
+- `src/dbs_vector/config.py` — add `TuningProfile`, `Settings.profiles`, `Settings.memory_budget_gb`; remove `Settings.batch_size`; shrink `EngineConfig` (remove model-contract fields, add `model` + `tuning_profile`); update `chunker_kwargs()` signature; replace module-bottom `settings = load_settings()` with `settings = Settings(_env_file=None)` (zero I/O at import — disables `.env` read); flip `load_settings(config_file: str | None = None, validate: bool = False)`; add `_apply_system_config`, `_raise_migration_hint`, `_validate_config`.
 - `src/dbs_vector/services/bootstrap.py` — resolve through `ModelRegistry` + `Settings.profiles`; populate new `EngineDeps.batch_size`.
 - `src/dbs_vector/services/ingestion.py` — `IngestionService.__init__` accepts `batch_size: int`; drop the module-level `from dbs_vector.config import settings` import; replace `settings.batch_size` with `self.batch_size`.
 - `src/dbs_vector/cli.py` — Typer callback singleton-copy adds `profiles` + `memory_budget_gb`, drops `batch_size`; CLI commands pass `deps.batch_size` to `IngestionService`.
@@ -2259,7 +2259,7 @@ Verify: `grep -n "IngestionService(" src/dbs_vector/cli.py` — update every occ
 - [ ] **Step 6: Run CLI callback tests**
 
 Run: `uv run pytest tests/unit/test_cli_callback.py -v`
-Expected: 4 passed.
+Expected: 6 passed (4 subprocess help/version tests + 2 direct singleton-mutation tests).
 
 - [ ] **Step 7: Run full unit suite**
 

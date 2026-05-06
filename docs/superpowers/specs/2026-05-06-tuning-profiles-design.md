@@ -354,7 +354,7 @@ Caller table:
 
 | Caller | Exact call | Validates? |
 |---|---|---|
-| Module-import singleton (`config.py` bottom) | `settings = Settings()` | **No I/O** |
+| Module-import singleton (`config.py` bottom) | `settings = Settings(_env_file=None)` | **No I/O** |
 | CLI callback (`cli.py main()`) | `new = load_settings(config_file, validate=True)`; copy onto `settings` | **Yes** |
 | API lifespan (`api/main.py`) | `new = load_settings(os.environ.get("DBS_CONFIG_FILE", "config.yaml"), validate=True)`; copy onto `settings`; then `initialize_services()` | **Yes** |
 | MCP standalone (`api/mcp_server.py` if invoked outside FastAPI) | Same pattern as API lifespan | **Yes** |
@@ -400,7 +400,7 @@ Why this is provably import-safe:
 
 | Failure mode | Behavior |
 |---|---|
-| `config.yaml` missing | `settings = Settings()` succeeds; CLI/API loader handles missing file at runtime. |
+| `config.yaml` missing | `settings = Settings(_env_file=None)` succeeds; CLI/API loader handles missing file at runtime. |
 | `config.yaml` malformed YAML | `import dbs_vector.config` succeeds; the YAML error is raised by the *runtime* `load_settings()` call inside CLI callback or API lifespan, where it can be reported cleanly. |
 | `config.yaml` old schema | Same as above — caught by `_apply_system_config` / `_raise_migration_hint` at runtime, not at import. |
 | `dbs-vector --help` / `--version` | Typer callback short-circuits before `load_settings()` (`cli.py:54-55`); module import did no I/O. |
@@ -728,7 +728,7 @@ This is a **breaking config schema change**. Single PR, no automated migrator (Y
    - `IngestionService.__init__` accepts `batch_size: int` (constructor arg), drop the `from dbs_vector.config import settings` line at line 11 (now passed in).
    - Replace `settings.batch_size` at line 106 with `self.batch_size`.
 7. **`config.yaml`** rewritten per §10.
-8. **`config.py` module bottom**: replace `settings = load_settings()` with `settings = Settings()` (no I/O at import). Update `load_settings()` signature default to `validate=False`. See §7 for full rationale.
+8. **`config.py` module bottom**: replace `settings = load_settings()` with `settings = Settings(_env_file=None)` (no I/O at import — `_env_file=None` disables pydantic-settings' `.env` read for this instance). Update `load_settings()` signature default to `validate=False`. See §7 for full rationale.
 9. **`api/main.py` lifespan**: explicitly call `load_settings(os.environ.get("DBS_CONFIG_FILE", "config.yaml"), validate=True)` and copy fields onto the singleton *before* `initialize_services()`. Add an import for `os` and `load_settings`. See §7 example. Also update `/health` endpoint at `api/main.py:90-91` (`config.model_name`) — `model_name` is no longer on `EngineConfig`; resolve via `ModelRegistry.get(config.model).model_name`.
 10. **`api/mcp_server.py`** (if it can be invoked standalone outside the FastAPI lifespan): same lifespan-style explicit load. The current `dbs-vector mcp` CLI subcommand routes through Typer first, so the CLI callback already handles it; only direct `python -m dbs_vector.api.mcp_server` style invocations need extra wiring (note in spec, no code change needed if not used).
 11. **CLI** (`cli.py`):
@@ -948,7 +948,7 @@ This PR is done when:
    - tmpdir with **no `config.yaml`** present;
    - tmpdir with a **malformed `config.yaml`** (broken YAML syntax — `yaml.safe_load` would raise `YAMLError` if called);
    - tmpdir with an **old-schema `config.yaml`** (legacy `system.batch_size`, legacy per-engine fields).
-   In all three, `dbs-vector --help` and `--version` exit 0 with their normal output. **The malformed-config case is the proof point**: a module that read YAML at import would crash here. The fix is `settings = Settings()` at module bottom — zero I/O — with all real loading deferred to the CLI callback or API lifespan. A separate unit test (`test_config_import_safety.py`) asserts `Path.open` is never called during `import dbs_vector.config`.
+   In all three, `dbs-vector --help` and `--version` exit 0 with their normal output. **The malformed-config case is the proof point**: a module that read YAML at import would crash here. The fix is `settings = Settings(_env_file=None)` at module bottom — zero I/O (no YAML *and* no `.env` read) — with all real loading deferred to the CLI callback or API lifespan. A separate unit test (`test_config_import_safety.py`) creates both a `.env` and a malformed `config.yaml` in a tmpdir and asserts `Path.open` and `builtins.open` are never called during `import dbs_vector.config`.
 10. **Old-schema YAML produces a single migration-hint error** that names the legacy fields detected and points at `docs/superpowers/specs/2026-05-06-tuning-profiles-design.md` §10 + `docs/README_EMBEDDINGS.md`. Asserted by:
     - a test for `_apply_system_config` that the message names `system.batch_size`;
     - a test for `_raise_migration_hint` that the message names legacy per-engine fields (e.g., `model_name`, `attention_mask_dtype`);
