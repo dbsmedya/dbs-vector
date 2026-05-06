@@ -237,7 +237,9 @@ def test_estimate_calibration_point():
     raw_attention = 64 * (16384 ** 2) * 2
     expected = int(_PEAK_BUFFER_OVERHEAD * raw_attention)
     assert bytes_estimated == expected
-    assert bytes_estimated > 100 * 1024 ** 3
+    # Sanity bounds: the estimate is ~103 GB (decimal). Lower bound is in
+    # decimal GB to match the docstring; upper bound is in GiB for headroom.
+    assert bytes_estimated > 100 * 1000 ** 3
     assert bytes_estimated < 110 * 1024 ** 3
 
 
