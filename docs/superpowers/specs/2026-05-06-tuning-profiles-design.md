@@ -164,11 +164,32 @@ class EngineConfig(BaseModel):
     api_database: str = ""
 
     def chunker_kwargs(
-        self, query_override: str | None = None, url_override: str | None = None
+        self,
+        chunk_max_chars: int,
+        query_override: str | None = None,
+        url_override: str | None = None,
     ) -> dict[str, object]:
-        """Resolve chunker initialization kwargs. Reads chunk_max_chars from the
-        resolved tuning profile via settings.profiles (caller injects)."""
-        # signature change documented in §6
+        """Resolve chunker init kwargs. `chunk_max_chars` is injected by the
+        caller from the resolved tuning profile (no longer a field on Engine)."""
+        if self.chunker_type == "duckdb":
+            return {"query": query_override or self.duckdb_query}
+        if self.chunker_type == "api":
+            kwargs: dict[str, object] = {
+                "base_url": url_override or self.api_base_url,
+                "api_key": self.api_key,
+                "page_size": self.api_page_size,
+                "since_days": self.api_since_days,
+                "timeout_sec": self.api_timeout_sec,
+                "min_execution_ms": self.api_min_execution_ms,
+            }
+            if self.api_database:
+                kwargs["database"] = self.api_database
+            if query_override:
+                kwargs["custom_query"] = query_override
+            return kwargs
+        if chunk_max_chars > 0:
+            return {"max_chars": chunk_max_chars}
+        return {}
 ```
 
 ### Removed fields
@@ -193,33 +214,46 @@ Same gemma-bf16 model is shared between `md` (search prefix) and `sql` (clusteri
 ### `config.py` — `TuningProfile`
 
 ```python
+from pydantic import BaseModel, ConfigDict, Field
+
 class TuningProfile(BaseModel):
     """Three numeric knobs validated against the engine's model contract and
     available memory at load time."""
 
-    max_token_length: int       # ≤ contract.model_max_token_length
-    chunk_max_chars: int        # 0 = atomic chunks (SQL); >0 = merge until limit
-    batch_size: int             # passed to IngestionService._batched()
+    model_config = ConfigDict(extra="forbid")  # reject unknown fields → typo guard
+
+    max_token_length: int = Field(gt=0)        # ≤ contract.model_max_token_length
+    chunk_max_chars: int = Field(ge=0)         # 0 = atomic; >0 = merge until limit
+    batch_size: int = Field(gt=0)              # passed to IngestionService
 ```
+
+Pydantic enforces the numeric bounds at parse time; the engine-vs-model and memory checks run later in `_validate_config`. Negative or zero values fail with a clean Pydantic error before the validator gets involved.
 
 ### `config.py` — `Settings`
 
 ```python
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="DBS_",
+        env_file=".env",
+        extra="forbid",  # reject unknown top-level keys → typo guard
+    )
+
     db_path: str = "./lancedb_dbs_vector"
-    nprobes: int = 20
+    nprobes: int = Field(default=20, gt=0)
     log_level: str = "INFO"
     log_serialize: bool = False
 
-    memory_budget_gb: float | None = None  # None = auto-detect from MLX (NEW)
+    memory_budget_gb: float | None = Field(default=None, gt=0)   # NEW
+    # None = auto-detect from MLX. Must be > 0 if set.
 
-    profiles: dict[str, TuningProfile] = {}  # NEW
+    profiles: dict[str, TuningProfile] = {}    # NEW
     engines: dict[str, EngineConfig] = {}
 
     # REMOVED: batch_size  (now per-profile)
-
-    model_config = SettingsConfigDict(env_prefix="DBS_", env_file=".env")
 ```
+
+`EngineConfig` also gets `model_config = ConfigDict(extra="forbid")` so legacy fields like `model_name`, `vector_dimension`, `attention_mask_dtype`, `max_token_length`, `chunk_max_chars`, `batch_size` will surface as a Pydantic error when migrating from old YAML — see Fix 7 / §11 migration handling.
 
 ### Built-in profiles (in default `config.yaml`)
 
@@ -274,18 +308,52 @@ def build_dependencies(engine_name, query_override=None, url_override=None):
         mapper=mapper,
         nprobes=settings.nprobes,
     )
-    return EngineDeps(embedder, store, chunker, engine.workflow)
+    return EngineDeps(
+        embedder=embedder,
+        store=store,
+        chunker=chunker,
+        workflow=engine.workflow,
+        batch_size=profile.batch_size,        # NEW field — injected for IngestionService
+    )
 ```
 
-`IngestionService` reads `batch_size` from `profile.batch_size` (passed in via a constructor arg or via the resolved deps), no longer from `settings.batch_size`.
+### Final `EngineDeps` shape
 
-`EngineConfig.chunker_kwargs()` gains a `chunk_max_chars: int` parameter — caller injects the value from the resolved profile. The `if self.chunk_max_chars > 0:` branch becomes `if chunk_max_chars > 0:`.
+```python
+class EngineDeps(NamedTuple):
+    """Resolved per-engine runtime dependencies."""
+    embedder: Any
+    store: Any
+    chunker: Any
+    workflow: str
+    batch_size: int   # NEW: from the resolved TuningProfile
+```
+
+`IngestionService.__init__` accepts `batch_size: int` and stores it as `self.batch_size`. `cli.py` passes `deps.batch_size` when constructing the service. The module-level `from dbs_vector.config import settings` import in `services/ingestion.py` is removed (no longer reads `settings.batch_size`).
 
 ---
 
-## 7. Validation chain (fail-fast at `load_settings()`)
+## 7. Validation chain (fail-fast on explicit config load)
 
-After parsing YAML and constructing all profiles + engines, run a `_validate_config(settings)` pass. Any failure raises `ValueError` with a clear remediation message before `load_settings()` returns.
+### When validation runs
+
+`config.py` exposes a module-level singleton `settings = load_settings()` that runs at import time (used by `serve`/`mcp`/tests before the CLI callback fires). The validator must NOT run during this implicit load — that would break `dbs-vector --help`, `dbs-vector --version`, and any test that imports the module without a real config.
+
+The rule:
+
+| Caller | Validates? |
+|---|---|
+| Module-import singleton: `settings = load_settings()` (no args) | **No** — empty engines, nothing to validate |
+| CLI callback: `load_settings(config_file)` (path arg) | **Yes** — fail-fast on bad config |
+| Test fixtures: `load_settings(path, validate=False)` (override) | **No** — tests construct deliberately partial configs |
+
+Implementation: `load_settings(config_file: str | None = None, validate: bool = True) -> Settings`. The module-level call passes no args (which keeps validation off because `engines` stays empty and the validator short-circuits on empty engines anyway). The CLI callback passes the explicit path, which triggers validation. Tests can pass `validate=False` to construct intentionally invalid configs for negative tests.
+
+`_validate_config(settings)` short-circuits when `not settings.engines` (no engines = nothing to validate). This makes the "module import" path safe by construction, even if a future caller passes `validate=True` accidentally.
+
+### Validation rules
+
+After parsing YAML and constructing all profiles + engines, run `_validate_config(settings)`. Any failure raises `ValueError` with a clear remediation message before `load_settings()` returns.
 
 For each `(engine_name, engine)` in `settings.engines.items()`:
 
@@ -299,14 +367,33 @@ For each `(engine_name, engine)` in `settings.engines.items()`:
    `profile.max_token_length ≤ contract.model_max_token_length` — else: `"Profile 'granite-md-large' requires 16384 tokens but engine 'md' uses model 'gemma-bf16' (cap 2048). Lower profile.max_token_length or pick a different model."`
 
 4. **Profile fits memory budget.**
-   `estimate_peak_buffer_bytes(profile, contract) ≤ memory_budget_bytes × 0.9` — else: `"Profile 'granite-md-extreme' would allocate ~41 GB; memory budget is 22 GB. Suggested values from recommend_profile(): max_token_length=16384, batch_size=N. Edit config.yaml."`
-   The `× 0.9` leaves 10% headroom for OS/other allocations. The "suggested values" are produced by calling `recommend_profile(contract, memory_budget_gb, target_chunker=engine.chunker_type)` (§9) so the message is always self-consistent with the formula.
+   `estimate_peak_buffer_bytes(profile, contract) ≤ memory_budget_bytes × 0.9` — else:
+   ```
+   Profile 'granite-md-extreme' on engine 'md-granite' fails the memory budget:
+     conservative estimate: 103.2 GB  (3.0× safety factor over raw attention buffer)
+     budget (Metal max buffer × 0.9): 20.4 GB
+   For reference: the raw attention buffer alone at this config is ~34 GB; the
+   2025-05 calibration crash measured 41 GB before OOM. The 3.0× factor adds
+   headroom for KV cache, weights, and activations.
+   Suggested values from recommend_profile(): max_token_length=16384, batch_size=N.
+   Edit config.yaml.
+   ```
+   The `× 0.9` leaves 10% headroom for OS/other allocations. **The error message distinguishes the conservative estimate (used to fail) from the raw / observed values** (cited for context) so the user understands why a config that "should fit 22 GB" is being rejected. Suggested values come from `recommend_profile(contract, memory_budget_gb, target_chunker=engine.chunker_type)` (§9).
 
 5. **Chunk-vs-token sanity (warn only).**
    `profile.chunk_max_chars > 0 and profile.chunk_max_chars > profile.max_token_length × 4` → `logger.warning(...)`.
    *(Rough char-per-token ratio of 4. Caller may legitimately want oversized chunks if they expect heavy truncation; this is a heads-up, not a fail.)*
 
-Validation runs once at startup. CLI ingestion / `serve` / `mcp` all go through the same `load_settings()` so all three benefit.
+### Validation scope: all configured engines
+
+Validation walks **every** `(engine_name, engine)` in `settings.engines`, not just the engine the CLI is about to use. Reasons:
+- The user is editing `config.yaml`; they should see all errors at once (`serve`/`mcp` load all engines).
+- Per-engine checks are O(1); engines are few.
+- A latent misconfiguration in an unused engine becomes a future production-time crash.
+
+The memory check is **per-engine**, not summed across engines. Concurrent memory pressure (multiple engines loaded simultaneously by `serve`/`mcp`) is out of scope for the fail-fast validator — MLX models load lazily on first use and the 22 GB cap is per-buffer, not total. Document `system.memory_budget_gb` as an override for shared environments.
+
+Validation runs once on explicit config load. CLI `ingest` / `search` / `serve` / `mcp` all hit the validated path through the typer callback; the module-import singleton stays unvalidated by design (see "When validation runs" above).
 
 ---
 
@@ -405,27 +492,42 @@ If users hit false-positive rejections, lower `_PEAK_BUFFER_OVERHEAD`; if they h
 
 ### Recommender (internal helper, not CLI)
 
+The recommender prioritizes **preserving the user's intended sequence length** over throughput. If the user has a profile that fails validation, they almost certainly want their target context length and need a smaller batch — not a smaller context.
+
+**Strategy (in order):**
+1. Start from `target_seq_len` (the user's *intended* `max_token_length`, defaulting to the existing failing profile's value or `contract.model_max_token_length` if no current profile).
+2. Find the largest `batch_size ≥ 1` that fits the memory budget at that seq length.
+3. If `batch_size = 0` (even batch=1 won't fit), halve `seq_len` and retry — but *only as a last resort*; the message must call this out so the user understands their context budget was reduced.
+4. Pick `chunk_max_chars` from the chunker type heuristic.
+
 ```python
 def recommend_profile(
     contract: "ModelContract",
     memory_budget_gb: float,
     target_chunker: str = "document",
-) -> dict[str, int]:
+    target_seq_len: int | None = None,
+) -> dict[str, int | bool]:
     """Suggest profile values that fit memory_budget_gb for this contract.
 
-    Strategy: start from the model's max seq len; pick batch_size that fits
-    memory; if no batch ≥ 1 fits, halve seq_len and retry. The chunk_max_chars
-    heuristic depends on chunker_type:
-      - 'duckdb' / 'api'  → 0 (atomic SQL records)
-      - else (document)   → seq_len × _CHARS_PER_TOKEN × 0.5 (50% of seq, leaves
-                            room for tokenization slack and prefix tokens)
+    Args:
+        target_seq_len: The user's intended max_token_length. The recommender
+            will preserve this value if at all possible (favoring smaller batch
+            size) and only halve it as a last resort. Defaults to
+            contract.model_max_token_length.
+
+    Returns: dict with keys:
+        max_token_length, chunk_max_chars, batch_size,
+        seq_len_reduced (bool — True if step 3 fired, signaling that the
+        recommendation could not preserve the requested context length).
     """
     budget = int(memory_budget_gb * 1024 ** 3 * 0.9)
-    seq = contract.model_max_token_length
+    seq = target_seq_len or contract.model_max_token_length
+    seq = min(seq, contract.model_max_token_length)  # clamp to model cap
+    seq_len_reduced = False
+
     while seq >= 512:
-        max_batch = budget // int(
-            _PEAK_BUFFER_OVERHEAD * seq ** 2 * contract.compute_dtype_bytes
-        )
+        per_sample = int(_PEAK_BUFFER_OVERHEAD * seq ** 2 * contract.compute_dtype_bytes)
+        max_batch = budget // per_sample if per_sample > 0 else 0
         if max_batch >= 1:
             chunk = (
                 0
@@ -436,13 +538,18 @@ def recommend_profile(
                 "max_token_length": seq,
                 "chunk_max_chars": chunk,
                 "batch_size": int(max_batch),
+                "seq_len_reduced": seq_len_reduced,
             }
         seq //= 2
+        seq_len_reduced = True
+
     raise ValueError(
         f"No profile fits {memory_budget_gb} GB for model with cap "
         f"{contract.model_max_token_length}. Reduce model or increase budget."
     )
 ```
+
+**Validator integration:** when validation rule #4 fires, the validator passes the failing profile's `max_token_length` as `target_seq_len`. So the user with `(seq=16384, batch=64)` gets a recommendation of `(seq=16384, batch=N)` — same context, smaller batch — not `(seq=32768, batch=tiny)` (the original spec text was wrong about this). If `seq_len_reduced=True` in the result, the error message includes a "your context length was reduced from X to Y" line so the user understands the trade-off.
 
 ---
 
@@ -564,7 +671,28 @@ This is a **breaking config schema change**. Single PR, no automated migrator (Y
    - `IngestionService.__init__` accepts `batch_size: int` (constructor arg), drop the `from dbs_vector.config import settings` line at line 11 (now passed in).
    - Replace `settings.batch_size` at line 106 with `self.batch_size`.
 7. **`config.yaml`** rewritten per §10.
-8. **CLI** (`cli.py`) — no API change visible to users; internal wiring updated where it constructs `IngestionService` to pass `batch_size`.
+8. **CLI** (`cli.py`):
+   - The Typer `main()` callback (`cli.py:36-74`) currently copies fields from the freshly-loaded `new_settings` onto the global singleton. Update the field copy:
+     ```python
+     # cli.py main() — before
+     settings.db_path = new_settings.db_path
+     settings.batch_size = new_settings.batch_size      # REMOVE
+     settings.nprobes = new_settings.nprobes
+     settings.engines = new_settings.engines
+     settings.log_level = new_settings.log_level
+     settings.log_serialize = new_settings.log_serialize
+
+     # cli.py main() — after
+     settings.db_path = new_settings.db_path
+     settings.nprobes = new_settings.nprobes
+     settings.engines = new_settings.engines
+     settings.log_level = new_settings.log_level
+     settings.log_serialize = new_settings.log_serialize
+     settings.profiles = new_settings.profiles                  # NEW
+     settings.memory_budget_gb = new_settings.memory_budget_gb  # NEW
+     ```
+   - Where each command builds `IngestionService(...)`, pass `batch_size=deps.batch_size` (from the new `EngineDeps.batch_size` field).
+   - No public CLI argument changes. `dbs-vector --help` and `dbs-vector --version` continue to work because the callback short-circuits before `load_settings()` when no subcommand is invoked (`cli.py:54-55` already handles this).
 9. **Tests** updated:
    - `tests/unit/test_bootstrap.py` — `mock_settings` fixture now includes `profiles` dict and `engines` referencing them; `MockEngine.model` instead of `model_name`, etc.
    - New `tests/unit/test_model_registry.py` — register/get/duplicate/unknown.
@@ -574,8 +702,10 @@ This is a **breaking config schema change**. Single PR, no automated migrator (Y
    - New `tests/unit/test_tuning_profile.py` — TuningProfile parses, defaults, edge cases.
    - Existing `tests/integration/test_granite_engines.py` updated for new YAML shape.
 10. **Docs** updated:
-    - `CLAUDE.md` — config schema change, batch_size moved to profile, memory_budget_gb auto-detected.
-    - `docs/README_EMBEDDINGS.md` — new "Tuning profiles" section.
+    - `CLAUDE.md` — config schema change, batch_size moved to profile, memory_budget_gb auto-detected, model registry pattern.
+    - `docs/README_EMBEDDINGS.md` — new "Tuning profiles" section + migration walkthrough referenced from `_raise_migration_hint`.
+    - `docs/README_DOCS.md` — currently describes a global `batch_size`; rewrite to point at profiles + per-engine batch.
+    - `docs/README_SQL.md`, `docs/README_REMOTE_SQL_API.md`, `docs/README_ARCHITECTURE.md`, `docs/README.md`, root `README.md` — sweep for any references to `system.batch_size` or per-engine `max_token_length`/`chunk_max_chars` and update to the profile-based shape.
     - `docs/superpowers/specs/2026-05-06-tuning-profiles-design.md` — this file.
 
 ### What does *not* change
@@ -587,7 +717,47 @@ This is a **breaking config schema change**. Single PR, no automated migrator (Y
 
 ### What the user must do after upgrading
 
-Rewrite `config.yaml` per §10. The validator will print clear errors against the old schema (missing `model`, missing `tuning_profile`) so the migration path is debuggable.
+Rewrite `config.yaml` per §10.
+
+### Migration error path (old YAML → new schema)
+
+Old-schema YAML will fail **before** `_validate_config` runs — it will fail in `EngineConfig(**v)` with Pydantic's `ValidationError` (because `extra="forbid"` rejects `model_name`, `vector_dimension`, `attention_mask_dtype`, etc., AND because `model` and `tuning_profile` are now required and missing). Pydantic's default error messages cite field names but don't explain "this is the old schema; here's how to migrate."
+
+To make the migration debuggable, `load_settings()` wraps the YAML→model construction in a `try/except ValidationError`:
+
+```python
+def load_settings(config_file=None, validate=True):
+    base_settings = Settings()
+    # ... yaml read ...
+    if "engines" in data:
+        try:
+            engines = {k: EngineConfig(**v) for k, v in data["engines"].items()}
+        except ValidationError as e:
+            _raise_migration_hint(e, config_file)   # see below
+        base_settings.engines = engines
+    # ... profiles, validate ...
+
+def _raise_migration_hint(err: ValidationError, config_file: str) -> None:
+    """Detect old-schema fields in the error and rewrite as a migration message."""
+    legacy_fields = {
+        "model_name", "vector_dimension", "max_token_length",
+        "attention_mask_dtype", "chunk_max_chars", "batch_size",
+    }
+    seen_legacy = {e["loc"][-1] for e in err.errors() if e["loc"][-1] in legacy_fields}
+    missing_required = {e["loc"][-1] for e in err.errors() if e["type"] == "missing"}
+    if seen_legacy or {"model", "tuning_profile"} & missing_required:
+        raise ValueError(
+            f"Config schema mismatch in {config_file}.\n"
+            f"  Legacy fields found: {sorted(seen_legacy) or 'none'}\n"
+            f"  Missing required fields: {sorted(missing_required) or 'none'}\n"
+            f"This config uses the pre-tuning-profiles schema. See §10 of "
+            f"docs/superpowers/specs/2026-05-06-tuning-profiles-design.md for "
+            f"the new shape, or docs/README_EMBEDDINGS.md for a migration walkthrough."
+        ) from err
+    raise err  # not a migration issue — propagate as-is
+```
+
+This means migrating users get a *single* actionable error pointing at the spec/docs, not a wall of Pydantic field errors. Tests assert the migration hint fires for legacy YAML and does *not* fire for genuinely-broken-but-new-shape YAML.
 
 ---
 
@@ -596,12 +766,14 @@ Rewrite `config.yaml` per §10. The validator will print clear errors against th
 | Module | Test file | Coverage |
 |---|---|---|
 | `core/model_registry.py` | `tests/unit/test_model_registry.py` | register / get / duplicate raises / unknown raises / built-ins present |
-| `core/profile_math.py` | `tests/unit/test_profile_math.py` | `estimate_peak_buffer_bytes` with known calibration point; `recommend_profile` happy path + cap reduction loop + chunker-type heuristic |
-| `infrastructure/hardware.py` | `tests/unit/test_hardware.py` | `detect_memory_budget_gb` with mocked `mx.metal.device_info`; missing → None; `resolve_memory_budget_gb` precedence (configured > detected > raise) |
-| `config.py` | `tests/unit/test_config_validation.py` | unknown model → ValueError; unknown profile → ValueError; profile.max_token > model cap → ValueError; profile would OOM → ValueError; chunk_max_chars warning logged |
-| `config.py` | `tests/unit/test_tuning_profile.py` | YAML round-trip; required fields; field types |
-| `services/bootstrap.py` | `tests/unit/test_bootstrap.py` (updated) | resolves contract + profile; passes correct values to MLXEmbedder; passes batch_size to EngineDeps |
-| `services/ingestion.py` | `tests/unit/test_ingestion.py` (updated) | accepts batch_size kwarg; uses it in `_batched` |
+| `core/profile_math.py` | `tests/unit/test_profile_math.py` | `estimate_peak_buffer_bytes` against known calibration point (raw 34.4 GB → conservative ~103 GB at 3.0×); `recommend_profile` preserves `target_seq_len`; `seq_len_reduced` flag set when halving fires; chunker-type heuristic for chunk_max_chars |
+| `infrastructure/hardware.py` | `tests/unit/test_hardware.py` | `detect_memory_budget_gb` with mocked `mx.metal.device_info`; missing-MLX path → None; `resolve_memory_budget_gb` precedence (configured > detected > raise) |
+| `config.py` | `tests/unit/test_config_validation.py` | unknown model → ValueError; unknown profile → ValueError; profile.max_token > model cap → ValueError; profile would OOM → ValueError including conservative/raw/observed numbers; chunk_max_chars warning logged; module-import singleton (no args) does NOT validate |
+| `config.py` | `tests/unit/test_tuning_profile.py` | YAML round-trip; required fields; numeric bounds (`batch_size <= 0`, `max_token_length <= 0`, `chunk_max_chars < 0` rejected by Pydantic); `extra="forbid"` rejects unknown fields |
+| `config.py` | `tests/unit/test_migration_hint.py` (NEW) | `_raise_migration_hint` fires for old-schema YAML naming legacy fields; does NOT fire for genuinely-broken-but-new-shape YAML (raw `ValidationError` propagates) |
+| `services/bootstrap.py` | `tests/unit/test_bootstrap.py` (updated) | resolves contract + profile; passes correct values to MLXEmbedder; populates `EngineDeps.batch_size` from profile |
+| `services/ingestion.py` | `tests/unit/test_ingestion.py` (updated) | accepts `batch_size` kwarg in `__init__`; uses `self.batch_size` in `_batched`; module no longer imports `settings` |
+| `cli.py` | `tests/unit/test_cli_callback.py` (NEW) | `dbs-vector --help` and `dbs-vector --version` succeed without loading config (tmpdir without `config.yaml`); subcommand path copies `profiles` and `memory_budget_gb` onto the singleton; does not copy `batch_size` |
 | Integration | `tests/integration/test_granite_engines.py` (updated) | end-to-end with new YAML shape; both md-granite and sql-granite |
 
 Every fail-fast path gets a unit test. The validator must produce error messages that name the offending engine + the offending value + the remediation.
@@ -630,13 +802,18 @@ For each validation rule, write a test that constructs the failing config, calls
 This PR is done when:
 
 1. `uv run poe check` passes (213+ tests, no regressions).
-2. The user's calibration crash (`md-granite`, max_token=16384, batch=64) is caught by `_validate_config` at `load_settings()` time, producing a remediation message naming the failing profile and suggesting concrete safer values (computed by `recommend_profile`).
+2. The user's calibration crash (`md-granite`, max_token=16384, batch=64) is caught by `_validate_config` at `load_settings()` time, producing a remediation message that:
+   - Names the failing engine + profile.
+   - Distinguishes conservative estimate (~103 GB) from raw attention buffer (~34 GB) and the observed OOM data point (~41 GB).
+   - Suggests concrete safer values from `recommend_profile()` that **preserve `max_token_length=16384`** and lower `batch_size` (not the other way around).
 3. `dbs-vector ingest "docs/" --type md-granite` works with `tuning_profile: granite-md-large` (16384 / 6000 / 8).
-4. Removing `batch_size` from `system:` does not break ingestion; per-engine `batch_size` from profile is what the ingester sees.
+4. Removing `batch_size` from `system:` does not break ingestion; per-engine `batch_size` from profile is what the ingester sees (`EngineDeps.batch_size` → `IngestionService.batch_size`).
 5. Six existing engines continue to ingest and search correctly with the new YAML shape.
-6. `_validate_config` rejects: unknown model key, unknown profile key, profile.max_token > model cap, profile that would OOM. Each with a test.
-7. Memory budget auto-detection succeeds on the user's Apple Silicon machine; `system.memory_budget_gb: 22.0` override path is exercised by a test.
-8. CLAUDE.md and README_EMBEDDINGS.md describe the new config shape and the model-registration pattern.
+6. `_validate_config` rejects: unknown model key, unknown profile key, profile.max_token > model cap, profile that would OOM. Each with a test. TuningProfile fields with `batch_size <= 0`, `max_token_length <= 0`, `chunk_max_chars < 0` are rejected by Pydantic before the validator runs (separate test).
+7. Memory budget auto-detection succeeds on the user's Apple Silicon machine; `system.memory_budget_gb: 22.0` override path is exercised by a test; missing-MLX path falls through to the explicit "set memory_budget_gb" error (mocked test).
+8. CLAUDE.md and README_EMBEDDINGS.md describe the new config shape and the model-registration pattern. All docs in the §11 update list are swept for stale `system.batch_size` references.
+9. **`dbs-vector --help` and `dbs-vector --version` work without loading or validating any config file**, even when `config.yaml` is absent or malformed (asserted by integration test that runs `dbs-vector --help` against a tmpdir with no config).
+10. **Old-schema YAML produces a single migration-hint error** that names the legacy fields detected and points at `docs/superpowers/specs/2026-05-06-tuning-profiles-design.md` §10 + `docs/README_EMBEDDINGS.md`. Asserted by a unit test feeding the old schema and checking `_raise_migration_hint` fires. Genuinely broken new-schema YAML still produces the raw `ValidationError` (also tested).
 
 ---
 
