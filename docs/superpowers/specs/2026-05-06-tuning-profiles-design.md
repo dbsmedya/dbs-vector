@@ -335,33 +335,71 @@ class EngineDeps(NamedTuple):
 
 ## 7. Validation chain (fail-fast on explicit config load)
 
-### When validation runs
+### When validation runs (and when config is read at all)
 
-`config.py` exposes a module-level singleton `settings = load_settings(validate=False)` that runs at import time. **Validation must NOT run during module import** — `load_settings()` with no path still reads `DBS_CONFIG_FILE` or `config.yaml`, so a real config (with engines) is parsed at import. If validation were on by default, `import dbs_vector.config` would auto-detect MLX memory, contact Metal, and fail-fast on bad config — breaking `dbs-vector --help`, `dbs-vector --version`, IDE imports, and `pytest` collection.
+**The module-level singleton must perform zero file IO at import time.** Previously `settings = load_settings()` would `yaml.safe_load(config_file)` at import; that fails on malformed YAML *before* any validator runs, breaking `dbs-vector --help`, `dbs-vector --version`, IDE module loaders, and `pytest` collection whenever a project's `config.yaml` is broken or experimental.
 
-The rule (signature flips: `validate` defaults to `False`):
+The fix has two parts:
+
+1. **Module singleton is empty defaults.** `settings = Settings()` — a `BaseSettings` instance constructed from defaults + env vars only. No YAML read. No MLX import. No validation.
+
+2. **Every runtime caller explicitly loads.** Before any code consumes `settings.engines`, the caller must call `load_settings(config_file, validate=True)` and copy the loaded fields onto the singleton.
+
+Caller table:
 
 | Caller | Exact call | Validates? |
 |---|---|---|
-| Module-import singleton (`config.py`) | `settings = load_settings(validate=False)` | **No** |
-| CLI callback (`cli.py main()`) | `load_settings(config_file, validate=True)` | **Yes** |
-| `serve` / `mcp` lifespan | `load_settings(config_file, validate=True)` | **Yes** |
-| Tests: malformed-config negative test | `load_settings(path, validate=False)` | **No** |
+| Module-import singleton (`config.py` bottom) | `settings = Settings()` | **No I/O** |
+| CLI callback (`cli.py main()`) | `new = load_settings(config_file, validate=True)`; copy onto `settings` | **Yes** |
+| API lifespan (`api/main.py`) | `new = load_settings(os.environ.get("DBS_CONFIG_FILE", "config.yaml"), validate=True)`; copy onto `settings`; then `initialize_services()` | **Yes** |
+| MCP standalone (`api/mcp_server.py` if invoked outside FastAPI) | Same pattern as API lifespan | **Yes** |
+| Tests: malformed-config negative test | `load_settings(path, validate=False)` (file IO occurs but validation skipped) | **No** |
 | Tests: validation-coverage test | `load_settings(path, validate=True)` | **Yes** |
+
+The function signature: `load_settings(config_file: str, validate: bool = False) -> Settings`. Default is `validate=False` (cheaper for tests that want raw parsing); runtime callers explicitly pass `validate=True`.
 
 ```python
 # config.py — module bottom
-settings = load_settings(validate=False)   # explicit: do not validate at import
+settings = Settings()   # zero I/O; populated later by CLI callback or API lifespan
 ```
 
 ```python
-# cli.py — main() callback
+# cli.py — main() callback (when subcommand is invoked)
 new_settings = load_settings(config_file, validate=True)
+settings.db_path = new_settings.db_path
+settings.nprobes = new_settings.nprobes
+settings.engines = new_settings.engines
+settings.profiles = new_settings.profiles
+settings.memory_budget_gb = new_settings.memory_budget_gb
+settings.log_level = new_settings.log_level
+settings.log_serialize = new_settings.log_serialize
 ```
 
-Default-off validation makes the import path safe by construction even when `config.yaml` is present and populated. The CLI callback (`cli.py:54-55`) still short-circuits before this when no subcommand is invoked, so `--help` and `--version` skip the load entirely; but even if a caller imports the module bypassing Typer, the import is non-validating.
+```python
+# api/main.py — lifespan (NEW: load config before initialize_services)
+@asynccontextmanager
+async def lifespan(app):
+    config_file = os.environ.get("DBS_CONFIG_FILE", "config.yaml")
+    new_settings = load_settings(config_file, validate=True)
+    # copy onto module-level singleton (same field list as cli.py)
+    for field in ("db_path", "nprobes", "engines", "profiles",
+                  "memory_budget_gb", "log_level", "log_serialize"):
+        setattr(settings, field, getattr(new_settings, field))
+    initialize_services()
+    ...
+```
 
-`_validate_config(settings)` additionally short-circuits when `not settings.engines` as a defense-in-depth no-op for empty configs.
+Why this is provably import-safe:
+
+| Failure mode | Behavior |
+|---|---|
+| `config.yaml` missing | `settings = Settings()` succeeds; CLI/API loader handles missing file at runtime. |
+| `config.yaml` malformed YAML | `import dbs_vector.config` succeeds; the YAML error is raised by the *runtime* `load_settings()` call inside CLI callback or API lifespan, where it can be reported cleanly. |
+| `config.yaml` old schema | Same as above — caught by `_apply_system_config` / `_raise_migration_hint` at runtime, not at import. |
+| `dbs-vector --help` / `--version` | Typer callback short-circuits before `load_settings()` (`cli.py:54-55`); module import did no I/O. |
+| Direct `python -c "import dbs_vector.api.main"` (no Typer) | Module imports succeed with empty `settings`. App routes that read `settings.engines` get `KeyError` until lifespan populates them — same lifecycle as before, just made explicit. |
+
+`_validate_config(settings)` additionally short-circuits when `not settings.engines` as defense-in-depth.
 
 ### Validation rules
 
@@ -683,7 +721,10 @@ This is a **breaking config schema change**. Single PR, no automated migrator (Y
    - `IngestionService.__init__` accepts `batch_size: int` (constructor arg), drop the `from dbs_vector.config import settings` line at line 11 (now passed in).
    - Replace `settings.batch_size` at line 106 with `self.batch_size`.
 7. **`config.yaml`** rewritten per §10.
-8. **CLI** (`cli.py`):
+8. **`config.py` module bottom**: replace `settings = load_settings()` with `settings = Settings()` (no I/O at import). Update `load_settings()` signature default to `validate=False`. See §7 for full rationale.
+9. **`api/main.py` lifespan**: explicitly call `load_settings(os.environ.get("DBS_CONFIG_FILE", "config.yaml"), validate=True)` and copy fields onto the singleton *before* `initialize_services()`. Add an import for `os` and `load_settings`. See §7 example. Also update `/health` endpoint at `api/main.py:90-91` (`config.model_name`) — `model_name` is no longer on `EngineConfig`; resolve via `ModelRegistry.get(config.model).model_name`.
+10. **`api/mcp_server.py`** (if it can be invoked standalone outside the FastAPI lifespan): same lifespan-style explicit load. The current `dbs-vector mcp` CLI subcommand routes through Typer first, so the CLI callback already handles it; only direct `python -m dbs_vector.api.mcp_server` style invocations need extra wiring (note in spec, no code change needed if not used).
+11. **CLI** (`cli.py`):
    - The Typer `main()` callback (`cli.py:36-74`) currently copies fields from the freshly-loaded `new_settings` onto the global singleton. Update the field copy:
      ```python
      # cli.py main() — before
@@ -705,15 +746,16 @@ This is a **breaking config schema change**. Single PR, no automated migrator (Y
      ```
    - Where each command builds `IngestionService(...)`, pass `batch_size=deps.batch_size` (from the new `EngineDeps.batch_size` field).
    - No public CLI argument changes. `dbs-vector --help` and `dbs-vector --version` continue to work because the callback short-circuits before `load_settings()` when no subcommand is invoked (`cli.py:54-55` already handles this).
-9. **Tests** updated:
-   - `tests/unit/test_bootstrap.py` — `mock_settings` fixture now includes `profiles` dict and `engines` referencing them; `MockEngine.model` instead of `model_name`, etc.
-   - New `tests/unit/test_model_registry.py` — register/get/duplicate/unknown.
-   - New `tests/unit/test_profile_math.py` — `estimate_peak_buffer_bytes`, `recommend_profile` happy path + cap reduction loop.
-   - New `tests/unit/test_hardware.py` — `detect_memory_budget_gb` with mocked `mx.metal.device_info`; missing → None; `resolve_memory_budget_gb` precedence (configured > detected > raise).
-   - New `tests/unit/test_config_validation.py` — every fail-fast path in `_validate_config`.
-   - New `tests/unit/test_tuning_profile.py` — TuningProfile parses, defaults, edge cases.
-   - Existing `tests/integration/test_granite_engines.py` updated for new YAML shape.
-10. **Docs** updated:
+12. **Tests** updated:
+    - `tests/unit/test_bootstrap.py` — `mock_settings` fixture now includes `profiles` dict and `engines` referencing them; `MockEngine.model` instead of `model_name`, etc.
+    - New `tests/unit/test_model_registry.py` — register/get/duplicate/unknown.
+    - New `tests/unit/test_profile_math.py` — `estimate_peak_buffer_bytes`, `recommend_profile` happy path + cap reduction loop.
+    - New `tests/unit/test_hardware.py` — `detect_memory_budget_gb` with mocked `mx.metal.device_info`; missing → None; `resolve_memory_budget_gb` precedence (configured > detected > raise).
+    - New `tests/unit/test_config_validation.py` — every fail-fast path in `_validate_config`.
+    - New `tests/unit/test_tuning_profile.py` — TuningProfile parses, defaults, edge cases.
+    - New `tests/unit/test_config_import_safety.py` — importing `dbs_vector.config` performs no file I/O (assert via mock that `Path.open` is not called); `dbs_vector.config.settings` after import equals `Settings()` defaults.
+    - Existing `tests/integration/test_granite_engines.py` updated for new YAML shape.
+13. **Docs** updated:
     - `CLAUDE.md` — config schema change, batch_size moved to profile, memory_budget_gb auto-detected, model registry pattern.
     - `docs/README_EMBEDDINGS.md` — new "Tuning profiles" section + migration walkthrough referenced from `_raise_migration_hint`.
     - `docs/README_DOCS.md` — currently describes a global `batch_size`; rewrite to point at profiles + per-engine batch.
@@ -895,11 +937,11 @@ This PR is done when:
 6. `_validate_config` rejects: unknown model key, unknown profile key, profile.max_token > model cap, profile that would OOM. Each with a test. TuningProfile fields with `batch_size <= 0`, `max_token_length <= 0`, `chunk_max_chars < 0` are rejected by Pydantic before the validator runs (separate test).
 7. Memory budget auto-detection succeeds on the user's Apple Silicon machine; `system.memory_budget_gb: 22.0` override path is exercised by a test; missing-MLX path falls through to the explicit "set memory_budget_gb" error (mocked test).
 8. CLAUDE.md and README_EMBEDDINGS.md describe the new config shape and the model-registration pattern. All docs in the §11 update list are swept for stale `system.batch_size` references.
-9. **`dbs-vector --help` and `dbs-vector --version` work without loading or validating any config file**, asserted in three scenarios:
+9. **`dbs-vector --help` and `dbs-vector --version` work without performing any config file I/O at module import time**, asserted in three scenarios:
    - tmpdir with **no `config.yaml`** present;
-   - tmpdir with a **malformed `config.yaml`** (broken YAML syntax);
+   - tmpdir with a **malformed `config.yaml`** (broken YAML syntax — `yaml.safe_load` would raise `YAMLError` if called);
    - tmpdir with an **old-schema `config.yaml`** (legacy `system.batch_size`, legacy per-engine fields).
-   In all three, `dbs-vector --help` and `--version` exit 0 with their normal output. The malformed-config case is the real import-time trap that the explicit `validate=False` module singleton must cover.
+   In all three, `dbs-vector --help` and `--version` exit 0 with their normal output. **The malformed-config case is the proof point**: a module that read YAML at import would crash here. The fix is `settings = Settings()` at module bottom — zero I/O — with all real loading deferred to the CLI callback or API lifespan. A separate unit test (`test_config_import_safety.py`) asserts `Path.open` is never called during `import dbs_vector.config`.
 10. **Old-schema YAML produces a single migration-hint error** that names the legacy fields detected and points at `docs/superpowers/specs/2026-05-06-tuning-profiles-design.md` §10 + `docs/README_EMBEDDINGS.md`. Asserted by:
     - a test for `_apply_system_config` that the message names `system.batch_size`;
     - a test for `_raise_migration_hint` that the message names legacy per-engine fields (e.g., `model_name`, `attention_mask_dtype`);
