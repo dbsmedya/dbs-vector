@@ -4,15 +4,45 @@ from unittest.mock import patch
 
 
 def test_importing_config_does_not_open_files(tmp_path, monkeypatch):
-    """Module import must not perform any file I/O — neither config.yaml nor .env."""
+    """Module import must not cause dbs_vector.config to open config.yaml or .env.
+
+    NOTE: We filter mock calls to only paths matching config.yaml / .env
+    because patching builtins.open / Path.open catches all transitive imports
+    (importlib.metadata plugin scans, package-metadata reads). We only care
+    about THIS module's file I/O contract, not the runtime's.
+    """
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".env").write_text("DBS_LOG_LEVEL=DEBUG\n")  # tempt pydantic-settings
     (tmp_path / "config.yaml").write_text("system: : :\nbroken: :")  # tempt yaml.safe_load
     sys.modules.pop("dbs_vector.config", None)
+
+    def _is_config_target(call) -> bool:
+        # Each call_args is roughly call(path, *args, **kwargs); coerce to str
+        # then look for our two targets. Catches absolute and relative paths.
+        rendered = str(call)
+        return "config.yaml" in rendered or rendered.endswith(".env'") or "/.env" in rendered or "\\.env" in rendered
+
     with patch("pathlib.Path.open") as mock_open, patch("builtins.open") as builtin_open:
         importlib.import_module("dbs_vector.config")
-    assert mock_open.call_count == 0, f"Path.open called: {mock_open.call_args_list}"
-    assert builtin_open.call_count == 0, f"builtins.open called: {builtin_open.call_args_list}"
+
+    config_opens = [c for c in mock_open.call_args_list if _is_config_target(c)]
+    builtin_config_opens = [c for c in builtin_open.call_args_list if _is_config_target(c)]
+    assert config_opens == [], f"Path.open touched config files: {config_opens}"
+    assert builtin_config_opens == [], f"builtins.open touched config files: {builtin_config_opens}"
+
+
+def test_importing_config_does_not_honor_dot_env(tmp_path, monkeypatch):
+    """If we cd into a directory with a .env that overrides DBS_LOG_LEVEL,
+    importing dbs_vector.config must NOT pick that up — the singleton uses
+    Settings(_env_file=None)."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("DBS_LOG_LEVEL=DEBUG\n")
+    sys.modules.pop("dbs_vector.config", None)
+    config = importlib.import_module("dbs_vector.config")
+    assert config.settings.log_level == "INFO", (
+        f"Singleton honored .env (log_level={config.settings.log_level}); "
+        f"_env_file=None must skip .env loading."
+    )
 
 
 def test_module_singleton_is_default_settings():
