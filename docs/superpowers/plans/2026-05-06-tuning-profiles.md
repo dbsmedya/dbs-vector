@@ -659,17 +659,20 @@ import sys
 from unittest.mock import patch
 
 
-def test_importing_config_does_not_open_files():
-    """Module import must not perform any config file I/O."""
+def test_importing_config_does_not_open_files(tmp_path, monkeypatch):
+    """Module import must not perform any file I/O — neither config.yaml nor .env."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("DBS_LOG_LEVEL=DEBUG\n")  # tempt pydantic-settings
+    (tmp_path / "config.yaml").write_text("system: : :\nbroken: :")  # tempt yaml.safe_load
     sys.modules.pop("dbs_vector.config", None)
     with patch("pathlib.Path.open") as mock_open, patch("builtins.open") as builtin_open:
         importlib.import_module("dbs_vector.config")
-    assert mock_open.call_count == 0
-    assert builtin_open.call_count == 0
+    assert mock_open.call_count == 0, f"Path.open called: {mock_open.call_args_list}"
+    assert builtin_open.call_count == 0, f"builtins.open called: {builtin_open.call_args_list}"
 
 
 def test_module_singleton_is_default_settings():
-    """settings = Settings() at module bottom — engines empty, no profiles."""
+    """settings = Settings(_env_file=None) at module bottom — empty defaults, no I/O."""
     sys.modules.pop("dbs_vector.config", None)
     config = importlib.import_module("dbs_vector.config")
     assert config.settings.engines == {}
@@ -739,10 +742,15 @@ settings = load_settings()
 with:
 
 ```python
-# Module-level singleton: zero file I/O at import. Runtime callers
-# (cli.py callback, api/main.py lifespan) must populate this via
-# load_settings(config_file, validate=True) before consuming engines.
-settings = Settings()
+# Module-level singleton: ZERO file I/O at import. We pass _env_file=None
+# explicitly to disable pydantic-settings' .env file reading for this
+# instance — otherwise BaseSettings will stat() the .env path and (if it
+# exists) read it at import time, violating the import-safety contract.
+# Runtime callers (cli.py callback, api/main.py lifespan) call
+# load_settings(config_file, validate=True), which constructs a fresh
+# Settings() (without _env_file=None, so .env IS loaded then) and copies
+# fields onto this singleton.
+settings = Settings(_env_file=None)
 ```
 
 And update the `load_settings` signature:
@@ -1465,7 +1473,43 @@ def test_profile_oom_raises_with_recommendation(tmp_path):
     assert "granite-oom" in msg
     assert "md-granite" in msg
     assert "conservative estimate" in msg
+    assert "raw attention buffer" in msg
+    assert "41 GB" in msg  # observed OOM data point from calibration note
     assert "16384" in msg  # recommendation preserves seq len
+
+
+def test_unknown_model_fires_before_memory_check(tmp_path, monkeypatch):
+    """Validation ordering: unknown model must fail BEFORE memory budget resolution.
+
+    Without lazy resolution, an MLX-unavailable environment would mask the real
+    config error with "Could not auto-detect Metal memory budget."
+    """
+    # Force memory detection to fail; we should never reach it.
+    monkeypatch.setattr(
+        "dbs_vector.infrastructure.hardware.detect_memory_budget_gb",
+        lambda: None,
+    )
+    yaml_path = _write_yaml(
+        tmp_path,
+        GENERAL_PROFILES
+        + """
+        engines:
+          md:
+            description: "x"
+            model: "nonexistent-model"
+            mapper_type: "document"
+            chunker_type: "document"
+            table_name: "t"
+            workflow: "w"
+            tuning_profile: "gemma-md"
+        """,
+    )
+    with pytest.raises(ValueError, match="unknown model contract"):
+        load_settings(yaml_path, validate=True)
+    # Specifically NOT a memory-budget error
+    with pytest.raises(ValueError) as exc_info:
+        load_settings(yaml_path, validate=True)
+    assert "Could not auto-detect" not in str(exc_info.value)
 
 
 def test_validate_false_skips_checks(tmp_path):
@@ -1527,15 +1571,26 @@ Expected: FAIL — `_validate_config` doesn't exist yet, so `validate=True` is i
 Add to `src/dbs_vector/config.py` (near the other helpers):
 
 ```python
+_CALIBRATION_NOTE = (
+    "Calibration reference: 2025-05 OOM measured 41 GB at "
+    "batch=64, seq=16384, bf16; the 3.0× safety factor preserves headroom."
+)
+
+
 def _validate_config(settings: "Settings", config_file: str) -> None:
     """Run the validation chain over every configured engine.
 
-    Rules (each fails-fast with a remediation message):
+    Rules (each fails-fast with a remediation message), executed per engine:
       1. Engine.model exists in ModelRegistry.
       2. Engine.tuning_profile exists in settings.profiles.
       3. profile.max_token_length ≤ contract.model_max_token_length.
       4. estimate_peak_buffer_bytes ≤ memory_budget × 0.9.
       5. (warn) chunk_max_chars routinely exceeds max_token_length × 4.
+
+    Memory budget is resolved lazily (only when rule 4 actually runs) so a
+    config with an unknown model/profile fails on rule 1/2 BEFORE we attempt
+    Metal auto-detection — otherwise an MLX-unavailable environment would
+    mask real config errors with "Could not auto-detect Metal memory budget."
     """
     from dbs_vector.core.model_registry import ModelRegistry
     from dbs_vector.core.profile_math import (
@@ -1547,8 +1602,8 @@ def _validate_config(settings: "Settings", config_file: str) -> None:
     if not settings.engines:
         return
 
-    memory_budget_gb = resolve_memory_budget_gb(settings.memory_budget_gb)
-    memory_budget_bytes = int(memory_budget_gb * 1024 ** 3)
+    # Lazy: only resolved on first memory check (rule 4).
+    budget_gb: float | None = None
 
     for engine_name, engine in settings.engines.items():
         # Rule 1: model contract exists
@@ -1577,9 +1632,12 @@ def _validate_config(settings: "Settings", config_file: str) -> None:
                 f"Lower profile.max_token_length or pick a different model."
             )
 
-        # Rule 4: profile fits memory budget
+        # Rule 4: profile fits memory budget — resolve budget lazily here.
+        if budget_gb is None:
+            budget_gb = resolve_memory_budget_gb(settings.memory_budget_gb)
+        budget_bytes = int(budget_gb * 1024 ** 3)
         peak = estimate_peak_buffer_bytes(profile, contract)
-        cap = int(memory_budget_bytes * 0.9)
+        cap = int(budget_bytes * 0.9)
         if peak > cap:
             raw_attention = (
                 profile.batch_size
@@ -1588,7 +1646,7 @@ def _validate_config(settings: "Settings", config_file: str) -> None:
             )
             suggested = recommend_profile(
                 contract,
-                memory_budget_gb,
+                budget_gb,
                 target_chunker=engine.chunker_type,
                 target_seq_len=profile.max_token_length,
             )
@@ -1599,6 +1657,7 @@ def _validate_config(settings: "Settings", config_file: str) -> None:
                 f"(3.0× safety factor over raw attention buffer)\n"
                 f"  raw attention buffer: {raw_attention / 1024**3:.1f} GB\n"
                 f"  budget (Metal max buffer × 0.9): {cap / 1024**3:.1f} GB\n"
+                f"  {_CALIBRATION_NOTE}\n"
                 f"Suggested values: max_token_length={suggested['max_token_length']}, "
                 f"batch_size={suggested['batch_size']}"
                 f"{' (context length reduced)' if suggested['seq_len_reduced'] else ''}. "
@@ -2031,6 +2090,53 @@ def test_version_works_with_malformed_config(tmp_path):
     result = _run_cli(["--version"], cwd=tmp_path)
     assert result.returncode == 0
     assert "dbs-vector" in result.stdout.lower()
+
+
+# Direct unit tests of the singleton-mutation helper (does not require subprocess).
+
+from unittest.mock import MagicMock
+
+
+def _make_fake_new_settings():
+    fake = MagicMock()
+    fake.db_path = "/tmp/lance"
+    fake.nprobes = 30
+    fake.engines = {"md": object()}
+    fake.profiles = {"gemma-md": object()}
+    fake.memory_budget_gb = 22.0
+    fake.log_level = "DEBUG"
+    fake.log_serialize = True
+    return fake
+
+
+def test_populate_singleton_copies_profiles_and_memory_budget():
+    """Helper extracted from main() callback must copy profiles + memory_budget_gb."""
+    from dbs_vector.cli import _populate_singleton_from
+    from dbs_vector.config import settings
+
+    new = _make_fake_new_settings()
+    _populate_singleton_from(new)
+
+    assert settings.db_path == "/tmp/lance"
+    assert settings.nprobes == 30
+    assert settings.engines == new.engines
+    assert settings.profiles == new.profiles
+    assert settings.memory_budget_gb == 22.0
+    assert settings.log_level == "DEBUG"
+    assert settings.log_serialize is True
+
+
+def test_populate_singleton_does_not_set_legacy_batch_size():
+    """The new schema has no Settings.batch_size; the helper must not set it."""
+    from dbs_vector.cli import _populate_singleton_from
+    from dbs_vector.config import Settings, settings
+
+    new = _make_fake_new_settings()
+    _populate_singleton_from(new)
+    # Settings has no batch_size field after the schema change.
+    assert "batch_size" not in Settings.model_fields
+    # And the singleton instance does not have one either.
+    assert not hasattr(settings, "batch_size")
 ```
 
 - [ ] **Step 2: Verify which fields current CLI copies**
@@ -2051,9 +2157,39 @@ Read `src/dbs_vector/cli.py` lines 36-74 to confirm the current copy block. Expe
 Run: `uv run pytest tests/unit/test_cli_callback.py -v`
 Expected: tests pass for `--help`/`--version` if the import-safety changes from Tasks 5-7 are wired (no file IO at import). May still fail if CLI subcommand path tries to read config — those will fail in a later step.
 
-- [ ] **Step 4: Update CLI callback singleton-copy**
+- [ ] **Step 4: Extract a singleton-mutation helper, then call it from the callback**
 
-In `src/dbs_vector/cli.py`, modify the Typer `main()` callback to:
+In `src/dbs_vector/cli.py`, add a module-level helper (just above the `main()` callback):
+
+```python
+def _populate_singleton_from(new_settings: "Settings") -> None:
+    """Copy fields from a freshly-loaded Settings onto the module-level singleton.
+
+    Extracted as a top-level function so it can be unit-tested without driving
+    the entire Typer callback. The field list is the source of truth for what
+    runtime callers (CLI, API lifespan) propagate from disk to the singleton.
+    """
+    from dbs_vector.config import settings
+
+    settings.db_path = new_settings.db_path
+    settings.nprobes = new_settings.nprobes
+    settings.engines = new_settings.engines
+    settings.profiles = new_settings.profiles
+    settings.memory_budget_gb = new_settings.memory_budget_gb
+    settings.log_level = new_settings.log_level
+    settings.log_serialize = new_settings.log_serialize
+```
+
+Add the type-only import at the top of `cli.py`:
+
+```python
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dbs_vector.config import Settings
+```
+
+Then modify the Typer `main()` callback to use it:
 
 ```python
 @app.callback()
@@ -2087,13 +2223,7 @@ def main(
 
     # Load AND validate the config; copy fields onto the singleton.
     new_settings = load_settings(config_file, validate=True)
-    settings.db_path = new_settings.db_path
-    settings.nprobes = new_settings.nprobes
-    settings.engines = new_settings.engines
-    settings.profiles = new_settings.profiles
-    settings.memory_budget_gb = new_settings.memory_budget_gb
-    settings.log_level = new_settings.log_level
-    settings.log_serialize = new_settings.log_serialize
+    _populate_singleton_from(new_settings)
 
     # Configure logger based on settings
     configure_logger(level=settings.log_level, serialize=settings.log_serialize)
@@ -2155,7 +2285,6 @@ git commit -m "feat(cli): callback copies profiles+memory_budget_gb; passes batc
 
 ```python
 # tests/unit/test_api_lifespan.py
-import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -2240,6 +2369,16 @@ from dbs_vector.core.model_registry import ModelRegistry
 from dbs_vector.core.models import SearchResult, SqlSearchResult
 ```
 
+Add an import for the shared singleton-mutation helper:
+
+```python
+from dbs_vector.cli import _populate_singleton_from
+```
+
+(This is the same helper extracted in Task 11. Reusing it keeps the field
+list in one place; both the CLI callback and the API lifespan stay in sync
+when fields change later.)
+
 Replace the `lifespan` function:
 
 ```python
@@ -2248,17 +2387,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup and shutdown events for the API."""
     logger.info("Initializing MLX Embedders and LanceDB connections")
 
-    # Explicit config load: module-level singleton is empty Settings() until
-    # this point. Must run before initialize_services consumes settings.engines.
+    # Explicit config load: module-level singleton is empty Settings(_env_file=None)
+    # until this point. Must run before initialize_services consumes settings.engines.
     config_file = os.environ.get("DBS_CONFIG_FILE", "config.yaml")
     new_settings = load_settings(config_file, validate=True)
-    settings.db_path = new_settings.db_path
-    settings.nprobes = new_settings.nprobes
-    settings.engines = new_settings.engines
-    settings.profiles = new_settings.profiles
-    settings.memory_budget_gb = new_settings.memory_budget_gb
-    settings.log_level = new_settings.log_level
-    settings.log_serialize = new_settings.log_serialize
+    _populate_singleton_from(new_settings)
 
     try:
         initialize_services()
@@ -2291,23 +2424,17 @@ async def health_check() -> dict[str, str]:
     return status_dict
 ```
 
-- [ ] **Step 4: Add pytest-asyncio if not present**
+- [ ] **Step 4: Confirm pytest-asyncio is available (likely already present)**
 
-Check `pyproject.toml` dev dependencies. If `pytest-asyncio` is not listed, add it; otherwise skip:
+Check if it's already a dev dependency:
 
 ```bash
-grep pytest-asyncio pyproject.toml || echo "ADD IT"
+grep pytest-asyncio pyproject.toml || echo "MISSING"
 ```
 
-If "ADD IT" prints, add to `[tool.uv.dev-dependencies]` or the equivalent section in `pyproject.toml`:
+If `MISSING` prints, add it to the dev-dependency section in `pyproject.toml` and run `uv sync`. The Step 7 commit should then include `pyproject.toml` and `uv.lock`. **Otherwise (already present), do not stage `uv.lock`** — staging an unrelated lock-file diff is a common accidental commit.
 
-```toml
-"pytest-asyncio",
-```
-
-Then `uv sync`.
-
-Also ensure `tests/conftest.py` (or the test file) has `pytestmark = pytest.mark.asyncio` or use `asyncio_mode = "auto"` in `pyproject.toml`. Easiest: add the test marker explicitly with `@pytest.mark.asyncio`.
+Ensure the test file has `@pytest.mark.asyncio` on the async test (already shown in Step 1). No `conftest.py` change required.
 
 - [ ] **Step 5: Run lifespan test**
 
@@ -2322,7 +2449,10 @@ Expected: all pass.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/dbs_vector/api/main.py tests/unit/test_api_lifespan.py pyproject.toml uv.lock
+# Only include pyproject.toml + uv.lock if Step 4 actually added pytest-asyncio.
+git add src/dbs_vector/api/main.py tests/unit/test_api_lifespan.py
+# If pytest-asyncio was newly added in Step 4, also:
+#   git add pyproject.toml uv.lock
 git commit -m "feat(api): lifespan loads config before initialize_services; /health via ModelRegistry"
 ```
 
@@ -2446,10 +2576,11 @@ Three layers for engine config:
 Memory budget auto-detected from `mlx.core.metal.device_info()`; override
 via `system.memory_budget_gb`.
 
-Module-level `settings = Settings()` performs zero file I/O at import; CLI
-callback / API lifespan call `load_settings(config_file, validate=True)`
-explicitly. This makes `dbs-vector --help` / `--version` survive a malformed
-or absent `config.yaml`.
+Module-level `settings = Settings(_env_file=None)` performs zero file I/O at
+import (no YAML, no `.env`); CLI callback / API lifespan call
+`load_settings(config_file, validate=True)` explicitly and copy fields onto
+the singleton via `_populate_singleton_from()`. This makes
+`dbs-vector --help` / `--version` survive a malformed or absent `config.yaml`.
 
 Adding a new engine: see spec
 `docs/superpowers/specs/2026-05-06-tuning-profiles-design.md`.

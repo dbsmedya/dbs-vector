@@ -236,7 +236,12 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="DBS_",
         env_file=".env",
-        extra="forbid",  # reject unknown top-level keys → typo guard
+        extra="ignore",
+        # NOTE: extra="ignore" because BaseSettings reads environment variables
+        # at construction time, and dev/CI environments often have stale or
+        # unrelated DBS_* env vars. extra="forbid" would crash on those. YAML
+        # strictness (typo detection in the system: block) is enforced
+        # separately by _apply_system_config — see §7.
     )
 
     db_path: str = "./lancedb_dbs_vector"
@@ -337,13 +342,13 @@ class EngineDeps(NamedTuple):
 
 ### When validation runs (and when config is read at all)
 
-**The module-level singleton must perform zero file IO at import time.** Previously `settings = load_settings()` would `yaml.safe_load(config_file)` at import; that fails on malformed YAML *before* any validator runs, breaking `dbs-vector --help`, `dbs-vector --version`, IDE module loaders, and `pytest` collection whenever a project's `config.yaml` is broken or experimental.
+**The module-level singleton must perform zero file IO at import time.** Previously `settings = load_settings()` would `yaml.safe_load(config_file)` at import; that fails on malformed YAML *before* any validator runs, breaking `dbs-vector --help`, `dbs-vector --version`, IDE module loaders, and `pytest` collection whenever a project's `config.yaml` is broken or experimental. Pydantic-settings additionally reads `.env` if `env_file=".env"` is set on `model_config`, so a naive `settings = Settings()` would still touch the disk.
 
 The fix has two parts:
 
-1. **Module singleton is empty defaults.** `settings = Settings()` — a `BaseSettings` instance constructed from defaults + env vars only. No YAML read. No MLX import. No validation.
+1. **Module singleton skips both YAML and `.env` read.** `settings = Settings(_env_file=None)` — `_env_file=None` is pydantic-settings' explicit override that disables the configured env-file for this instance. Defaults + non-file env vars only. No YAML read. No `.env` read. No MLX import. No validation.
 
-2. **Every runtime caller explicitly loads.** Before any code consumes `settings.engines`, the caller must call `load_settings(config_file, validate=True)` and copy the loaded fields onto the singleton.
+2. **Every runtime caller explicitly loads.** Before any code consumes `settings.engines`, the caller must call `load_settings(config_file, validate=True)` (which constructs its own `Settings()` *without* `_env_file=None`, so `.env` IS read at runtime) and copy the loaded fields onto the singleton via `_populate_singleton_from(new_settings)`.
 
 Caller table:
 
@@ -360,7 +365,9 @@ The function signature: `load_settings(config_file: str, validate: bool = False)
 
 ```python
 # config.py — module bottom
-settings = Settings()   # zero I/O; populated later by CLI callback or API lifespan
+# _env_file=None disables pydantic-settings' .env file read for this instance.
+# Zero I/O at import; populated later by CLI callback or API lifespan.
+settings = Settings(_env_file=None)
 ```
 
 ```python
