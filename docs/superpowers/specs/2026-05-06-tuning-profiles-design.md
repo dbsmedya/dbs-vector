@@ -337,19 +337,31 @@ class EngineDeps(NamedTuple):
 
 ### When validation runs
 
-`config.py` exposes a module-level singleton `settings = load_settings()` that runs at import time (used by `serve`/`mcp`/tests before the CLI callback fires). The validator must NOT run during this implicit load — that would break `dbs-vector --help`, `dbs-vector --version`, and any test that imports the module without a real config.
+`config.py` exposes a module-level singleton `settings = load_settings(validate=False)` that runs at import time. **Validation must NOT run during module import** — `load_settings()` with no path still reads `DBS_CONFIG_FILE` or `config.yaml`, so a real config (with engines) is parsed at import. If validation were on by default, `import dbs_vector.config` would auto-detect MLX memory, contact Metal, and fail-fast on bad config — breaking `dbs-vector --help`, `dbs-vector --version`, IDE imports, and `pytest` collection.
 
-The rule:
+The rule (signature flips: `validate` defaults to `False`):
 
-| Caller | Validates? |
-|---|---|
-| Module-import singleton: `settings = load_settings()` (no args) | **No** — empty engines, nothing to validate |
-| CLI callback: `load_settings(config_file)` (path arg) | **Yes** — fail-fast on bad config |
-| Test fixtures: `load_settings(path, validate=False)` (override) | **No** — tests construct deliberately partial configs |
+| Caller | Exact call | Validates? |
+|---|---|---|
+| Module-import singleton (`config.py`) | `settings = load_settings(validate=False)` | **No** |
+| CLI callback (`cli.py main()`) | `load_settings(config_file, validate=True)` | **Yes** |
+| `serve` / `mcp` lifespan | `load_settings(config_file, validate=True)` | **Yes** |
+| Tests: malformed-config negative test | `load_settings(path, validate=False)` | **No** |
+| Tests: validation-coverage test | `load_settings(path, validate=True)` | **Yes** |
 
-Implementation: `load_settings(config_file: str | None = None, validate: bool = True) -> Settings`. The module-level call passes no args (which keeps validation off because `engines` stays empty and the validator short-circuits on empty engines anyway). The CLI callback passes the explicit path, which triggers validation. Tests can pass `validate=False` to construct intentionally invalid configs for negative tests.
+```python
+# config.py — module bottom
+settings = load_settings(validate=False)   # explicit: do not validate at import
+```
 
-`_validate_config(settings)` short-circuits when `not settings.engines` (no engines = nothing to validate). This makes the "module import" path safe by construction, even if a future caller passes `validate=True` accidentally.
+```python
+# cli.py — main() callback
+new_settings = load_settings(config_file, validate=True)
+```
+
+Default-off validation makes the import path safe by construction even when `config.yaml` is present and populated. The CLI callback (`cli.py:54-55`) still short-circuits before this when no subcommand is invoked, so `--help` and `--version` skip the load entirely; but even if a caller imports the module bypassing Typer, the import is non-validating.
+
+`_validate_config(settings)` additionally short-circuits when `not settings.engines` as a defense-in-depth no-op for empty configs.
 
 ### Validation rules
 
@@ -721,43 +733,114 @@ Rewrite `config.yaml` per §10.
 
 ### Migration error path (old YAML → new schema)
 
-Old-schema YAML will fail **before** `_validate_config` runs — it will fail in `EngineConfig(**v)` with Pydantic's `ValidationError` (because `extra="forbid"` rejects `model_name`, `vector_dimension`, `attention_mask_dtype`, etc., AND because `model` and `tuning_profile` are now required and missing). Pydantic's default error messages cite field names but don't explain "this is the old schema; here's how to migrate."
+Old-schema YAML can fail in two places:
 
-To make the migration debuggable, `load_settings()` wraps the YAML→model construction in a `try/except ValidationError`:
+1. **Engine block** — `EngineConfig(**v)` with Pydantic's `ValidationError` because `extra="forbid"` rejects `model_name`, `vector_dimension`, `attention_mask_dtype`, etc., AND because `model` and `tuning_profile` are now required and missing.
+2. **System block** — currently `system:` is loaded with a `for key, value in data["system"].items(): setattr(...)` loop using `hasattr`. Unknown keys (the legacy `batch_size`) are silently ignored. We must add an explicit gate.
+
+`load_settings()` validates *both* blocks before model construction:
 
 ```python
-def load_settings(config_file=None, validate=True):
+def load_settings(config_file=None, validate=False):
     base_settings = Settings()
-    # ... yaml read ...
-    if "engines" in data:
-        try:
-            engines = {k: EngineConfig(**v) for k, v in data["engines"].items()}
-        except ValidationError as e:
-            _raise_migration_hint(e, config_file)   # see below
-        base_settings.engines = engines
-    # ... profiles, validate ...
+    if config_file is None:
+        config_file = os.getenv("DBS_CONFIG_FILE", "config.yaml")
+    yaml_path = Path(config_file)
+    if not yaml_path.exists():
+        return base_settings
+    with open(yaml_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
 
-def _raise_migration_hint(err: ValidationError, config_file: str) -> None:
-    """Detect old-schema fields in the error and rewrite as a migration message."""
-    legacy_fields = {
-        "model_name", "vector_dimension", "max_token_length",
-        "attention_mask_dtype", "chunk_max_chars", "batch_size",
-    }
-    seen_legacy = {e["loc"][-1] for e in err.errors() if e["loc"][-1] in legacy_fields}
-    missing_required = {e["loc"][-1] for e in err.errors() if e["type"] == "missing"}
-    if seen_legacy or {"model", "tuning_profile"} & missing_required:
+    # 1. system block — explicit allow-list, legacy-key detection
+    if "system" in data and isinstance(data["system"], dict):
+        _apply_system_config(data["system"], base_settings, config_file)
+
+    # 2. profiles block
+    if "profiles" in data and isinstance(data["profiles"], dict):
+        try:
+            base_settings.profiles = {
+                k: TuningProfile(**v) for k, v in data["profiles"].items()
+            }
+        except ValidationError as e:
+            _raise_migration_hint(e, config_file, where="profiles")
+
+    # 3. engines block
+    if "engines" in data and isinstance(data["engines"], dict):
+        try:
+            base_settings.engines = {
+                k: EngineConfig(**v) for k, v in data["engines"].items()
+            }
+        except ValidationError as e:
+            _raise_migration_hint(e, config_file, where="engines")
+
+    if validate:
+        _validate_config(base_settings, config_file)
+    return base_settings
+
+
+_LEGACY_SYSTEM_KEYS = {"batch_size"}   # moved to TuningProfile
+_KNOWN_SYSTEM_KEYS = {                  # current Settings system-block fields
+    "db_path", "nprobes", "log_level", "log_serialize", "memory_budget_gb",
+}
+
+
+def _apply_system_config(system: dict, settings: Settings, config_file: str) -> None:
+    """Apply system: keys onto the Settings instance with strict validation."""
+    legacy = sorted(set(system) & _LEGACY_SYSTEM_KEYS)
+    unknown = sorted(set(system) - _KNOWN_SYSTEM_KEYS - _LEGACY_SYSTEM_KEYS)
+    if legacy:
         raise ValueError(
-            f"Config schema mismatch in {config_file}.\n"
-            f"  Legacy fields found: {sorted(seen_legacy) or 'none'}\n"
-            f"  Missing required fields: {sorted(missing_required) or 'none'}\n"
-            f"This config uses the pre-tuning-profiles schema. See §10 of "
-            f"docs/superpowers/specs/2026-05-06-tuning-profiles-design.md for "
-            f"the new shape, or docs/README_EMBEDDINGS.md for a migration walkthrough."
+            f"Config schema mismatch in {config_file} (system: block).\n"
+            f"  Legacy keys found: {legacy}\n"
+            f"  These moved to TuningProfile. Define a profile under "
+            f"`profiles:` and reference it from each engine via "
+            f"`tuning_profile:`. See spec §10 / README_EMBEDDINGS.md."
+        )
+    if unknown:
+        raise ValueError(
+            f"Unknown keys in {config_file} system: block: {unknown}. "
+            f"Allowed: {sorted(_KNOWN_SYSTEM_KEYS)}."
+        )
+    for key, value in system.items():
+        setattr(settings, key, value)
+
+
+_LEGACY_ENGINE_FIELDS = {
+    "model_name", "vector_dimension", "max_token_length",
+    "attention_mask_dtype", "chunk_max_chars", "batch_size",
+}
+_REQUIRED_ENGINE_FIELDS = {"model", "tuning_profile"}
+
+
+def _raise_migration_hint(err: ValidationError, config_file: str, where: str) -> None:
+    """Detect old-schema fields and rewrite as a single migration message."""
+    seen_legacy = {
+        e["loc"][-1] for e in err.errors()
+        if e["loc"][-1] in _LEGACY_ENGINE_FIELDS
+    }
+    missing_required = {
+        e["loc"][-1] for e in err.errors()
+        if e["type"] == "missing" and e["loc"][-1] in _REQUIRED_ENGINE_FIELDS
+    }
+    if seen_legacy or missing_required:
+        raise ValueError(
+            f"Config schema mismatch in {config_file} ({where}: block).\n"
+            f"  Legacy per-engine fields found: {sorted(seen_legacy) or 'none'}\n"
+            f"  Missing new required fields: {sorted(missing_required) or 'none'}\n"
+            f"See spec §10 / README_EMBEDDINGS.md for the new schema."
         ) from err
-    raise err  # not a migration issue — propagate as-is
+    raise err  # genuine new-schema error — propagate
 ```
 
-This means migrating users get a *single* actionable error pointing at the spec/docs, not a wall of Pydantic field errors. Tests assert the migration hint fires for legacy YAML and does *not* fire for genuinely-broken-but-new-shape YAML.
+Migration coverage:
+
+| Legacy thing | Where it's detected | Outcome |
+|---|---|---|
+| `system.batch_size: 64` | `_apply_system_config` legacy-key check | Raise migration hint, name `batch_size`, point at `profiles:` |
+| Unknown `system:` key (typo) | `_apply_system_config` unknown-key check | Raise with allow-list |
+| `engines.md.model_name: ...` | `_raise_migration_hint(where="engines")` via Pydantic | Raise migration hint, name legacy fields |
+| Missing `engines.md.tuning_profile` | Same | Raise migration hint, name missing required |
+| Genuine bug in new-shape YAML | Falls through, raw `ValidationError` | Propagate unchanged |
 
 ---
 
@@ -770,7 +853,7 @@ This means migrating users get a *single* actionable error pointing at the spec/
 | `infrastructure/hardware.py` | `tests/unit/test_hardware.py` | `detect_memory_budget_gb` with mocked `mx.metal.device_info`; missing-MLX path → None; `resolve_memory_budget_gb` precedence (configured > detected > raise) |
 | `config.py` | `tests/unit/test_config_validation.py` | unknown model → ValueError; unknown profile → ValueError; profile.max_token > model cap → ValueError; profile would OOM → ValueError including conservative/raw/observed numbers; chunk_max_chars warning logged; module-import singleton (no args) does NOT validate |
 | `config.py` | `tests/unit/test_tuning_profile.py` | YAML round-trip; required fields; numeric bounds (`batch_size <= 0`, `max_token_length <= 0`, `chunk_max_chars < 0` rejected by Pydantic); `extra="forbid"` rejects unknown fields |
-| `config.py` | `tests/unit/test_migration_hint.py` (NEW) | `_raise_migration_hint` fires for old-schema YAML naming legacy fields; does NOT fire for genuinely-broken-but-new-shape YAML (raw `ValidationError` propagates) |
+| `config.py` | `tests/unit/test_migration_hint.py` (NEW) | `_apply_system_config` raises migration hint for `system.batch_size`; raises with allow-list for unknown system keys; `_raise_migration_hint` fires for legacy per-engine fields and for missing `model`/`tuning_profile`; does NOT fire for genuinely-broken-but-new-shape YAML (raw `ValidationError` propagates) |
 | `services/bootstrap.py` | `tests/unit/test_bootstrap.py` (updated) | resolves contract + profile; passes correct values to MLXEmbedder; populates `EngineDeps.batch_size` from profile |
 | `services/ingestion.py` | `tests/unit/test_ingestion.py` (updated) | accepts `batch_size` kwarg in `__init__`; uses `self.batch_size` in `_batched`; module no longer imports `settings` |
 | `cli.py` | `tests/unit/test_cli_callback.py` (NEW) | `dbs-vector --help` and `dbs-vector --version` succeed without loading config (tmpdir without `config.yaml`); subcommand path copies `profiles` and `memory_budget_gb` onto the singleton; does not copy `batch_size` |
@@ -812,8 +895,16 @@ This PR is done when:
 6. `_validate_config` rejects: unknown model key, unknown profile key, profile.max_token > model cap, profile that would OOM. Each with a test. TuningProfile fields with `batch_size <= 0`, `max_token_length <= 0`, `chunk_max_chars < 0` are rejected by Pydantic before the validator runs (separate test).
 7. Memory budget auto-detection succeeds on the user's Apple Silicon machine; `system.memory_budget_gb: 22.0` override path is exercised by a test; missing-MLX path falls through to the explicit "set memory_budget_gb" error (mocked test).
 8. CLAUDE.md and README_EMBEDDINGS.md describe the new config shape and the model-registration pattern. All docs in the §11 update list are swept for stale `system.batch_size` references.
-9. **`dbs-vector --help` and `dbs-vector --version` work without loading or validating any config file**, even when `config.yaml` is absent or malformed (asserted by integration test that runs `dbs-vector --help` against a tmpdir with no config).
-10. **Old-schema YAML produces a single migration-hint error** that names the legacy fields detected and points at `docs/superpowers/specs/2026-05-06-tuning-profiles-design.md` §10 + `docs/README_EMBEDDINGS.md`. Asserted by a unit test feeding the old schema and checking `_raise_migration_hint` fires. Genuinely broken new-schema YAML still produces the raw `ValidationError` (also tested).
+9. **`dbs-vector --help` and `dbs-vector --version` work without loading or validating any config file**, asserted in three scenarios:
+   - tmpdir with **no `config.yaml`** present;
+   - tmpdir with a **malformed `config.yaml`** (broken YAML syntax);
+   - tmpdir with an **old-schema `config.yaml`** (legacy `system.batch_size`, legacy per-engine fields).
+   In all three, `dbs-vector --help` and `--version` exit 0 with their normal output. The malformed-config case is the real import-time trap that the explicit `validate=False` module singleton must cover.
+10. **Old-schema YAML produces a single migration-hint error** that names the legacy fields detected and points at `docs/superpowers/specs/2026-05-06-tuning-profiles-design.md` §10 + `docs/README_EMBEDDINGS.md`. Asserted by:
+    - a test for `_apply_system_config` that the message names `system.batch_size`;
+    - a test for `_raise_migration_hint` that the message names legacy per-engine fields (e.g., `model_name`, `attention_mask_dtype`);
+    - a test that the message names missing required fields (`model`, `tuning_profile`);
+    - a negative test that genuinely-broken new-schema YAML produces the raw `ValidationError`, not the migration hint.
 
 ---
 
