@@ -113,7 +113,7 @@ _KNOWN_SYSTEM_KEYS = {
 
 
 def _apply_system_config(
-    system: dict[str, object], settings: "Settings", config_file: str
+    system: dict[str, object], settings: Settings, config_file: str
 ) -> None:
     """Apply system: keys onto the Settings instance with strict validation.
 

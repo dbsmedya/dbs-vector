@@ -51,3 +51,18 @@ def test_known_system_keys_pass_through(tmp_path):
     assert s.db_path == "/tmp/lance"
     assert s.nprobes == 30
     assert s.memory_budget_gb == 16.0
+
+
+def test_known_system_keys_matches_settings_fields():
+    """Drift guard: _KNOWN_SYSTEM_KEYS must equal the public Settings fields
+    minus the dict-blocks (`profiles`, `engines`). If someone adds a new
+    field to Settings without updating the allow-list, this fails immediately
+    rather than rejecting valid config at runtime."""
+    from dbs_vector.config import _KNOWN_SYSTEM_KEYS, Settings
+
+    declared = set(Settings.model_fields) - {"profiles", "engines"}
+    assert _KNOWN_SYSTEM_KEYS == declared, (
+        f"_KNOWN_SYSTEM_KEYS drifted from Settings fields. "
+        f"Missing from allow-list: {declared - _KNOWN_SYSTEM_KEYS}. "
+        f"Stale in allow-list: {_KNOWN_SYSTEM_KEYS - declared}."
+    )
