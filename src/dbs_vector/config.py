@@ -78,49 +78,75 @@ class EngineConfig(BaseModel):
 class Settings(BaseSettings):
     """Global configuration for the dbs-vector application."""
 
-    # General System
+    model_config = SettingsConfigDict(
+        env_prefix="DBS_",
+        env_file=".env",
+        extra="ignore",  # env vars often include unrelated keys; ignore them
+    )
+
+    # General system
     db_path: str = "./lancedb_dbs_vector"
-    batch_size: int = 64
-    nprobes: int = 20
+    nprobes: int = Field(default=20, gt=0)
     log_level: str = "INFO"
     log_serialize: bool = False
 
-    # Engines dictionary
+    # NEW: memory budget (None → auto-detect via MLX in resolve_memory_budget_gb)
+    memory_budget_gb: float | None = Field(default=None, gt=0)
+
+    # NEW: profile dict
+    profiles: dict[str, TuningProfile] = {}
+
+    # Engines dictionary (shape changes in Task 7)
     engines: dict[str, EngineConfig] = {}
 
-    model_config = SettingsConfigDict(env_prefix="DBS_", env_file=".env")
+    # REMOVED: batch_size (now per-profile)
 
 
-def load_settings(config_file: str | None = None) -> Settings:
-    """Loads base settings and overrides them from config.yaml."""
+def load_settings(config_file: str | None = None, validate: bool = False) -> Settings:
+    """Load and (optionally) validate settings from a YAML file.
+
+    Default validate=False: useful for tests and any caller that wants raw
+    parsing. Runtime callers (CLI callback, API lifespan) pass validate=True.
+    """
     base_settings = Settings()
 
     if config_file is None:
         config_file = os.getenv("DBS_CONFIG_FILE", "config.yaml")
 
     yaml_path = Path(config_file)
-    if yaml_path.exists():
-        with open(yaml_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-
-            if not data:
-                return base_settings
-
-            # Override System configuration
-            if "system" in data and isinstance(data["system"], dict):
-                for key, value in data["system"].items():
-                    if hasattr(base_settings, key):
-                        setattr(base_settings, key, value)
-
-            # Override Engine configuration
-            if "engines" in data and isinstance(data["engines"], dict):
-                engines = {k: EngineConfig(**v) for k, v in data["engines"].items()}
-                base_settings.engines = engines
-    else:
+    if not yaml_path.exists():
         logger.warning("Configuration file '{}' not found, using defaults", yaml_path)
+        return base_settings
 
+    with open(yaml_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    # System block (allow-list / legacy detection added in Task 6)
+    if "system" in data and isinstance(data["system"], dict):
+        for key, value in data["system"].items():
+            if hasattr(base_settings, key):
+                setattr(base_settings, key, value)
+
+    # Profiles block
+    if "profiles" in data and isinstance(data["profiles"], dict):
+        base_settings.profiles = {
+            k: TuningProfile(**v) for k, v in data["profiles"].items()
+        }
+
+    # Engines block
+    if "engines" in data and isinstance(data["engines"], dict):
+        base_settings.engines = {k: EngineConfig(**v) for k, v in data["engines"].items()}
+
+    # _validate_config wired up in Task 8
     return base_settings
 
 
-# Global singleton instance
-settings = load_settings()
+# Module-level singleton: ZERO file I/O at import. We pass _env_file=None
+# explicitly to disable pydantic-settings' .env file reading for this
+# instance — otherwise BaseSettings will stat() the .env path and (if it
+# exists) read it at import time, violating the import-safety contract.
+# Runtime callers (cli.py callback, api/main.py lifespan) call
+# load_settings(config_file, validate=True), which constructs a fresh
+# Settings() (without _env_file=None, so .env IS loaded then) and copies
+# fields onto this singleton.
+settings = Settings(_env_file=None)  # type: ignore[call-arg]
