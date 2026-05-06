@@ -66,3 +66,96 @@ def test_known_system_keys_matches_settings_fields():
         f"Missing from allow-list: {declared - _KNOWN_SYSTEM_KEYS}. "
         f"Stale in allow-list: {_KNOWN_SYSTEM_KEYS - declared}."
     )
+
+
+def test_legacy_engine_field_raises_migration_hint(tmp_path):
+    yaml_path = _write_yaml(
+        tmp_path,
+        """
+        profiles:
+          gemma-md: {max_token_length: 2048, chunk_max_chars: 1000, batch_size: 64}
+        engines:
+          md:
+            description: "x"
+            model_name: "mlx-community/embeddinggemma-300m-bf16"
+            mapper_type: "document"
+            chunker_type: "document"
+            table_name: "t"
+            workflow: "w"
+            tuning_profile: "gemma-md"
+        """,
+    )
+    with pytest.raises(ValueError, match="Legacy per-engine fields found.*model_name"):
+        load_settings(yaml_path)
+
+
+def test_missing_required_engine_fields_raises_migration_hint(tmp_path):
+    yaml_path = _write_yaml(
+        tmp_path,
+        """
+        profiles:
+          gemma-md: {max_token_length: 2048, chunk_max_chars: 1000, batch_size: 64}
+        engines:
+          md:
+            description: "x"
+            mapper_type: "document"
+            chunker_type: "document"
+            table_name: "t"
+            workflow: "w"
+        """,
+    )
+    with pytest.raises(ValueError, match="Missing new required fields.*model"):
+        load_settings(yaml_path)
+
+
+def test_genuine_validation_error_propagates_unchanged(tmp_path):
+    """A genuine validation bug in new schema should NOT be wrapped as migration."""
+    yaml_path = _write_yaml(
+        tmp_path,
+        """
+        profiles:
+          gemma-md: {max_token_length: 2048, chunk_max_chars: 1000, batch_size: 64}
+        engines:
+          md:
+            description: "x"
+            model: "gemma-bf16"
+            mapper_type: 12345  # wrong type — should be string
+            chunker_type: "document"
+            table_name: "t"
+            workflow: "w"
+            tuning_profile: "gemma-md"
+        """,
+    )
+    with pytest.raises(ValueError, match="mapper_type"):
+        load_settings(yaml_path)
+    # Ensure the migration hint phrase is NOT present
+    try:
+        load_settings(yaml_path)
+    except ValueError as e:
+        assert "Legacy per-engine fields" not in str(e)
+        assert "Missing new required fields" not in str(e)
+
+
+def test_valid_new_schema_loads(tmp_path):
+    yaml_path = _write_yaml(
+        tmp_path,
+        """
+        profiles:
+          gemma-md: {max_token_length: 2048, chunk_max_chars: 1000, batch_size: 64}
+        engines:
+          md:
+            description: "Gemma markdown"
+            model: "gemma-bf16"
+            mapper_type: "document"
+            chunker_type: "document"
+            table_name: "t"
+            workflow: "md_search"
+            passage_prefix: "title: none | text: "
+            query_prefix: "task: search result | query: "
+            tuning_profile: "gemma-md"
+        """,
+    )
+    s = load_settings(yaml_path)
+    assert s.engines["md"].model == "gemma-bf16"
+    assert s.engines["md"].tuning_profile == "gemma-md"
+    assert s.engines["md"].passage_prefix == "title: none | text: "

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import yaml
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,24 +19,25 @@ class TuningProfile(BaseModel):
 
 
 class EngineConfig(BaseModel):
-    """Configuration specific to a single AI engine/data source."""
+    """Per-deployment engine config. References model contract + tuning profile."""
+
+    model_config = ConfigDict(extra="forbid")
 
     description: str
-    model_name: str
-    vector_dimension: int
-    max_token_length: int
-    table_name: str
+    model: str  # key into ModelRegistry
     mapper_type: str
     chunker_type: str
-    chunk_max_chars: int
+    table_name: str
+    workflow: str
+    tuning_profile: str  # key into Settings.profiles
 
-    # Task Prefixes for models like embeddinggemma
-    query_prefix: str = ""
+    # Model-deployment-specific (kept on engine because they vary per workflow
+    # using the same underlying model):
     passage_prefix: str = ""
-    workflow: str = "default"
-    duckdb_query: str | None = None
+    query_prefix: str = ""
 
-    # API chunker fields
+    # Chunker-specific (unchanged):
+    duckdb_query: str | None = None
     api_base_url: str = ""
     api_key: str = ""
     api_page_size: int = 200
@@ -45,15 +46,14 @@ class EngineConfig(BaseModel):
     api_min_execution_ms: float = 0.0
     api_database: str = ""
 
-    # Some MLX models (e.g. embeddinggemma-bf16) require the attention_mask cast
-    # to a specific dtype to avoid type-promotion errors. Leave unset for models
-    # that accept the default integer mask (e.g. ModernBERT / Granite).
-    attention_mask_dtype: str | None = None  # accepted: None, "float16", "bfloat16", "float32"
-
     def chunker_kwargs(
-        self, query_override: str | None = None, url_override: str | None = None
+        self,
+        chunk_max_chars: int,
+        query_override: str | None = None,
+        url_override: str | None = None,
     ) -> dict[str, object]:
-        """Resolve chunker initialization kwargs from engine config."""
+        """Resolve chunker init kwargs. `chunk_max_chars` is injected by the
+        caller from the resolved tuning profile (no longer a field on Engine)."""
         if self.chunker_type == "duckdb":
             return {"query": query_override or self.duckdb_query}
         if self.chunker_type == "api":
@@ -70,8 +70,8 @@ class EngineConfig(BaseModel):
             if query_override:
                 kwargs["custom_query"] = query_override
             return kwargs
-        if self.chunk_max_chars > 0:
-            return {"max_chars": self.chunk_max_chars}
+        if chunk_max_chars > 0:
+            return {"max_chars": chunk_max_chars}
         return {}
 
 
@@ -101,6 +101,16 @@ class Settings(BaseSettings):
 
     # REMOVED: batch_size (now per-profile)
 
+
+_LEGACY_ENGINE_FIELDS = {
+    "model_name",
+    "vector_dimension",
+    "max_token_length",
+    "attention_mask_dtype",
+    "chunk_max_chars",
+    "batch_size",
+}
+_REQUIRED_ENGINE_FIELDS = {"model", "tuning_profile"}
 
 _LEGACY_SYSTEM_KEYS = {"batch_size"}  # moved to TuningProfile in profiles: block
 _KNOWN_SYSTEM_KEYS = {
@@ -142,6 +152,30 @@ def _apply_system_config(
         setattr(settings, key, value)
 
 
+def _raise_migration_hint(err: ValidationError, config_file: str, where: str) -> None:
+    """Detect old-schema fields in a Pydantic ValidationError and rewrap as a
+    single migration message. If the error is unrelated to migration, propagate."""
+    seen_legacy = {
+        e["loc"][-1]
+        for e in err.errors()
+        if e["loc"][-1] in _LEGACY_ENGINE_FIELDS
+    }
+    missing_required = {
+        e["loc"][-1]
+        for e in err.errors()
+        if e["type"] == "missing" and e["loc"][-1] in _REQUIRED_ENGINE_FIELDS
+    }
+    if seen_legacy or missing_required:
+        raise ValueError(
+            f"Config schema mismatch in {config_file} ({where}: block).\n"
+            f"  Legacy per-engine fields found: {sorted(seen_legacy) or 'none'}\n"
+            f"  Missing new required fields: {sorted(missing_required) or 'none'}\n"
+            f"See docs/superpowers/specs/2026-05-06-tuning-profiles-design.md §10 "
+            f"or docs/README_EMBEDDINGS.md for the new schema."
+        ) from err
+    raise err
+
+
 def load_settings(config_file: str | None = None, validate: bool = False) -> Settings:
     """Load and (optionally) validate settings from a YAML file.
 
@@ -167,13 +201,21 @@ def load_settings(config_file: str | None = None, validate: bool = False) -> Set
 
     # Profiles block
     if "profiles" in data and isinstance(data["profiles"], dict):
-        base_settings.profiles = {
-            k: TuningProfile(**v) for k, v in data["profiles"].items()
-        }
+        try:
+            base_settings.profiles = {
+                k: TuningProfile(**v) for k, v in data["profiles"].items()
+            }
+        except ValidationError as e:
+            _raise_migration_hint(e, config_file, where="profiles")
 
     # Engines block
     if "engines" in data and isinstance(data["engines"], dict):
-        base_settings.engines = {k: EngineConfig(**v) for k, v in data["engines"].items()}
+        try:
+            base_settings.engines = {
+                k: EngineConfig(**v) for k, v in data["engines"].items()
+            }
+        except ValidationError as e:
+            _raise_migration_hint(e, config_file, where="engines")
 
     # _validate_config wired up in Task 8
     return base_settings

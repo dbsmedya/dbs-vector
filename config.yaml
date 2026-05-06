@@ -1,97 +1,82 @@
 system:
   db_path: "./lancedb_dbs_vector"
-  batch_size: 64
   nprobes: 20
+  # memory_budget_gb auto-detected from Metal; uncomment to override:
+  # memory_budget_gb: 22.0
+
+profiles:
+  gemma-md:           {max_token_length: 2048,  chunk_max_chars: 1000, batch_size: 64}
+  gemma-sql-atomic:   {max_token_length: 2048,  chunk_max_chars: 0,    batch_size: 64}
+  granite-md-large:   {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8}
+  granite-sql-atomic: {max_token_length: 8192,  chunk_max_chars: 0,    batch_size: 32}
 
 engines:
   md:
     description: "Markdown & Prose Document Engine (Gemma Search)"
-    model_name: "mlx-community/embeddinggemma-300m-bf16"
-    vector_dimension: 768
-    max_token_length: 2048
-    table_name: "knowledge_vault"
+    model: "gemma-bf16"
     mapper_type: "document"
     chunker_type: "document"
-    chunk_max_chars: 1000
+    table_name: "knowledge_vault"
+    workflow: "md_search"
     passage_prefix: "title: none | text: "
     query_prefix: "task: search result | query: "
-    workflow: "md_search"
-    attention_mask_dtype: "float16"  # embeddinggemma-bf16 requires this cast
+    tuning_profile: "gemma-md"
 
   sql:
     description: "SQL Slow Query Log Engine (Gemma Clustering)"
-    model_name: "mlx-community/embeddinggemma-300m-bf16"
-    vector_dimension: 768
-    max_token_length: 2048
-    table_name: "query_vault"
+    model: "gemma-bf16"
     mapper_type: "sql"
     chunker_type: "duckdb"
-    chunk_max_chars: 0 
+    table_name: "query_vault"
+    workflow: "sql_clustering"
     passage_prefix: "task: clustering | query: "
     query_prefix: "task: clustering | query: "
-    workflow: "sql_clustering"
-    attention_mask_dtype: "float16"  # embeddinggemma-bf16 requires this cast
+    tuning_profile: "gemma-sql-atomic"
 
   sql-api:
     description: "Remote slow query log via HTTP API"
-    model_name: "mlx-community/embeddinggemma-300m-bf16"
-    vector_dimension: 768
-    max_token_length: 2048
-    table_name: "query_vault"
+    model: "gemma-bf16"
     mapper_type: "sql"
     chunker_type: "api"
-    chunk_max_chars: 0
+    table_name: "query_vault"
+    workflow: "sql_clustering"
     passage_prefix: "task: clustering | query: "
     query_prefix: "task: clustering | query: "
-    workflow: "sql_clustering"
-    attention_mask_dtype: "float16"  # embeddinggemma-bf16 requires this cast
-    # --- ApiChunker-specific fields ---
+    tuning_profile: "gemma-sql-atomic"
     api_base_url: "http://localhost:8080/api/v1"
-    api_key: "0Byuf9P9e5UxUNIsngNjr6b9u8sldoHd1ek_ImBbxiI"          # set via DBS_API_KEY env var in production
-    api_page_size: 200         # records per GET request (max 1000)
-    api_since_days: 60         # lower bound on latest_ts  (default: 15)
-    api_timeout_sec: 30        # HTTP request timeout in seconds
-    api_min_execution_ms: 0    # filter: skip queries below this threshold
-    api_database: ""           # leave empty to fetch all databases
+    api_key: "0Byuf9P9e5UxUNIsngNjr6b9u8sldoHd1ek_ImBbxiI"
+    api_page_size: 200
+    api_since_days: 60
+    api_timeout_sec: 30
+    api_min_execution_ms: 0
+    api_database: ""
 
   md-granite:
-    description: "Markdown & Prose Engine (Granite Multilingual R2 - long context)"
-    model_name: "ibm-granite/granite-embedding-311m-multilingual-r2"
-    vector_dimension: 768
-    max_token_length: 8192
-    table_name: "knowledge_vault_granite"
+    description: "Markdown & Prose Engine (Granite R2 - long context)"
+    model: "granite-r2"
     mapper_type: "document"
     chunker_type: "document"
-    chunk_max_chars: 24000
-    passage_prefix: ""
-    query_prefix: ""
+    table_name: "knowledge_vault_granite"
     workflow: "md_search_granite"
+    tuning_profile: "granite-md-large"
 
   sql-granite:
     description: "SQL Slow Query Log Engine (Granite Clustering)"
-    model_name: "ibm-granite/granite-embedding-311m-multilingual-r2"
-    vector_dimension: 768
-    max_token_length: 8192
-    table_name: "query_vault_granite"
+    model: "granite-r2"
     mapper_type: "sql"
     chunker_type: "duckdb"
-    chunk_max_chars: 0
-    passage_prefix: ""
-    query_prefix: ""
+    table_name: "query_vault_granite"
     workflow: "sql_clustering_granite"
+    tuning_profile: "granite-sql-atomic"
 
   sql-api-granite:
     description: "Remote slow query log via HTTP API (Granite)"
-    model_name: "ibm-granite/granite-embedding-311m-multilingual-r2"
-    vector_dimension: 768
-    max_token_length: 8192
-    table_name: "query_vault_granite_api"
+    model: "granite-r2"
     mapper_type: "sql"
     chunker_type: "api"
-    chunk_max_chars: 0
-    passage_prefix: ""
-    query_prefix: ""
+    table_name: "query_vault_granite_api"
     workflow: "sql_clustering_granite"
+    tuning_profile: "granite-sql-atomic"
     api_base_url: "http://localhost:8080/api/v1"
     api_key: "0Byuf9P9e5UxUNIsngNjr6b9u8sldoHd1ek_ImBbxiI"
     api_page_size: 200
