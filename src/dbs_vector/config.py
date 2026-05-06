@@ -3,8 +3,19 @@ from pathlib import Path
 
 import yaml
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class TuningProfile(BaseModel):
+    """Three numeric knobs validated against the engine's model contract and
+    available memory at load time."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_token_length: int = Field(gt=0)
+    chunk_max_chars: int = Field(ge=0)
+    batch_size: int = Field(gt=0)
 
 
 class EngineConfig(BaseModel):
