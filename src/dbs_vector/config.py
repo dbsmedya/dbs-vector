@@ -176,6 +176,112 @@ def _raise_migration_hint(err: ValidationError, config_file: str, where: str) ->
     raise err
 
 
+_CALIBRATION_NOTE = (
+    "Calibration reference: 2025-05 OOM measured 41 GB at "
+    "batch=64, seq=16384, bf16; the 3.0× safety factor preserves headroom."
+)
+
+
+def _validate_config(settings: Settings, config_file: str) -> None:
+    """Run the validation chain over every configured engine.
+
+    Rules (each fails-fast with a remediation message), executed per engine:
+      1. Engine.model exists in ModelRegistry.
+      2. Engine.tuning_profile exists in settings.profiles.
+      3. profile.max_token_length ≤ contract.model_max_token_length.
+      4. estimate_peak_buffer_bytes ≤ memory_budget × 0.9.
+      5. (warn) chunk_max_chars routinely exceeds max_token_length × 4.
+
+    Memory budget is resolved lazily (only when rule 4 actually runs) so a
+    config with an unknown model/profile fails on rule 1/2 BEFORE we attempt
+    Metal auto-detection — otherwise an MLX-unavailable environment would
+    mask real config errors with "Could not auto-detect Metal memory budget."
+    """
+    from dbs_vector.core.model_registry import ModelRegistry
+    from dbs_vector.core.profile_math import (
+        estimate_peak_buffer_bytes,
+        recommend_profile,
+    )
+    from dbs_vector.infrastructure.hardware import resolve_memory_budget_gb
+
+    if not settings.engines:
+        return
+
+    # Lazy: only resolved on first memory check (rule 4).
+    budget_gb: float | None = None
+
+    for engine_name, engine in settings.engines.items():
+        # Rule 1: model contract exists
+        try:
+            contract = ModelRegistry.get(engine.model)
+        except KeyError as e:
+            raise ValueError(
+                f"Engine '{engine_name}' references "
+                + str(e).replace("Unknown ", "unknown ").strip("'\"")
+            ) from e
+
+        # Rule 2: profile exists
+        if engine.tuning_profile not in settings.profiles:
+            known = sorted(settings.profiles)
+            raise ValueError(
+                f"Engine '{engine_name}' references unknown tuning profile "
+                f"'{engine.tuning_profile}'. Known: {known}"
+            )
+        profile = settings.profiles[engine.tuning_profile]
+
+        # Rule 3: profile fits model cap
+        if profile.max_token_length > contract.model_max_token_length:
+            raise ValueError(
+                f"Profile '{engine.tuning_profile}' requires "
+                f"{profile.max_token_length} tokens but engine '{engine_name}' "
+                f"uses model '{engine.model}' (cap {contract.model_max_token_length}). "
+                f"Lower profile.max_token_length or pick a different model."
+            )
+
+        # Rule 4: profile fits memory budget — resolve budget lazily here.
+        if budget_gb is None:
+            budget_gb = resolve_memory_budget_gb(settings.memory_budget_gb)
+        budget_bytes = int(budget_gb * 1024 ** 3)
+        peak = estimate_peak_buffer_bytes(profile, contract)
+        cap = int(budget_bytes * 0.9)
+        if peak > cap:
+            raw_attention = (
+                profile.batch_size
+                * profile.max_token_length ** 2
+                * contract.compute_dtype_bytes
+            )
+            suggested = recommend_profile(
+                contract,
+                budget_gb,
+                target_chunker=engine.chunker_type,
+                target_seq_len=profile.max_token_length,
+            )
+            raise ValueError(
+                f"Profile '{engine.tuning_profile}' on engine '{engine_name}' "
+                f"fails the memory budget:\n"
+                f"  conservative estimate: {peak / 1024**3:.1f} GB "
+                f"(3.0× safety factor over raw attention buffer)\n"
+                f"  raw attention buffer: {raw_attention / 1024**3:.1f} GB\n"
+                f"  budget (Metal max buffer × 0.9): {cap / 1024**3:.1f} GB\n"
+                f"  {_CALIBRATION_NOTE}\n"
+                f"Suggested values: max_token_length={suggested['max_token_length']}, "
+                f"batch_size={suggested['batch_size']}"
+                f"{' (context length reduced)' if suggested['seq_len_reduced'] else ''}. "
+                f"Edit {config_file}."
+            )
+
+        # Rule 5: chunk-vs-token sanity (warn only)
+        if profile.chunk_max_chars > 0 and profile.chunk_max_chars > profile.max_token_length * 4:
+            logger.warning(
+                "Engine '{}' profile '{}': chunk_max_chars={} likely exceeds "
+                "max_token_length={} (× 4 char/token heuristic). Chunks may truncate.",
+                engine_name,
+                engine.tuning_profile,
+                profile.chunk_max_chars,
+                profile.max_token_length,
+            )
+
+
 def load_settings(config_file: str | None = None, validate: bool = False) -> Settings:
     """Load and (optionally) validate settings from a YAML file.
 
@@ -217,7 +323,8 @@ def load_settings(config_file: str | None = None, validate: bool = False) -> Set
         except ValidationError as e:
             _raise_migration_hint(e, config_file, where="engines")
 
-    # _validate_config wired up in Task 8
+    if validate:
+        _validate_config(base_settings, config_file)
     return base_settings
 
 
