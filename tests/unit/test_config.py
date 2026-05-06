@@ -6,96 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from dbs_vector.config import EngineConfig, Settings, load_settings
-
-
-class TestEngineConfig:
-    """Tests for EngineConfig model."""
-
-    def test_engine_config_creation(self):
-        """Test creating an EngineConfig with all required fields."""
-        config = EngineConfig(
-            description="Test Engine",
-            model_name="test-model",
-            vector_dimension=384,
-            max_token_length=512,
-            table_name="test_table",
-            mapper_type="document",
-            chunker_type="document",
-            chunk_max_chars=1000,
-        )
-
-        assert config.description == "Test Engine"
-        assert config.model_name == "test-model"
-        assert config.vector_dimension == 384
-        assert config.max_token_length == 512
-        assert config.table_name == "test_table"
-        assert config.mapper_type == "document"
-        assert config.chunker_type == "document"
-        assert config.chunk_max_chars == 1000
-
-    def test_chunker_kwargs_document(self):
-        """Test document chunker kwargs resolution."""
-        config = EngineConfig(
-            description="Doc Engine",
-            model_name="test-model",
-            vector_dimension=384,
-            max_token_length=512,
-            table_name="test_table",
-            mapper_type="document",
-            chunker_type="document",
-            chunk_max_chars=1000,
-        )
-
-        assert config.chunker_kwargs() == {"max_chars": 1000}
-
-    def test_chunker_kwargs_duckdb_query_override(self):
-        """Test duckdb chunker kwargs with override."""
-        config = EngineConfig(
-            description="DuckDB Engine",
-            model_name="test-model",
-            vector_dimension=384,
-            max_token_length=512,
-            table_name="test_table",
-            mapper_type="document",
-            chunker_type="duckdb",
-            chunk_max_chars=0,
-            duckdb_query="SELECT 1",
-        )
-
-        assert config.chunker_kwargs() == {"query": "SELECT 1"}
-        assert config.chunker_kwargs(query_override="SELECT 2") == {"query": "SELECT 2"}
-
-    def test_chunker_kwargs_api(self):
-        """Test API chunker kwargs resolution."""
-        config = EngineConfig(
-            description="API Engine",
-            model_name="test-model",
-            vector_dimension=384,
-            max_token_length=512,
-            table_name="test_table",
-            mapper_type="document",
-            chunker_type="api",
-            chunk_max_chars=0,
-            api_base_url="https://example/api",
-            api_key="secret",
-            api_page_size=100,
-            api_since_days=30,
-            api_timeout_sec=60,
-            api_min_execution_ms=12.5,
-            api_database="prod",
-        )
-
-        assert config.chunker_kwargs(query_override="SELECT 3") == {
-            "base_url": "https://example/api",
-            "api_key": "secret",
-            "page_size": 100,
-            "since_days": 30,
-            "timeout_sec": 60,
-            "min_execution_ms": 12.5,
-            "database": "prod",
-            "custom_query": "SELECT 3",
-        }
+from dbs_vector.config import Settings, load_settings
 
 
 class TestSettingsDefaults:
@@ -106,21 +17,22 @@ class TestSettingsDefaults:
         settings = Settings()
 
         assert settings.db_path == "./lancedb_dbs_vector"
-        assert settings.batch_size == 64
         assert settings.nprobes == 20
+        assert settings.memory_budget_gb is None
+        assert settings.profiles == {}
         assert settings.engines == {}
 
     def test_settings_custom_values(self):
         """Test Settings with custom values."""
         settings = Settings(
             db_path="/custom/path",
-            batch_size=128,
             nprobes=50,
+            memory_budget_gb=22.0,
         )
 
         assert settings.db_path == "/custom/path"
-        assert settings.batch_size == 128
         assert settings.nprobes == 50
+        assert settings.memory_budget_gb == 22.0
 
 
 class TestLoadSettings:
@@ -154,7 +66,6 @@ class TestLoadSettings:
             config_content = """
 system:
   db_path: "./custom_db"
-  batch_size: 128
   nprobes: 100
 """
             Path(config_path).write_text(config_content)
@@ -162,7 +73,6 @@ system:
             settings = load_settings(config_path)
 
             assert settings.db_path == "./custom_db"
-            assert settings.batch_size == 128
             assert settings.nprobes == 100
 
     def test_load_settings_with_engines(self):
@@ -173,25 +83,27 @@ system:
 system:
   db_path: "./test_db"
 
+profiles:
+  gemma-md: {max_token_length: 2048, chunk_max_chars: 1000, batch_size: 64}
+  gemma-sql: {max_token_length: 2048, chunk_max_chars: 0, batch_size: 64}
+
 engines:
   md:
     description: "Markdown Engine"
-    model_name: "test-model"
-    vector_dimension: 384
-    max_token_length: 512
+    model: "gemma-bf16"
     table_name: "md_table"
     mapper_type: "document"
     chunker_type: "document"
-    chunk_max_chars: 1000
+    workflow: "md_search"
+    tuning_profile: "gemma-md"
   sql:
     description: "SQL Engine"
-    model_name: "sql-model"
-    vector_dimension: 768
-    max_token_length: 256
+    model: "gemma-bf16"
     table_name: "sql_table"
     mapper_type: "sql"
-    chunker_type: "sql"
-    chunk_max_chars: 0
+    chunker_type: "duckdb"
+    workflow: "sql_clustering"
+    tuning_profile: "gemma-sql"
 """
             Path(config_path).write_text(config_content)
 
@@ -202,12 +114,12 @@ engines:
 
             md_config = settings.engines["md"]
             assert md_config.description == "Markdown Engine"
-            assert md_config.model_name == "test-model"
-            assert md_config.vector_dimension == 384
+            assert md_config.model == "gemma-bf16"
+            assert md_config.tuning_profile == "gemma-md"
 
             sql_config = settings.engines["sql"]
             assert sql_config.description == "SQL Engine"
-            assert sql_config.vector_dimension == 768
+            assert sql_config.model == "gemma-bf16"
 
     def test_load_settings_raises_for_unknown_system_keys(self):
         """Test that unknown system keys raise a ValueError with the allow-list."""
@@ -274,16 +186,16 @@ system:
             config_path = os.path.join(tmp_dir, "config.yaml")
             config_content = """
 system:
-  batch_size: 256
+  nprobes: 50
 """
             Path(config_path).write_text(config_content)
 
             settings = load_settings(config_path)
 
-            assert settings.batch_size == 256
+            assert settings.nprobes == 50
             # These should retain defaults
             assert settings.db_path == "./lancedb_dbs_vector"
-            assert settings.nprobes == 20
+            assert settings.memory_budget_gb is None
 
     def test_load_settings_with_null_data(self):
         """Test loading settings when yaml returns None."""
@@ -297,38 +209,3 @@ system:
             # Should use defaults
             assert settings.db_path == "./lancedb_dbs_vector"
             assert settings.engines == {}
-
-
-class TestAttentionMaskDtype:
-    """Tests for the new attention_mask_dtype field on EngineConfig."""
-
-    def test_attention_mask_dtype_defaults_to_none(self):
-        from dbs_vector.config import EngineConfig
-
-        cfg = EngineConfig(
-            description="t",
-            model_name="m",
-            vector_dimension=8,
-            max_token_length=64,
-            table_name="t",
-            mapper_type="document",
-            chunker_type="document",
-            chunk_max_chars=100,
-        )
-        assert cfg.attention_mask_dtype is None
-
-    def test_attention_mask_dtype_accepts_string(self):
-        from dbs_vector.config import EngineConfig
-
-        cfg = EngineConfig(
-            description="t",
-            model_name="m",
-            vector_dimension=8,
-            max_token_length=64,
-            table_name="t",
-            mapper_type="document",
-            chunker_type="document",
-            chunk_max_chars=100,
-            attention_mask_dtype="float16",
-        )
-        assert cfg.attention_mask_dtype == "float16"
