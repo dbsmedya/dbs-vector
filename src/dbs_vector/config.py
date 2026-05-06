@@ -102,6 +102,46 @@ class Settings(BaseSettings):
     # REMOVED: batch_size (now per-profile)
 
 
+_LEGACY_SYSTEM_KEYS = {"batch_size"}  # moved to TuningProfile in profiles: block
+_KNOWN_SYSTEM_KEYS = {
+    "db_path",
+    "nprobes",
+    "log_level",
+    "log_serialize",
+    "memory_budget_gb",
+}
+
+
+def _apply_system_config(
+    system: dict[str, object], settings: "Settings", config_file: str
+) -> None:
+    """Apply system: keys onto the Settings instance with strict validation.
+
+    - Legacy keys (e.g., batch_size) raise a migration hint.
+    - Unknown keys raise with the allow-list to catch typos.
+    - Known keys pass through to setattr().
+    """
+    legacy = sorted(set(system) & _LEGACY_SYSTEM_KEYS)
+    unknown = sorted(set(system) - _KNOWN_SYSTEM_KEYS - _LEGACY_SYSTEM_KEYS)
+    if legacy:
+        raise ValueError(
+            f"Config schema mismatch in {config_file} (system: block).\n"
+            f"  Legacy keys found: {legacy}\n"
+            f"  These moved to TuningProfile. Define profiles under "
+            f"`profiles:` and reference them from each engine via "
+            f"`tuning_profile:`. See "
+            f"docs/superpowers/specs/2026-05-06-tuning-profiles-design.md "
+            f"§10 / docs/README_EMBEDDINGS.md."
+        )
+    if unknown:
+        raise ValueError(
+            f"Unknown keys in {config_file} system: block: {unknown}. "
+            f"Allowed: {sorted(_KNOWN_SYSTEM_KEYS)}."
+        )
+    for key, value in system.items():
+        setattr(settings, key, value)
+
+
 def load_settings(config_file: str | None = None, validate: bool = False) -> Settings:
     """Load and (optionally) validate settings from a YAML file.
 
@@ -121,11 +161,9 @@ def load_settings(config_file: str | None = None, validate: bool = False) -> Set
     with open(yaml_path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
-    # System block (allow-list / legacy detection added in Task 6)
+    # System block — strict validation (legacy / unknown key rejection)
     if "system" in data and isinstance(data["system"], dict):
-        for key, value in data["system"].items():
-            if hasattr(base_settings, key):
-                setattr(base_settings, key, value)
+        _apply_system_config(data["system"], base_settings, config_file)
 
     # Profiles block
     if "profiles" in data and isinstance(data["profiles"], dict):

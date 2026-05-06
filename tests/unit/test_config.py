@@ -4,6 +4,8 @@ import os
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from dbs_vector.config import EngineConfig, Settings, load_settings
 
 
@@ -207,8 +209,8 @@ engines:
             assert sql_config.description == "SQL Engine"
             assert sql_config.vector_dimension == 768
 
-    def test_load_settings_ignores_unknown_system_keys(self):
-        """Test that unknown system keys are ignored gracefully."""
+    def test_load_settings_raises_for_unknown_system_keys(self):
+        """Test that unknown system keys raise a ValueError with the allow-list."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = os.path.join(tmp_dir, "config.yaml")
             config_content = """
@@ -219,10 +221,8 @@ system:
 """
             Path(config_path).write_text(config_content)
 
-            settings = load_settings(config_path)
-
-            assert settings.db_path == "./custom_db"
-            # Should not raise an error for unknown keys
+            with pytest.raises(ValueError, match="Unknown keys.*unknown_key"):
+                load_settings(config_path)
 
     def test_load_settings_from_env_var(self, monkeypatch):
         """Test loading settings from config file specified in env var."""
