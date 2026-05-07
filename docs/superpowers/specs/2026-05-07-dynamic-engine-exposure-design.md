@@ -54,7 +54,7 @@ Beyond exposing existing Granite engines, the design must accommodate:
 
 Each search "family" (document, sql, future jira) is a self-contained module that owns its argument schema, dispatch logic, and result formatting. A `FamilyRegistry` (presentation layer) maps a string key to a `SearchFamily` instance. A separate `FamilyKeyRegistry` (core layer) holds just the valid key set, used by `config.py` for validation without dragging FastMCP into config import paths.
 
-At server startup (stdio transport, the only one shipped), `register_search_tools(mcp, settings)` iterates `settings.engines`, looks up each engine's family via `engine.resolved_family`, and registers one MCP tool per engine using a per-family handler factory. The same lifecycle hook also calls `register_discovery_tool(mcp)` to register the `list_engines` tool.
+At server startup (stdio transport, the only one shipped), `register_search_tools(mcp)` reads from the populated `dbs_vector.config.settings` singleton, iterates `settings.engines`, looks up each engine's family via `engine.resolved_family`, and registers one MCP tool per engine using a per-family handler factory. The same lifecycle hook also calls `register_discovery_tool(mcp)` to register the `list_engines` tool. Both functions take only the FastMCP instance as an argument — config flows through the already-populated singleton, matching the pattern used elsewhere in the codebase (`initialize_services()`, the CLI callback's `_populate_singleton_from(new_settings)`). Tests monkey-patch `dbs_vector.config.settings` (or the module-level `settings` import in the function under test) for isolation.
 
 **OCP guarantees:**
 - Existing family modules are never modified when a new family is added.
@@ -89,7 +89,6 @@ Two registries with distinct responsibilities and import boundaries:
 
 ```python
 from typing import Any, Protocol
-from pydantic import BaseModel
 
 from dbs_vector.services.search import SearchService
 
@@ -296,7 +295,7 @@ async def handler(
 import re
 from mcp.server.fastmcp import FastMCP
 
-from dbs_vector.config import Settings
+from dbs_vector.config import settings
 from dbs_vector.mcp.families.registry import FamilyRegistry
 
 _ENGINE_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -307,8 +306,12 @@ def _normalize_tool_name(engine_name: str) -> str:
     return f"search_{engine_name.replace('-', '_')}"
 
 
-def register_search_tools(mcp: FastMCP, settings: Settings) -> None:
+def register_search_tools(mcp: FastMCP) -> None:
     """Iterate settings.engines and register one MCP tool per engine.
+
+    Reads from the module-level `settings` singleton (already populated by
+    the CLI callback via _populate_singleton_from). Tests monkey-patch
+    `dbs_vector.mcp.dynamic_tools.settings` for isolation.
 
     Idempotency rules (resolves Finding 6):
       - If a tool with this normalized name is already registered AND its
@@ -474,7 +477,6 @@ def register_discovery_tool(mcp: FastMCP) -> None:
 ```python
 from mcp.server.fastmcp import FastMCP
 
-from dbs_vector.config import Settings
 from dbs_vector.mcp.discovery import register_discovery_tool
 from dbs_vector.mcp.dynamic_tools import register_search_tools
 from dbs_vector.mcp.state import initialize_services
@@ -485,10 +487,17 @@ mcp = FastMCP(
 )
 
 
-def start_stdio_server(settings: Settings) -> None:
-    """Initialize services, register all tools, and run stdio MCP."""
+def start_stdio_server() -> None:
+    """Initialize services, register all tools, and run stdio MCP.
+
+    Takes no arguments — `dbs_vector.config.settings` is already populated
+    by the CLI callback's `_populate_singleton_from(...)` call before this
+    runs. `initialize_services()`, `register_search_tools(mcp)`, and
+    `register_discovery_tool(mcp)` all read from the singleton too, so
+    settings ownership is consistent across the lifecycle.
+    """
     initialize_services()
-    register_search_tools(mcp, settings)
+    register_search_tools(mcp)
     register_discovery_tool(mcp)
     mcp.run()
 ```
@@ -614,11 +623,12 @@ src/dbs_vector/api/mcp_server.py → src/dbs_vector/mcp/server.py
   - Drop @mcp.tool() decorators for search_documents and search_sql_logs
   - Keep the FastMCP instance creation (rename module-level `mcp` if needed
     to avoid collision with the package name)
-  - Add a public helper start_stdio_server(settings) that:
+  - Add a public helper start_stdio_server() that:
       initialize_services()
-      register_search_tools(mcp, settings)
+      register_search_tools(mcp)
       register_discovery_tool(mcp)
       mcp.run()
+    Takes no settings argument — see §3 for the singleton-ownership rationale.
 
 src/dbs_vector/api/state.py → src/dbs_vector/mcp/state.py
   - No changes to initialize_services() — it remains transport-agnostic
@@ -631,8 +641,10 @@ src/dbs_vector/api/state.py → src/dbs_vector/mcp/state.py
 ```
 src/dbs_vector/cli.py
   - mcp() command: import start_stdio_server from dbs_vector.mcp.server
-    and call it directly. The current "initialize_services() + mcp.run()"
-    body is replaced by the single helper call.
+    and call it directly (no args). The current "initialize_services() +
+    mcp.run()" body is replaced by the single helper call. The CLI callback
+    has already populated the singleton via _populate_singleton_from before
+    this command runs.
   - serve() command: REMOVED entirely (resolves Findings 1, 2 and the
     "no coding tool requires HTTP MCP" decision).
 
@@ -844,8 +856,8 @@ Re-introducing an HTTP MCP server (via uvicorn over `mcp.streamable_http_app()`)
 
 A reviewer can verify the implementation by:
 
-1. **Unit tests pass** — `uv run pytest tests/unit/test_dynamic_tools.py tests/unit/test_document_family.py tests/unit/test_sql_family.py tests/unit/test_family_key_registry.py tests/unit/test_family_registry.py tests/unit/test_list_engines_tool.py -v` all green.
-2. **Import safety** — `python -c "import dbs_vector.config; import sys; assert 'dbs_vector.mcp' not in sys.modules"` succeeds.
+1. **Unit tests pass** — `uv run pytest tests/unit/test_dynamic_tools.py tests/unit/test_document_family.py tests/unit/test_sql_family.py tests/unit/test_family_key_registry.py tests/unit/test_family_registry.py tests/unit/test_list_engines_tool.py tests/unit/test_config_validation.py tests/unit/test_config_import_safety.py -v` all green.
+2. **Import safety** — `uv run python -c "import dbs_vector.config; import sys; assert 'dbs_vector.mcp' not in sys.modules"` succeeds.
 3. **MCP tool listing** — Starting the server (`dbs-vector mcp`, stdio) and issuing a `tools/list` request returns:
    - Present: `search_md`, `search_sql`, `search_md_granite`, `search_sql_granite`, `search_sql_api_granite`, `list_engines`
    - Absent: `search_documents`, `search_sql_logs`
@@ -854,7 +866,7 @@ A reviewer can verify the implementation by:
 6. **Static checks** — `uv run poe check` passes (ruff, mypy, pytest).
 7. **Negative MCP test (collision)** — Two engine names that normalize to the same MCP tool name raise a `ValueError` at startup with both names in the message.
 8. **Negative MCP test (pre-flight atomicity)** — A config where the *last* engine has an unknown family raises before any tool is registered; `mcp._dbs_vector_registrations` is empty after the exception.
-9. **`api/` package gone** — `python -c "import dbs_vector.api"` raises `ModuleNotFoundError`. `python -c "import dbs_vector.api.main"` raises `ModuleNotFoundError`.
-10. **`serve` subcommand gone** — `dbs-vector serve` exits with a Typer "no such command" error.
-11. **Dependencies cleaned** — `python -c "import fastapi"` and `python -c "import uvicorn"` raise `ModuleNotFoundError` after `uv sync`, unless §7.6 audit determined a transitive dependency keeps them.
+9. **`api/` package gone** — `uv run python -c "import dbs_vector.api"` raises `ModuleNotFoundError`. `uv run python -c "import dbs_vector.api.main"` raises `ModuleNotFoundError`.
+10. **`serve` subcommand gone** — `uv run dbs-vector serve` exits with a Typer "no such command" error.
+11. **Direct dependencies cleaned** — `fastapi` and `uvicorn` are absent from `pyproject.toml`'s `[project] dependencies` (and any extras / optional groups). No source file under `src/dbs_vector/` or `tests/` imports `fastapi` or `uvicorn`. (The packages MAY still be importable if a transitive dependency keeps them installed — that is acceptable per §7.6 and not asserted here.)
 12. **(Gated, opt-in) End-to-end Granite** — `DBS_RUN_E2E_GRANITE=1 uv run pytest tests/integration/test_granite_engines.py` passes when local Granite indices and model are available.
