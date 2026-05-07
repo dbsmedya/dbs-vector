@@ -35,12 +35,10 @@ def slow(fn):
 def _patch_settings_singleton(monkeypatch, fixture_path: str) -> None:
     from dbs_vector import config as config_module
     from dbs_vector.services import bootstrap as bootstrap_module
-    from dbs_vector.services import ingestion as ingestion_module
 
     fixture_settings = config_module.load_settings(fixture_path)
     monkeypatch.setattr(config_module, "settings", fixture_settings)
     monkeypatch.setattr(bootstrap_module, "settings", fixture_settings)
-    monkeypatch.setattr(ingestion_module, "settings", fixture_settings)
 
 
 @slow
@@ -50,21 +48,19 @@ def test_md_granite_engine_end_to_end(tmp_path: Path, monkeypatch):
         textwrap.dedent(f"""
         system:
           db_path: {tmp_path / "lancedb"}
-          batch_size: 8
           nprobes: 5
+          memory_budget_gb: 22.0
+        profiles:
+          granite-md-test: {{max_token_length: 512, chunk_max_chars: 2000, batch_size: 8}}
         engines:
           md-granite:
             description: "test"
-            model_name: "ibm-granite/granite-embedding-311m-multilingual-r2"
-            vector_dimension: 768
-            max_token_length: 512
-            table_name: "knowledge_vault_granite"
+            model: "granite-r2"
             mapper_type: "document"
             chunker_type: "document"
-            chunk_max_chars: 2000
-            passage_prefix: ""
-            query_prefix: ""
+            table_name: "knowledge_vault_granite"
             workflow: "md_search_granite"
+            tuning_profile: "granite-md-test"
     """)
     )
 
@@ -84,7 +80,9 @@ def test_md_granite_engine_end_to_end(tmp_path: Path, monkeypatch):
     from dbs_vector.services.search import SearchService
 
     deps = build_dependencies("md-granite")
-    ingest = IngestionService(deps.chunker, deps.embedder, deps.store, deps.workflow)
+    ingest = IngestionService(
+        deps.chunker, deps.embedder, deps.store, deps.workflow, batch_size=deps.batch_size
+    )
     ingest.ingest_directory(str(docs_dir), rebuild=True)
 
     search = SearchService(deps.embedder, deps.store)
@@ -141,21 +139,19 @@ def test_sql_granite_engine_end_to_end(tmp_path: Path, monkeypatch):
         textwrap.dedent(f"""
         system:
           db_path: {tmp_path / "lancedb"}
-          batch_size: 8
           nprobes: 5
+          memory_budget_gb: 22.0
+        profiles:
+          granite-sql-test: {{max_token_length: 512, chunk_max_chars: 0, batch_size: 8}}
         engines:
           sql-granite:
             description: "test"
-            model_name: "ibm-granite/granite-embedding-311m-multilingual-r2"
-            vector_dimension: 768
-            max_token_length: 512
-            table_name: "query_vault_granite"
+            model: "granite-r2"
             mapper_type: "sql"
             chunker_type: "duckdb"
-            chunk_max_chars: 0
-            passage_prefix: ""
-            query_prefix: ""
+            table_name: "query_vault_granite"
             workflow: "sql_clustering_granite"
+            tuning_profile: "granite-sql-test"
     """)
     )
 
@@ -166,7 +162,9 @@ def test_sql_granite_engine_end_to_end(tmp_path: Path, monkeypatch):
     from dbs_vector.services.search import SearchService
 
     deps = build_dependencies("sql-granite")
-    ingest = IngestionService(deps.chunker, deps.embedder, deps.store, deps.workflow)
+    ingest = IngestionService(
+        deps.chunker, deps.embedder, deps.store, deps.workflow, batch_size=deps.batch_size
+    )
     ingest.ingest_directory(str(db_path), rebuild=True)
 
     search = SearchService(deps.embedder, deps.store)
