@@ -1,33 +1,35 @@
-# Dynamic Engine Exposure (MCP-only) Design
+# Dynamic Engine Exposure (MCP-only, stdio-only) Design
 
 **Date:** 2026-05-07
-**Status:** Draft for review (revised — FastAPI removed)
-**Goal:** Replace the hardcoded `search_documents` / `search_sql_logs` MCP tools with a config-driven, per-engine MCP surface that auto-registers from `settings.engines`. Granite engines (`md-granite`, `sql-granite`, `sql-api-granite`) become reachable without code changes; future families (e.g., `jira-chunker`) plug in as self-contained modules without modifying central wiring. **FastAPI is removed entirely** — MCP becomes the sole presentation layer.
+**Status:** Draft for review (revised — FastAPI removed; streamable-HTTP transport not shipped)
+**Goal:** Replace the hardcoded `search_documents` / `search_sql_logs` MCP tools with a config-driven, per-engine MCP surface that auto-registers from `settings.engines`. Granite engines (`md-granite`, `sql-granite`, `sql-api-granite`) become reachable without code changes; future families (e.g., `jira-chunker`) plug in as self-contained modules without modifying central wiring. **FastAPI is removed entirely** and **streamable-HTTP transport is not shipped** — `dbs-vector mcp` (stdio) is the sole presentation surface.
 
 ---
 
-## 1. Scope Decision: MCP-Only
+## 1. Scope Decision: MCP stdio only
 
-This revision drops FastAPI completely. Rationale:
+This revision drops FastAPI completely **and** retires the `serve` CLI subcommand. Rationale:
 
 - The codebase's primary integration target is MCP-compatible AI assistants (Claude Desktop, Claude Code, Cursor). HTTP REST clients are not in active use.
 - Maintaining two presentation layers (FastAPI HTTP + FastMCP) doubles the surface area for dynamic-registration correctness, request/response model duplication, and CORS / health / docs concerns.
-- FastMCP supports both stdio and streamable-HTTP transports natively. Streamable-HTTP is what previously made the FastAPI mount worthwhile; we get it directly from `mcp.streamable_http_app()` without FastAPI in front.
+- Streamable-HTTP MCP transport could be re-introduced via `mcp.streamable_http_app()` + uvicorn, but no current MCP-aware coding tool requires it; every supported integration target works with stdio. Shipping streamable-HTTP would force us to design FastMCP session-manager lifecycle handling and an app-factory for `uvicorn --reload`, neither of which is paying its way at this time.
 
 **Removed entirely:**
-- FastAPI `app` instance
+- FastAPI `app` instance and the `dbs_vector.api.main` module
 - `POST /search/md` and `POST /search/sql` HTTP routes
 - `GET /health` HTTP route
 - CORS middleware
 - The `app.mount("/mcp", mcp.streamable_http_app())` mount point
 - `/docs` and `/openapi.json` (FastAPI auto-generated)
-- `SearchRequest`, `SqlSearchRequest`, `SearchResponse`, `SqlSearchResponse` Pydantic classes (replaced by family-owned argument schemas)
+- `SearchRequest`, `SqlSearchRequest`, `SearchResponse`, `SqlSearchResponse` Pydantic classes (replaced by family-owned handler signatures)
+- The `dbs-vector serve` CLI subcommand
+- `fastapi` and `uvicorn` Python dependencies (subject to dependency-graph verification — see §7.6)
+- The legacy `src/dbs_vector/api/` package (its remaining contents move to `src/dbs_vector/mcp/`)
 
 **Retained:**
-- FastMCP server instance (`mcp_server.py`)
-- `_services` dict and `initialize_services()` (transport-agnostic)
-- The `mcp` CLI subcommand (stdio transport)
-- The `serve` CLI subcommand, **repurposed** to launch the FastMCP streamable-HTTP ASGI app via uvicorn (replaces uvicorn-of-FastAPI)
+- FastMCP server instance (moved to `src/dbs_vector/mcp/server.py`)
+- `_services` dict and `initialize_services()` — transport-agnostic, moved to `src/dbs_vector/mcp/state.py`
+- The `mcp` CLI subcommand (stdio transport) — sole entry point
 
 ---
 
@@ -52,7 +54,7 @@ Beyond exposing existing Granite engines, the design must accommodate:
 
 Each search "family" (document, sql, future jira) is a self-contained module that owns its argument schema, dispatch logic, and result formatting. A `FamilyRegistry` (presentation layer) maps a string key to a `SearchFamily` instance. A separate `FamilyKeyRegistry` (core layer) holds just the valid key set, used by `config.py` for validation without dragging FastMCP into config import paths.
 
-At server startup (both stdio and streamable-HTTP transports), `register_search_tools(mcp, settings)` iterates `settings.engines`, looks up each engine's family via `engine.resolved_family`, and registers one MCP tool per engine using a per-family handler factory.
+At server startup (stdio transport, the only one shipped), `register_search_tools(mcp, settings)` iterates `settings.engines`, looks up each engine's family via `engine.resolved_family`, and registers one MCP tool per engine using a per-family handler factory. The same lifecycle hook also calls `register_discovery_tool(mcp)` to register the `list_engines` tool.
 
 **OCP guarantees:**
 - Existing family modules are never modified when a new family is added.
@@ -253,7 +255,7 @@ class DocumentFamily:
             limit: int = 5,
             source_filter: str | None = None,
         ) -> str:
-            from dbs_vector.api.state import _services  # lazy import
+            from dbs_vector.mcp.state import _services  # lazy import
             service = _services.get(engine_name)
             if service is None:
                 return f"Error: search service '{engine_name}' is not initialized."
@@ -320,14 +322,20 @@ def register_search_tools(mcp: FastMCP, settings: Settings) -> None:
       - Engine name not matching _ENGINE_NAME_PATTERN.
       - Two distinct engines normalize to the same MCP tool name (collision).
       - Engine references a family not in FamilyRegistry.
+
+    Pre-flight resolves and validates all engines BEFORE any tool is added,
+    so a config with N engines where the last has an unknown family will not
+    leave the first N-1 tools half-registered (resolves Finding 7).
     """
     if not hasattr(mcp, "_dbs_vector_registrations"):
         mcp._dbs_vector_registrations = {}  # tool_name → (engine_name, family_key)
     registrations: dict[str, tuple[str, str]] = mcp._dbs_vector_registrations
 
-    # Pre-flight: name pattern + collision
+    # Pre-flight: name pattern + collision + family resolution. No mutation
+    # of `mcp` until every engine passes.
     seen: dict[str, str] = {}
-    for engine_name in settings.engines:
+    resolved: list[tuple[str, str, str]] = []  # (engine_name, tool_name, family_key)
+    for engine_name, engine in settings.engines.items():
         if not _ENGINE_NAME_PATTERN.match(engine_name):
             raise ValueError(
                 f"Engine name '{engine_name}' must match {_ENGINE_NAME_PATTERN.pattern}. "
@@ -342,11 +350,14 @@ def register_search_tools(mcp: FastMCP, settings: Settings) -> None:
             )
         seen[tool_name] = engine_name
 
-    # Registration
-    for engine_name, engine in settings.engines.items():
         family_key = engine.resolved_family
+        # Raises KeyError with the known list if family is unknown:
+        FamilyRegistry.get(family_key)
+        resolved.append((engine_name, tool_name, family_key))
+
+    # Registration phase — all engines have been validated.
+    for engine_name, tool_name, family_key in resolved:
         family = FamilyRegistry.get(family_key)
-        tool_name = _normalize_tool_name(engine_name)
 
         prior = registrations.get(tool_name)
         if prior is not None:
@@ -359,6 +370,7 @@ def register_search_tools(mcp: FastMCP, settings: Settings) -> None:
                 f"instance instead of re-registering with different settings."
             )
 
+        engine = settings.engines[engine_name]
         handler = family.make_handler(engine_name)
         mcp.add_tool(
             handler,
@@ -375,55 +387,113 @@ def register_search_tools(mcp: FastMCP, settings: Settings) -> None:
 ```python
 from mcp.server.fastmcp import FastMCP
 
+# Sentinel used to track list_engines in the same registrations dict that
+# register_search_tools uses, so both helpers share idempotency state.
+_DISCOVERY_SENTINEL = ("__discovery__", "__discovery__")
+
+
+async def _list_engines() -> str:
+    """List configured search engines and their tuning profiles.
+
+    Returns a JSON-encoded list of engine metadata: name, family, model,
+    description, table name, profile knobs (max_token_length,
+    chunk_max_chars, batch_size), MCP tool name, and whether a runtime
+    service object is currently registered for that engine. Useful for A/B
+    testing harnesses and for clients that want to enumerate available
+    variants programmatically.
+    """
+    import json
+
+    from dbs_vector.config import settings
+    from dbs_vector.core.model_registry import ModelRegistry
+    from dbs_vector.mcp.state import _services
+
+    out = []
+    for name, engine in settings.engines.items():
+        contract = ModelRegistry.get(engine.model)
+        profile = settings.profiles[engine.tuning_profile]
+        out.append({
+            "name": name,
+            "family": engine.resolved_family,
+            "model": engine.model,
+            "model_name": contract.model_name,
+            "description": engine.description,
+            "table_name": engine.table_name,
+            "profile": {
+                "name": engine.tuning_profile,
+                "max_token_length": profile.max_token_length,
+                "chunk_max_chars": profile.chunk_max_chars,
+                "batch_size": profile.batch_size,
+            },
+            "mcp_tool": f"search_{name.replace('-', '_')}",
+            "loaded": name in _services,
+        })
+    return json.dumps(out, indent=2)
+
 
 def register_discovery_tool(mcp: FastMCP) -> None:
-    """Register the engine-discovery MCP tool.
+    """Register the list_engines MCP tool with the same idempotency rules
+    as register_search_tools (resolves Finding 6).
 
-    Reads settings.engines, settings.profiles, and ModelRegistry directly.
-    Survives partial _services failure (resolves Finding 3) — answers
-    'what is configured', not 'what is loaded'. The returned 'loaded' field
-    on each entry tells callers which engines actually have a service object.
+    Skip-if-identical: if `list_engines` is already registered with the
+    discovery sentinel, do nothing. If `list_engines` is registered under a
+    different sentinel (i.e., something else has stolen the name), raise.
     """
+    if not hasattr(mcp, "_dbs_vector_registrations"):
+        mcp._dbs_vector_registrations = {}
+    registrations: dict = mcp._dbs_vector_registrations
 
-    @mcp.tool()
-    def list_engines() -> str:
-        """List configured search engines and their tuning profiles.
+    prior = registrations.get("list_engines")
+    if prior == _DISCOVERY_SENTINEL:
+        return
+    if prior is not None:
+        raise RuntimeError(
+            f"Tool 'list_engines' already registered with non-discovery "
+            f"sentinel {prior!r}. Reset the FastMCP instance instead of "
+            f"re-registering."
+        )
 
-        Returns a JSON-encoded list of engine metadata: name, family, model,
-        description, table name, profile knobs (max_token_length,
-        chunk_max_chars, batch_size), MCP tool name, and whether the engine
-        is loaded. Useful for A/B testing harnesses and for clients that
-        want to enumerate available variants programmatically.
-        """
-        import json
-        from dbs_vector.api.state import _services
-        from dbs_vector.config import settings
-        from dbs_vector.core.model_registry import ModelRegistry
-
-        out = []
-        for name, engine in settings.engines.items():
-            contract = ModelRegistry.get(engine.model)
-            profile = settings.profiles[engine.tuning_profile]
-            out.append({
-                "name": name,
-                "family": engine.resolved_family,
-                "model": engine.model,
-                "model_name": contract.model_name,
-                "description": engine.description,
-                "table_name": engine.table_name,
-                "profile": {
-                    "name": engine.tuning_profile,
-                    "max_token_length": profile.max_token_length,
-                    "chunk_max_chars": profile.chunk_max_chars,
-                    "batch_size": profile.batch_size,
-                },
-                "mcp_tool": f"search_{name.replace('-', '_')}",
-                "loaded": name in _services,
-            })
-        return json.dumps(out, indent=2)
+    mcp.add_tool(
+        _list_engines,
+        name="list_engines",
+        description="List configured search engines and their tuning profiles.",
+    )
+    registrations["list_engines"] = _DISCOVERY_SENTINEL
 ```
 
-`list_engines` is registered alongside the per-engine tools by the same lifecycle hook (CLI `mcp` and `serve` subcommands).
+**Partial-load behavior (resolves Finding 5):** `list_engines` reads from `settings.engines`, `settings.profiles`, and `ModelRegistry` directly — none of which depend on `_services`. The `loaded` flag on each entry simply reports whether `name in _services` is true at call time. **The MCP server itself remains all-or-nothing at startup**: today's `initialize_services()` raises if any engine fails to load and the server does not start, so users only reach `list_engines` once every engine has loaded successfully. The `loaded` flag is therefore meaningful in two scenarios:
+1. Tests that pre-populate `_services` with a partial map.
+2. Future partial-loader work that catches per-engine failures (out of scope — see §10.5).
+
+`register_discovery_tool(mcp)` is invoked by the same lifecycle hook that calls `register_search_tools(mcp, settings)` — see §4.7.
+
+### 4.7 Server lifecycle (stdio)
+
+**File:** `src/dbs_vector/mcp/server.py` (moved from `src/dbs_vector/api/mcp_server.py`)
+
+```python
+from mcp.server.fastmcp import FastMCP
+
+from dbs_vector.config import Settings
+from dbs_vector.mcp.discovery import register_discovery_tool
+from dbs_vector.mcp.dynamic_tools import register_search_tools
+from dbs_vector.mcp.state import initialize_services
+
+mcp = FastMCP(
+    "dbs-vector",
+    stateless_http=True,
+)
+
+
+def start_stdio_server(settings: Settings) -> None:
+    """Initialize services, register all tools, and run stdio MCP."""
+    initialize_services()
+    register_search_tools(mcp, settings)
+    register_discovery_tool(mcp)
+    mcp.run()
+```
+
+The `streamable_http_path="/"` argument that previously customized the mount path is no longer needed — streamable-HTTP transport is not shipped (see §1).
 
 ---
 
@@ -510,10 +580,11 @@ Sourced from each family's `make_handler(engine_name)` return value via FastMCP'
 
 ### 6.5 Transports
 
-FastMCP supports both:
+**stdio only.** FastMCP also supports a streamable-HTTP transport, but it is not shipped by this codebase. The only entry point is:
 
-- **stdio** — `dbs-vector mcp` subcommand. Process I/O. Each invocation a fresh process.
-- **streamable-HTTP** — `dbs-vector serve` subcommand (repurposed from FastAPI). Runs uvicorn over `mcp.streamable_http_app()`. The MCP endpoint is `http://<host>:<port>/`. (No more `/mcp` mount path; FastMCP's ASGI app IS the entire server.)
+- **stdio** — `dbs-vector mcp` subcommand. Process I/O. Each invocation a fresh process. All Claude Desktop / Claude Code / Cursor integration patterns use stdio (see `docs/README_MCP.md`).
+
+If a future use case demands streamable-HTTP (or any other) transport, it can be re-introduced as a follow-up without touching the dynamic-registration design — see §10.6.
 
 ---
 
@@ -522,69 +593,90 @@ FastMCP supports both:
 ### 7.1 New files
 
 ```
-src/dbs_vector/core/families.py                  # FamilyKeyRegistry (lightweight)
+src/dbs_vector/core/families.py                  # FamilyKeyRegistry (lightweight, presentation-agnostic)
 
 src/dbs_vector/mcp/__init__.py                   # empty
 src/dbs_vector/mcp/families/
   __init__.py                                    # FamilyRegistry singleton + built-in registrations
   base.py                                        # SearchFamily Protocol
   registry.py                                    # FamilyRegistry class
-  document.py                                    # DocumentFamily + DocumentSearchArgs
-  sql.py                                         # SqlFamily + SqlSearchArgs
+  document.py                                    # DocumentFamily
+  sql.py                                         # SqlFamily
 
 src/dbs_vector/mcp/dynamic_tools.py              # register_search_tools(mcp, settings)
 src/dbs_vector/mcp/discovery.py                  # register_discovery_tool(mcp) — list_engines tool
 ```
 
-### 7.2 Modified files
+### 7.2 Moved files (git mv)
 
 ```
-src/dbs_vector/api/mcp_server.py
+src/dbs_vector/api/mcp_server.py → src/dbs_vector/mcp/server.py
   - Drop @mcp.tool() decorators for search_documents and search_sql_logs
-  - Keep the FastMCP instance creation
+  - Keep the FastMCP instance creation (rename module-level `mcp` if needed
+    to avoid collision with the package name)
   - Add a public helper start_stdio_server(settings) that:
       initialize_services()
-      register_search_tools(mcp_server, settings)
-      register_discovery_tool(mcp_server)
-      mcp_server.run()
-  - Add a public helper get_streamable_http_app(settings) that does the same
-    initialization minus the .run() call, and returns
-    mcp_server.streamable_http_app()
+      register_search_tools(mcp, settings)
+      register_discovery_tool(mcp)
+      mcp.run()
 
+src/dbs_vector/api/state.py → src/dbs_vector/mcp/state.py
+  - No changes to initialize_services() — it remains transport-agnostic
+  - Keep _services dict
+  - All call sites updated to import from dbs_vector.mcp.state
+```
+
+### 7.3 Modified files
+
+```
 src/dbs_vector/cli.py
-  - mcp() command: call start_stdio_server(settings) instead of running
-    initialize_services() + mcp_server.run() directly
-  - serve() command: REPURPOSED. Drop uvicorn-of-FastAPI. Now:
-      asgi_app = get_streamable_http_app(settings)
-      uvicorn.run(asgi_app, host=host, port=port)
+  - mcp() command: import start_stdio_server from dbs_vector.mcp.server
+    and call it directly. The current "initialize_services() + mcp.run()"
+    body is replaced by the single helper call.
+  - serve() command: REMOVED entirely (resolves Findings 1, 2 and the
+    "no coding tool requires HTTP MCP" decision).
 
 src/dbs_vector/config.py
   - EngineConfig: add `family: str | None = None`
   - EngineConfig: add `resolved_family` property
   - _validate_config: add Rule 6 (legal engine name) and Rule 7 (family in
     FamilyKeyRegistry — imports only dbs_vector.core.families)
+
+pyproject.toml
+  - Remove `fastapi` from dependencies
+  - Remove `uvicorn` from dependencies (subject to verification — see §7.6)
+
+uv.lock
+  - Regenerate via `uv lock`
 ```
 
-### 7.3 Deleted files (entire file removal)
+### 7.4 Deleted files
 
 ```
-src/dbs_vector/api/main.py     # FastAPI app — replaced by FastMCP-direct serve
+src/dbs_vector/api/main.py     # FastAPI app
+src/dbs_vector/api/__init__.py # legacy package — empty after moves; delete
 ```
 
-### 7.4 Modified state module
+After §7.2 moves and §7.4 deletions, the `src/dbs_vector/api/` directory should not exist. If any leftover modules remain in the directory, they too move to a relevant package (`mcp/` or `services/`); the spec assumes a clean removal.
+
+### 7.5 Migration of test files
 
 ```
-src/dbs_vector/api/state.py
-  - No changes to initialize_services() — it remains transport-agnostic
-  - Keep _services dict
+tests/integration/test_api.py    → DELETE (covered FastAPI; replaced by tests/integration/test_mcp_server.py)
+tests/unit/test_api_lifespan.py  → DELETE (FastAPI lifespan no longer exists)
 ```
 
-### 7.5 Migration of in-place test files
+Any test that imports `dbs_vector.api.state` or `dbs_vector.api.mcp_server` is updated to import from `dbs_vector.mcp.state` / `dbs_vector.mcp.server`.
 
-```
-tests/integration/test_api.py  # DELETE — covered by FastAPI; replaced by MCP tests
-tests/unit/test_api_lifespan.py  # DELETE — FastAPI lifespan no longer exists
-```
+### 7.6 Dependency audit (resolves Finding 4)
+
+Before removing `fastapi` and `uvicorn` from `pyproject.toml`, the implementer must:
+
+1. Run `uv pip list --tree` (or equivalent) to confirm no other dependency in the project transitively requires either package.
+2. Check that no remaining test file imports `fastapi.testclient` or `uvicorn`.
+3. Run `uv run poe check` after removal to confirm imports still resolve.
+
+If a transitive dependency (e.g., a test or doc-tool) needs one of them, that dependency is documented in `pyproject.toml` with an inline comment explaining why it stays.
 
 ---
 
@@ -594,16 +686,18 @@ tests/unit/test_api_lifespan.py  # DELETE — FastAPI lifespan no longer exists
 
 | Surface | Before | After | Client action |
 |---|---|---|---|
-| FastAPI `app` | exists | **REMOVED** | clients using HTTP REST must migrate to MCP |
-| HTTP `POST /search/md` | route | **REMOVED** | call MCP tool `search_md` |
-| HTTP `POST /search/sql` | route | **REMOVED** | call MCP tool `search_sql` |
+| FastAPI `app` | exists | **REMOVED** | clients using HTTP REST must migrate to stdio MCP |
+| HTTP `POST /search/md` | route | **REMOVED** | call MCP tool `search_md` (via stdio) |
+| HTTP `POST /search/sql` | route | **REMOVED** | call MCP tool `search_sql` (via stdio) |
 | HTTP `GET /health` | route | **REMOVED** | use MCP `tools/list` for liveness |
 | HTTP `GET /docs`, `/openapi.json` | FastAPI auto | **REMOVED** | — |
-| MCP mount at `/mcp` | yes | **GONE** — streamable-HTTP MCP at `/` | update client URL: `http://host:port/` |
+| MCP mount at `/mcp` | yes | **GONE** — no HTTP transport | switch client config to stdio (see README_MCP.md) |
+| `dbs-vector serve` CLI | uvicorn-of-FastAPI | **REMOVED** | use `dbs-vector mcp` (stdio) instead |
 | MCP `search_documents` | exists | **REMOVED** | call `search_md` |
 | MCP `search_sql_logs` | exists | **REMOVED** | call `search_sql` |
 | MCP `search_md_granite`, etc. | absent | NEW | new capability |
 | MCP `list_engines` | absent | NEW | new capability |
+| `dbs_vector.api` package | exists | **REMOVED** | imports update to `dbs_vector.mcp.*` |
 
 ### 8.2 No compatibility shim
 
@@ -611,10 +705,10 @@ Per locked design decision: rename + FastAPI removal is a clean breaking change.
 
 ### 8.3 Documentation updates (in scope)
 
-- **`docs/README_MCP.md`** — full rewrite of "Tools Provided", new naming convention, A/B testing workflow, breaking-change migration note, refreshed integration examples for Claude Desktop / Claude Code / Cursor; **streamable-HTTP URL changes from `http://host:port/mcp` to `http://host:port/`**
-- **`docs/README_API.md`** — replaced or repurposed: announces FastAPI removal, points readers to README_MCP.md for the only supported surface
+- **`docs/README_MCP.md`** — full rewrite. Remove the "Method 2: Streamable HTTP" section entirely. Remove all integration examples that reference `http://127.0.0.1:8000/mcp`. The "Tools Provided" section is rewritten with the new per-engine naming convention, A/B testing workflow, breaking-change migration note, and refreshed integration examples for Claude Desktop / Claude Code / Cursor — all stdio
+- **`docs/README_API.md`** — DELETED. The file announces FastAPI removal and is no longer relevant; pointers to README_MCP.md replace any outbound links from CLAUDE.md / README.md
 - **`docs/README_PROFILES.md`** — add "A/B testing tuning profiles" section showing how to define a variant engine + profile and inspect via `list_engines`
-- **`CLAUDE.md`** — replace the paragraph that begins "The FastAPI routes (`/search/md`, `/search/sql`) and MCP tools (`search_documents`, `search_sql_logs`) are currently hardcoded to the Gemma engines…" with the new MCP-only dynamic-registration description; update Architecture section to remove FastAPI reference
+- **`CLAUDE.md`** — replace the paragraph that begins "The FastAPI routes (`/search/md`, `/search/sql`) and MCP tools (`search_documents`, `search_sql_logs`) are currently hardcoded to the Gemma engines…" with the new MCP-stdio-only dynamic-registration description; remove the `serve` example from the Commands section; update Architecture section to drop the `api/` package reference and add `mcp/`
 
 ---
 
@@ -708,7 +802,13 @@ A `compare_engines` MCP tool that takes a list of sibling engines and returns pa
 Today families are registered in code (in `families/__init__.py`). A future enhancement could let users register custom families via Python entry points or a `families:` block in config.yaml. Out of scope for this PR.
 
 ### 10.4 Streamable-HTTP authentication
-Without FastAPI we no longer have CORS middleware or any HTTP-layer auth. The streamable-HTTP transport is intended for trusted local use (loopback) by default. Adding bearer-token auth or origin checks is a follow-up.
+N/A — streamable-HTTP transport is not shipped (see §10.6). If it is re-introduced, bearer-token auth or origin checks become a corresponding follow-up.
+
+### 10.5 Partial engine loading
+Today `initialize_services()` is all-or-nothing. A future loader could catch per-engine failures, log them, and start the server with the surviving engines. `list_engines` is already structured to report `loaded: false` for engines whose service object is missing, which is the consumer-facing piece of that design. Out of scope for this PR — the loader changes deserve their own design (failure-mode policy, partial-init UX, A/B impact).
+
+### 10.6 Streamable-HTTP MCP transport
+Re-introducing an HTTP MCP server (via uvicorn over `mcp.streamable_http_app()`) is straightforward — call `register_search_tools` and `register_discovery_tool` on the same global `mcp` instance and wrap the ASGI app behind an app-factory for `--reload`. Out of scope for this PR; no current MCP-aware coding tool requires it.
 
 ---
 
@@ -718,20 +818,25 @@ Without FastAPI we no longer have CORS middleware or any HTTP-layer auth. The st
 |---|---|---|
 | 1 | Family-Registry plugin pattern | OCP — central registration code never touched per family |
 | 2 | **Drop FastAPI entirely; MCP is sole presentation layer** | Lower surface area; primary integration target is MCP-aware AI assistants |
-| 3 | Repurpose `serve` to run FastMCP streamable-HTTP via uvicorn | Preserve HTTP transport without FastAPI overhead |
+| 3 | **Drop streamable-HTTP transport too; `serve` subcommand removed** | No coding tool requires HTTP MCP today; complexity (lifespan, --reload, auth) deferred until needed |
 | 4 | `list_engines` MCP tool replaces `GET /engines` | Same use case (discovery), MCP-native delivery |
 | 5 | Per-engine MCP tools `search_<engine_name>`, no aliases | Clean cut; pre-release codebase |
 | 6 | Tests assert legacy tool names ABSENT | Negative assertion prevents quiet drift |
 | 7 | Engine name allow-list `^[a-z0-9][a-z0-9_-]*$` + collision detection | Predictable tool names; fail-fast on shadowing |
-| 8 | Idempotent registration: skip-if-identical, raise on mismatch | Resolves Finding 6; prevents stale-registration silent overwrite |
-| 9 | Two-registry split: `core/families.py` (keys) + `mcp/families/registry.py` (impls) | Resolves Finding 5; preserves config.py import safety |
-| 10 | Per-family `make_handler` factory with explicit signatures | Resolves Finding 2; FastMCP introspects naturally |
-| 11 | Family contract: `run_search` + `format_results` + `make_handler` | Resolves Finding 4; testable independently |
-| 12 | `_reset_for_testing` on both registries | Resolves Finding 7 |
-| 13 | E2E Granite tests gated behind env var | Resolves Finding 8; CI runs fast by default |
-| 14 | Optional `family: str \| None` with `mapper_type` fallback | Decouples presentation from infrastructure mapping |
-| 15 | Granite model name `ibm-granite/granite-embedding-311m-multilingual-r2` | Verified against `core/model_registry.py` |
-| 16 | Update `README_MCP.md`, `README_API.md`, `README_PROFILES.md`, `CLAUDE.md` in scope | Surface change is breaking; docs ship with code |
+| 8 | Idempotent registration: skip-if-identical, raise on mismatch | Prevents stale-registration silent overwrite |
+| 9 | Pre-flight resolves all engines (incl. family lookup) before any tool registration | Resolves Finding 7; never leave half-registered state |
+| 10 | Discovery tool shares the `_dbs_vector_registrations` dict with search-tool registration | Resolves Finding 6; uniform idempotency policy |
+| 11 | Two-registry split: `core/families.py` (keys) + `mcp/families/registry.py` (impls) | Resolves Finding 5; preserves config.py import safety |
+| 12 | Per-family `make_handler` factory with explicit signatures | FastMCP introspects naturally |
+| 13 | Family contract: `run_search` + `format_results` + `make_handler` | Methods testable independently |
+| 14 | `_reset_for_testing` on both registries | Test isolation |
+| 15 | E2E Granite tests gated behind `DBS_RUN_E2E_GRANITE=1` | CI runs fast by default |
+| 16 | Optional `family: str \| None` with `mapper_type` fallback | Decouples presentation from infrastructure mapping |
+| 17 | Granite model name `ibm-granite/granite-embedding-311m-multilingual-r2` | Verified against `core/model_registry.py` |
+| 18 | Move `api/mcp_server.py → mcp/server.py` and `api/state.py → mcp/state.py`; delete `api/` package | Resolves Finding 3; package name reflects what it does |
+| 19 | Drop `fastapi` and `uvicorn` from pyproject.toml (subject to dependency audit) | Resolves Finding 4; honest about what's required |
+| 20 | `list_engines.loaded` flag is honest about partial maps but startup is still all-or-nothing | Resolves Finding 5 wording |
+| 21 | Update `README_MCP.md`, `README_PROFILES.md`, `CLAUDE.md` in scope; delete `README_API.md` | Surface change is breaking; docs ship with code |
 
 ---
 
@@ -741,12 +846,15 @@ A reviewer can verify the implementation by:
 
 1. **Unit tests pass** — `uv run pytest tests/unit/test_dynamic_tools.py tests/unit/test_document_family.py tests/unit/test_sql_family.py tests/unit/test_family_key_registry.py tests/unit/test_family_registry.py tests/unit/test_list_engines_tool.py -v` all green.
 2. **Import safety** — `python -c "import dbs_vector.config; import sys; assert 'dbs_vector.mcp' not in sys.modules"` succeeds.
-3. **MCP tool listing** — Starting the server (stdio) and issuing a `tools/list` request returns:
+3. **MCP tool listing** — Starting the server (`dbs-vector mcp`, stdio) and issuing a `tools/list` request returns:
    - Present: `search_md`, `search_sql`, `search_md_granite`, `search_sql_granite`, `search_sql_api_granite`, `list_engines`
    - Absent: `search_documents`, `search_sql_logs`
-4. **Discovery tool** — Calling `list_engines` returns JSON metadata for all six configured engines with profile knobs and `loaded: true` for engines whose service initialized successfully.
+4. **Discovery tool** — Calling `list_engines` returns JSON metadata for all six configured engines with profile knobs; `loaded: true` for every engine when startup succeeds.
 5. **Config-only A/B variant** — Adding `md-granite-experimental` to `config.yaml` and restarting produces a new MCP tool `search_md_granite_experimental` with no source-code changes.
 6. **Static checks** — `uv run poe check` passes (ruff, mypy, pytest).
-7. **Negative MCP test** — Two engine names that normalize to the same MCP tool name raise a `ValueError` at startup with both names in the message.
-8. **FastAPI surface gone** — `python -c "from dbs_vector.api import main"` raises `ImportError` (file deleted).
-9. **(Gated, opt-in) End-to-end Granite** — `DBS_RUN_E2E_GRANITE=1 uv run pytest tests/integration/test_granite_engines.py` passes when local Granite indices and model are available.
+7. **Negative MCP test (collision)** — Two engine names that normalize to the same MCP tool name raise a `ValueError` at startup with both names in the message.
+8. **Negative MCP test (pre-flight atomicity)** — A config where the *last* engine has an unknown family raises before any tool is registered; `mcp._dbs_vector_registrations` is empty after the exception.
+9. **`api/` package gone** — `python -c "import dbs_vector.api"` raises `ModuleNotFoundError`. `python -c "import dbs_vector.api.main"` raises `ModuleNotFoundError`.
+10. **`serve` subcommand gone** — `dbs-vector serve` exits with a Typer "no such command" error.
+11. **Dependencies cleaned** — `python -c "import fastapi"` and `python -c "import uvicorn"` raise `ModuleNotFoundError` after `uv sync`, unless §7.6 audit determined a transitive dependency keeps them.
+12. **(Gated, opt-in) End-to-end Granite** — `DBS_RUN_E2E_GRANITE=1 uv run pytest tests/integration/test_granite_engines.py` passes when local Granite indices and model are available.
