@@ -1,4 +1,5 @@
 import asyncio
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -9,7 +10,9 @@ from pydantic import BaseModel, Field
 
 from dbs_vector.api.mcp_server import mcp
 from dbs_vector.api.state import _services, initialize_services
-from dbs_vector.config import settings
+from dbs_vector.cli import _populate_singleton_from
+from dbs_vector.config import load_settings, settings
+from dbs_vector.core.model_registry import ModelRegistry
 from dbs_vector.core.models import SearchResult, SqlSearchResult
 
 
@@ -17,6 +20,12 @@ from dbs_vector.core.models import SearchResult, SqlSearchResult
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup and shutdown events for the API."""
     logger.info("Initializing MLX Embedders and LanceDB connections")
+
+    # Explicit config load: module-level singleton is empty Settings(_env_file=None)
+    # until this point. Must run before initialize_services consumes settings.engines.
+    config_file = os.environ.get("DBS_CONFIG_FILE", "config.yaml")
+    new_settings = load_settings(config_file, validate=True)
+    _populate_singleton_from(new_settings)
 
     try:
         initialize_services()
@@ -87,8 +96,9 @@ async def health_check() -> dict[str, str]:
         raise HTTPException(status_code=503, detail="Search service initializing or failed")
 
     status_dict = {"status": "healthy"}
-    for engine_name, config in settings.engines.items():
-        status_dict[f"{engine_name}_model"] = config.model_name
+    for engine_name, engine in settings.engines.items():
+        contract = ModelRegistry.get(engine.model)
+        status_dict[f"{engine_name}_model"] = contract.model_name
 
     return status_dict
 
