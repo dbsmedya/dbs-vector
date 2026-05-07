@@ -8,7 +8,6 @@ from typing import Any
 
 from loguru import logger
 
-from dbs_vector.config import settings
 from dbs_vector.core.models import Document
 from dbs_vector.core.ports import IChunker, IEmbedder, IVectorStore
 
@@ -22,11 +21,13 @@ class IngestionService:
         embedder: IEmbedder,
         vector_store: IVectorStore,
         workflow: str = "default",
+        batch_size: int = 64,
     ) -> None:
         self.chunker = chunker
         self.embedder = embedder
         self.vector_store = vector_store
         self.workflow = workflow
+        self.batch_size = batch_size
 
     def _batched(self, iterable: Iterator[Any], n: int) -> Iterator[list[Any]]:
         """Yields successive n-sized chunks from an iterable (Python 3.12+ backport)."""
@@ -103,7 +104,7 @@ class IngestionService:
 
         total_chunks = 0
         skipped_chunks = 0
-        for batch in self._batched(_chunk_generator(), settings.batch_size):
+        for batch in self._batched(_chunk_generator(), self.batch_size):
             if not batch:
                 continue
 

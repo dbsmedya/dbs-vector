@@ -64,3 +64,30 @@ def test_ingest_still_chunks_when_doc_hash_is_new(tmp_path):
     chunker.process.assert_called_once()
     embedder.embed_batch.assert_called_once()
     store.ingest_chunks.assert_called_once()
+
+
+def test_ingestion_service_accepts_batch_size_kwarg():
+    chunker = MagicMock()
+    embedder = MagicMock()
+    store = MagicMock()
+    svc = IngestionService(
+        chunker=chunker,
+        embedder=embedder,
+        vector_store=store,
+        workflow="w",
+        batch_size=8,
+    )
+    assert svc.batch_size == 8
+
+
+def test_ingestion_service_uses_self_batch_size_in_batched():
+    """_batched yields batches sized by self.batch_size."""
+    svc = IngestionService(
+        chunker=MagicMock(),
+        embedder=MagicMock(),
+        vector_store=MagicMock(),
+        workflow="w",
+        batch_size=3,
+    )
+    batches = list(svc._batched(iter(range(10)), svc.batch_size))
+    assert [len(b) for b in batches] == [3, 3, 3, 1]
