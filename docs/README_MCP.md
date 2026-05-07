@@ -23,22 +23,20 @@ Before using the MCP server, ensure you have:
 
 ---
 
-## Transport Methods
+## Transport
 
-`dbs-vector` supports two MCP transport methods:
+`dbs-vector` ships an MCP **stdio** transport only. The AI assistant
+spawns `dbs-vector mcp` as a subprocess and communicates over its
+standard input/output. No network ports are opened. Each client process
+loads its own copy of the MLX models (~1.2 GB GPU memory each).
 
-| Method | Transport | Endpoint | Use case |
-|--------|-----------|----------|----------|
-| **stdio** | Process I/O | — | Single-user, no open ports, simplest setup |
-| **Streamable HTTP** | HTTP POST | `http://127.0.0.1:8000/mcp` | Shared server, multiple clients, saves VRAM |
-
-The old SSE transport (`/mcp/sse`) has been replaced by **Streamable HTTP**
-(`/mcp`), which uses a single stateless POST endpoint instead of two
-persistent connections. All modern MCP clients support this transport.
+Streamable-HTTP MCP transport is not currently shipped — see the design
+spec at `docs/superpowers/specs/2026-05-07-dynamic-engine-exposure-design.md`
+for rationale and re-introduction notes.
 
 ---
 
-## Method 1: Standard I/O (stdio)
+## Standard I/O (stdio)
 
 The AI assistant spawns `dbs-vector mcp` as a subprocess and communicates
 over its standard input/output. No network ports are opened. Each client
@@ -54,38 +52,9 @@ Logs go to stderr; the MCP JSON-RPC stream goes to stdout.
 
 ---
 
-## Method 2: Streamable HTTP
-
-Start the FastAPI server once; all MCP clients connect to it and share the
-same loaded MLX models.
-
-```bash
-uv run dbs-vector serve --port 8000
-```
-
-The MCP endpoint is mounted at:
-
-```
-http://127.0.0.1:8000/mcp
-```
-
-> Use `--host 0.0.0.0` to accept connections from other machines.
-> The server sets `Access-Control-Allow-Origin: https://claude.ai` by default.
-
-Verify the server is up:
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
----
-
 ## Integrating with Claude Desktop
 
-Claude Desktop supports both stdio and HTTP transport. Use stdio for a
-self-contained local setup; use HTTP if you already have the server running.
-
-### Option A — stdio (no server required)
+### Configuration
 
 Open the Claude Desktop config file:
 
@@ -118,44 +87,11 @@ Add the `dbs-vector` entry:
 Replace `/ABSOLUTE/PATH/TO/dbs-vector` with the real path. Both
 `--directory` and `--config-file` must be absolute.
 
-### Option B — Streamable HTTP (server must be running)
-
-For newer Claude Desktop builds that support the HTTP transport natively:
-
-```json
-{
-  "mcpServers": {
-    "dbs-vector": {
-      "type": "http",
-      "url": "http://127.0.0.1:8000/mcp"
-    }
-  }
-}
-```
-
-If your Claude Desktop version does not yet support `"type": "http"` directly,
-use the `mcp-proxy` shim (no separate install needed with `uvx`):
-
-```json
-{
-  "mcpServers": {
-    "dbs-vector": {
-      "command": "uvx",
-      "args": [
-        "mcp-proxy",
-        "--transport", "streamablehttp",
-        "http://127.0.0.1:8000/mcp"
-      ]
-    }
-  }
-}
-```
-
 ### Verification
 
 1. Restart Claude Desktop.
 2. Look for the tools icon (bottom-right of the input box).
-3. Confirm `search_documents` and `search_sql_logs` appear.
+3. Confirm the per-engine tools (e.g., `search_md`, `search_sql`) appear.
 4. Try: *"Search for how the ingestion pipeline works."*
 
 ---
@@ -187,31 +123,6 @@ claude mcp add --scope project --transport stdio dbs-vector -- \
      run dbs-vector mcp
 ```
 
-### Add via Streamable HTTP (server must be running)
-
-```bash
-claude mcp add --transport http dbs-vector http://127.0.0.1:8000/mcp
-```
-
-With explicit project scope:
-
-```bash
-claude mcp add --scope project --transport http dbs-vector http://127.0.0.1:8000/mcp
-```
-
-This writes the following to `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "dbs-vector": {
-      "type": "http",
-      "url": "http://127.0.0.1:8000/mcp"
-    }
-  }
-}
-```
-
 ### Manage servers
 
 ```bash
@@ -229,22 +140,33 @@ claude mcp remove dbs-vector
 
 ## Integrating with Cursor
 
-1. Start the API server: `uv run dbs-vector serve --port 8000`
-2. Open **Cursor Settings → MCP → Add new MCP server**
-3. Configure:
-   - **Name**: `dbs-vector`
-   - **Transport Type**: `HTTP`
-   - **URL**: `http://127.0.0.1:8000/mcp`
-4. Click **Connect**
+Cursor's MCP integration currently expects an HTTP endpoint. Since
+`dbs-vector` ships only stdio, Cursor cannot connect directly. If your
+team needs Cursor support, you can wrap stdio with an external bridge
+(e.g., `mcp-proxy`) — but this is not officially supported.
 
 ---
 
 ## Tools Provided
 
-### `search_documents`
+`dbs-vector` registers one MCP tool per engine in `config.yaml`, plus
+one `list_engines` discovery tool. Tool names follow the pattern
+`search_<engine_name>` with dashes (`-`) replaced by underscores.
 
-Searches the document vector store (`md` engine) using hybrid
-vector + full-text retrieval.
+For the default `config.yaml` shipped with the project:
+
+| Tool name | Engine | Family | Description |
+|-----------|--------|--------|-------------|
+| `search_md` | `md` | document | Markdown & Prose Document Engine (Gemma) |
+| `search_sql` | `sql` | sql | SQL Slow Query Log Engine (Gemma) |
+| `search_md_granite` | `md-granite` | document | Markdown & Prose (Granite, long context) |
+| `search_sql_granite` | `sql-granite` | sql | SQL Slow Query Log (Granite) |
+| `search_sql_api_granite` | `sql-api-granite` | sql | Remote slow query log API (Granite) |
+| `list_engines` | — | — | Lists configured engines and tuning profiles |
+
+### Search tools (per family)
+
+**Document family** (`search_md`, `search_md_granite`, etc.) takes:
 
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
@@ -252,11 +174,7 @@ vector + full-text retrieval.
 | `limit` | int | no | Max results (default 5, max 100) |
 | `source_filter` | string | no | Restrict to a file path or pattern |
 
-Returns formatted results with source path and content snippet.
-
-### `search_sql_logs`
-
-Searches the SQL query log vector store (`sql` engine).
+**SQL family** (`search_sql`, `search_sql_granite`, `search_sql_api_granite`) takes:
 
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
@@ -265,7 +183,50 @@ Searches the SQL query log vector store (`sql` engine).
 | `source_filter` | string | no | Restrict to a database name |
 | `min_time` | float | no | Minimum execution time in ms |
 
-Returns SQL queries with execution time, call count, and database source.
+### `list_engines`
+
+Returns a JSON-encoded array describing every configured engine: name,
+family, model, description, table name, profile knobs
+(`max_token_length`, `chunk_max_chars`, `batch_size`), MCP tool name,
+and a `loaded` flag indicating whether the runtime service object is
+currently registered. Useful for A/B-testing harnesses and for clients
+that want to enumerate engines programmatically.
+
+## Migration from legacy tool names
+
+`dbs-vector` previously exposed two hardcoded tools: `search_documents`
+and `search_sql_logs`. Both are **removed** in this revision. Update
+your MCP client config or LLM prompts:
+
+- `search_documents` → `search_md`
+- `search_sql_logs` → `search_sql`
+
+The new naming convention covers every engine in `config.yaml`,
+including the Granite variants which were previously unreachable.
+
+## A/B testing tuning profiles
+
+Adding an experimental engine variant requires only a config edit:
+
+```yaml
+profiles:
+  granite-md-experimental: {max_token_length: 8192, chunk_max_chars: 3000, batch_size: 16}
+
+engines:
+  md-granite-experimental:
+    description: "Granite, smaller chunks (A/B candidate vs md-granite)"
+    model: "granite-r2"
+    mapper_type: "document"
+    chunker_type: "document"
+    table_name: "knowledge_vault_granite_exp"   # MUST differ from baseline
+    workflow: "md_search_granite"
+    tuning_profile: "granite-md-experimental"
+```
+
+After ingesting into the new engine and restarting `dbs-vector mcp`, a
+new MCP tool `search_md_granite_experimental` becomes available. Use
+`list_engines` to confirm both variants are loaded and to compare their
+profile knobs in your evaluation report.
 
 ---
 
@@ -320,10 +281,7 @@ Internal tool call:
 | "Document search service is not initialized" | No data ingested | Run `uv run dbs-vector ingest` first |
 | "Failed to initialize search services" | Bad config or missing DB path | Check `config.yaml` and `db_path` |
 | Slow first startup | Model downloading | Wait for MLX model download (~600 MB) |
-| HTTP 404 at `/mcp` | Server not running | Start with `uv run dbs-vector serve` |
-| HTTP 404 at `/mcp/sse` | Old SSE path | Update client URL to `/mcp` |
 | Tools not appearing in Claude Desktop | Config path error or JSON syntax | Verify absolute paths; validate JSON |
-| `mcp-proxy` not found | `uvx` not available | Install with `pip install uv` |
 
 ### Logs
 
@@ -338,32 +296,20 @@ uv run dbs-vector mcp 2>&1 | head -50
 tail -f ~/Library/Logs/Claude/mcp.log
 ```
 
-**HTTP mode** — logs appear in the terminal running `uv run dbs-vector serve`.
-
-### Test the Streamable HTTP endpoint
-
-```bash
-# Start the server in one terminal
-uv run dbs-vector serve --port 8000
-
-# In another terminal — list available tools
-curl -s -X POST http://127.0.0.1:8000/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | python3 -m json.tool
-```
-
 ---
 
 ## Architecture Notes
 
-- The MCP server is a `FastMCP` instance with `stateless_http=True`.
-- In HTTP mode it is mounted at `/mcp` inside the FastAPI application via
-  `app.mount("/mcp", mcp.streamable_http_app())`. A single POST endpoint
-  handles all JSON-RPC calls; there are no persistent SSE connections.
-- In stdio mode, `mcp_server.run()` is called directly from the `mcp` CLI
-  command — no FastAPI or uvicorn is involved.
-- Both modes share the same two tool implementations (`search_documents`,
-  `search_sql_logs`) defined in `src/dbs_vector/api/mcp_server.py`.
-- HTTP mode: all engines defined in `config.yaml` are loaded once at server
-  startup and shared across all client connections (~1.2 GB VRAM total).
-- stdio mode: each assistant process loads its own engine instances.
+- The MCP server is a `FastMCP` instance (`stateless_http=True`) created
+  once in `src/dbs_vector/mcp/server.py`.
+- Tool registration is dynamic: `register_search_tools(mcp)` iterates
+  `settings.engines` and registers one `search_<engine>` tool per engine
+  via the family's `make_handler(engine_name)` factory.
+  `register_discovery_tool(mcp)` adds the `list_engines` tool.
+- Both registration helpers run inside `start_stdio_server()` before
+  `mcp.run()`. They share an idempotency dict (`_dbs_vector_registrations`)
+  attached to the FastMCP instance.
+- All engines defined in `config.yaml` are loaded once at startup
+  (transport-agnostic — `initialize_services()` is in
+  `dbs_vector.mcp.state`). Each `dbs-vector mcp` process loads its own
+  engine instances.

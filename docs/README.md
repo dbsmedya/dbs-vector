@@ -15,7 +15,12 @@ This project is built using strict Clean Architecture principles and a Configura
 src/dbs_vector/
 ├── config.py              # YAML Configuration Loader (Pydantic validated)
 ├── cli.py                 # Typer Entrypoint (thin wrapper over bootstrap factory)
-├── api/                   # FastAPI Search Service (Async offloading)
+├── mcp/                   # MCP presentation layer (stdio-only)
+│   ├── server.py          # FastMCP instance + start_stdio_server()
+│   ├── dynamic_tools.py   # register_search_tools(mcp) — per-engine tool registration
+│   ├── discovery.py       # register_discovery_tool(mcp) + list_engines tool
+│   ├── state.py           # _services dict + initialize_services()
+│   └── families/          # SearchFamily Protocol + FamilyRegistry + DocumentFamily, SqlFamily
 │
 ├── core/                  # Domain Layer (Strictly logic & Interfaces)
 │   ├── models.py          # Pydantic data schemas (Chunk, SqlChunk, SearchResult)
@@ -77,7 +82,6 @@ uv run dbs-vector search "SELECT * FROM users" --type sql --min-time 1000
 4.  **Task-Aware Embeddings (Asymmetric vs. Symmetric):** The `MLXEmbedder` natively supports instruction-tuned models (like `embeddinggemma` or `BGE`) via configurable `query_prefix` and `passage_prefix` injection. 
     *   **Asymmetric (RAG):** The Markdown engine prepends search instructions to queries and document instructions to passages, projecting questions and answers into a shared latent space for optimal retrieval.
     *   **Symmetric (Clustering):** The SQL engine uses identical clustering instructions for both queries and stored logs, ensuring logically similar structures group together perfectly.
-5.  **Async API Offloading:** The FastAPI server uses `asyncio.to_thread` to handle blocking MLX inference, ensuring the web loop remains responsive during heavy searches.
 5.  **Polymorphic Retrieval:** `SearchService` handles different result models (e.g., `SearchResult` vs `SqlSearchResult`) dynamically through the mapper pattern.
 
 ---
@@ -91,6 +95,7 @@ uv run dbs-vector search "SELECT * FROM users" --type sql --min-time 1000
 - [README_REMOTE_SQL_API.md](README_REMOTE_SQL_API.md) — Remote HTTP API ingestion (ApiChunker)
 - [README_ARCHITECTURE.md](README_ARCHITECTURE.md) — Deep dive: Arrow pipeline, zero-copy, SOLID design
 - [README_EMBEDDINGS.md](README_EMBEDDINGS.md) — supported embedding models, attention-mask dtype config, truncation alarm
+- [README_MCP.md](README_MCP.md) — MCP server, per-engine tool naming, A/B testing workflow
 
 ---
 
