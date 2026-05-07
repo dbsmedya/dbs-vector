@@ -12,10 +12,7 @@ from dbs_vector.mcp.discovery import register_discovery_tool
 from dbs_vector.mcp.dynamic_tools import register_search_tools
 from dbs_vector.mcp.state import initialize_services
 
-mcp = FastMCP(
-    "dbs-vector",
-    stateless_http=True,
-)
+mcp = FastMCP("dbs-vector")
 
 
 def start_stdio_server() -> None:

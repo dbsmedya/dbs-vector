@@ -12,9 +12,12 @@ def runner():
 
 
 def _settings_with(engines: dict):
-    """Build a settings mock whose .engines dict keys+mapper_type match the input."""
+    """Build a settings mock whose .engines dict keys+resolved_family match the input."""
     s = MagicMock()
-    s.engines = {name: MagicMock(mapper_type=mapper_type) for name, mapper_type in engines.items()}
+    s.engines = {
+        name: MagicMock(mapper_type=mapper_type, resolved_family=mapper_type)
+        for name, mapper_type in engines.items()
+    }
     return s
 
 

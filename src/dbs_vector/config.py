@@ -354,10 +354,11 @@ def load_settings(config_file: str | None = None, validate: bool = False) -> Set
 def _populate_singleton_from(new_settings: "Settings") -> None:
     """Copy fields from a freshly-loaded Settings onto the module-level singleton.
 
-    Both the CLI Typer callback and the FastAPI lifespan call this with a
-    Settings instance returned from `load_settings(config_file, validate=True)`.
-    The field list here is the source of truth for what runtime callers
-    propagate from disk to the singleton.
+    The CLI Typer callback (and the `mcp` subcommand's reload-when-set path)
+    calls this with a Settings instance returned from
+    `load_settings(config_file, validate=True)`. The field list here is the
+    source of truth for what runtime callers propagate from disk to the
+    singleton.
     """
     settings.db_path = new_settings.db_path
     settings.nprobes = new_settings.nprobes
@@ -372,8 +373,8 @@ def _populate_singleton_from(new_settings: "Settings") -> None:
 # explicitly to disable pydantic-settings' .env file reading for this
 # instance — otherwise BaseSettings will stat() the .env path and (if it
 # exists) read it at import time, violating the import-safety contract.
-# Runtime callers (cli.py callback, api/main.py lifespan) call
-# load_settings(config_file, validate=True), which constructs a fresh
+# Runtime callers (cli.py callback, plus the mcp subcommand override path)
+# call load_settings(config_file, validate=True), which constructs a fresh
 # Settings() (without _env_file=None, so .env IS loaded then) and copies
 # fields onto this singleton.
 settings = Settings(_env_file=None)  # type: ignore[call-arg]
