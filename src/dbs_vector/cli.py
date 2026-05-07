@@ -6,9 +6,13 @@ os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"  # Disable hf-transfer to use standard downloads
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
+
+if TYPE_CHECKING:
+    from dbs_vector.config import Settings
+
 from loguru import logger
 
 from dbs_vector.config import settings
@@ -30,6 +34,24 @@ def version_callback(value: bool) -> None:
 
         typer.echo(f"dbs-vector version: {__version__}")
         raise typer.Exit()
+
+
+def _populate_singleton_from(new_settings: "Settings") -> None:
+    """Copy fields from a freshly-loaded Settings onto the module-level singleton.
+
+    Extracted as a top-level function so it can be unit-tested without driving
+    the entire Typer callback. The field list is the source of truth for what
+    runtime callers (CLI, API lifespan) propagate from disk to the singleton.
+    """
+    from dbs_vector.config import settings
+
+    settings.db_path = new_settings.db_path
+    settings.nprobes = new_settings.nprobes
+    settings.engines = new_settings.engines
+    settings.profiles = new_settings.profiles
+    settings.memory_budget_gb = new_settings.memory_budget_gb
+    settings.log_level = new_settings.log_level
+    settings.log_serialize = new_settings.log_serialize
 
 
 @app.callback()
@@ -61,14 +83,9 @@ def main(
     # Export to environment so uvicorn subprocesses (in API mode) inherit it
     os.environ["DBS_CONFIG_FILE"] = config_file
 
-    # Dynamically update the current process global settings singleton
-    new_settings = load_settings(config_file)
-    settings.db_path = new_settings.db_path
-    settings.batch_size = new_settings.batch_size
-    settings.nprobes = new_settings.nprobes
-    settings.engines = new_settings.engines
-    settings.log_level = new_settings.log_level
-    settings.log_serialize = new_settings.log_serialize
+    # Load AND validate the config; copy fields onto the singleton.
+    new_settings = load_settings(config_file, validate=True)
+    _populate_singleton_from(new_settings)
 
     # Configure logger based on settings
     configure_logger(level=settings.log_level, serialize=settings.log_serialize)
@@ -131,7 +148,9 @@ def ingest(
 
     url_override = path if path.startswith(("http://", "https://")) else None
     deps = _build_dependencies(engine_name, query_override=query, url_override=url_override)
-    service = IngestionService(deps.chunker, deps.embedder, deps.store, deps.workflow)
+    service = IngestionService(
+        deps.chunker, deps.embedder, deps.store, deps.workflow, batch_size=deps.batch_size
+    )
     service.ingest_directory(path, rebuild=rebuild)
 
 
