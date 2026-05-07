@@ -84,8 +84,7 @@ def _make_fake_new_settings():
 
 def test_populate_singleton_copies_profiles_and_memory_budget():
     """Helper extracted from main() callback must copy profiles + memory_budget_gb."""
-    from dbs_vector.cli import _populate_singleton_from
-    from dbs_vector.config import settings
+    from dbs_vector.config import _populate_singleton_from, settings
 
     new = _make_fake_new_settings()
     _populate_singleton_from(new)
@@ -101,8 +100,7 @@ def test_populate_singleton_copies_profiles_and_memory_budget():
 
 def test_populate_singleton_does_not_set_legacy_batch_size():
     """The new schema has no Settings.batch_size; the helper must not set it."""
-    from dbs_vector.cli import _populate_singleton_from
-    from dbs_vector.config import Settings, settings
+    from dbs_vector.config import Settings, _populate_singleton_from, settings
 
     new = _make_fake_new_settings()
     _populate_singleton_from(new)

@@ -122,9 +122,7 @@ _KNOWN_SYSTEM_KEYS = {
 }
 
 
-def _apply_system_config(
-    system: dict[str, object], settings: Settings, config_file: str
-) -> None:
+def _apply_system_config(system: dict[str, object], settings: Settings, config_file: str) -> None:
     """Apply system: keys onto the Settings instance with strict validation.
 
     - Legacy keys (e.g., batch_size) raise a migration hint.
@@ -155,11 +153,7 @@ def _apply_system_config(
 def _raise_migration_hint(err: ValidationError, config_file: str, where: str) -> None:
     """Detect old-schema fields in a Pydantic ValidationError and rewrap as a
     single migration message. If the error is unrelated to migration, propagate."""
-    seen_legacy = {
-        e["loc"][-1]
-        for e in err.errors()
-        if e["loc"][-1] in _LEGACY_ENGINE_FIELDS
-    }
+    seen_legacy = {e["loc"][-1] for e in err.errors() if e["loc"][-1] in _LEGACY_ENGINE_FIELDS}
     missing_required = {
         e["loc"][-1]
         for e in err.errors()
@@ -241,14 +235,12 @@ def _validate_config(settings: Settings, config_file: str) -> None:
         # Rule 4: profile fits memory budget — resolve budget lazily here.
         if budget_gb is None:
             budget_gb = resolve_memory_budget_gb(settings.memory_budget_gb)
-        budget_bytes = int(budget_gb * 1024 ** 3)
+        budget_bytes = int(budget_gb * 1024**3)
         peak = estimate_peak_buffer_bytes(profile, contract)
         cap = int(budget_bytes * 0.9)
         if peak > cap:
             raw_attention = (
-                profile.batch_size
-                * profile.max_token_length ** 2
-                * contract.compute_dtype_bytes
+                profile.batch_size * profile.max_token_length**2 * contract.compute_dtype_bytes
             )
             suggested = recommend_profile(
                 contract,
@@ -308,24 +300,37 @@ def load_settings(config_file: str | None = None, validate: bool = False) -> Set
     # Profiles block
     if "profiles" in data and isinstance(data["profiles"], dict):
         try:
-            base_settings.profiles = {
-                k: TuningProfile(**v) for k, v in data["profiles"].items()
-            }
+            base_settings.profiles = {k: TuningProfile(**v) for k, v in data["profiles"].items()}
         except ValidationError as e:
             _raise_migration_hint(e, config_file, where="profiles")
 
     # Engines block
     if "engines" in data and isinstance(data["engines"], dict):
         try:
-            base_settings.engines = {
-                k: EngineConfig(**v) for k, v in data["engines"].items()
-            }
+            base_settings.engines = {k: EngineConfig(**v) for k, v in data["engines"].items()}
         except ValidationError as e:
             _raise_migration_hint(e, config_file, where="engines")
 
     if validate:
         _validate_config(base_settings, config_file)
     return base_settings
+
+
+def _populate_singleton_from(new_settings: "Settings") -> None:
+    """Copy fields from a freshly-loaded Settings onto the module-level singleton.
+
+    Both the CLI Typer callback and the FastAPI lifespan call this with a
+    Settings instance returned from `load_settings(config_file, validate=True)`.
+    The field list here is the source of truth for what runtime callers
+    propagate from disk to the singleton.
+    """
+    settings.db_path = new_settings.db_path
+    settings.nprobes = new_settings.nprobes
+    settings.engines = new_settings.engines
+    settings.profiles = new_settings.profiles
+    settings.memory_budget_gb = new_settings.memory_budget_gb
+    settings.log_level = new_settings.log_level
+    settings.log_serialize = new_settings.log_serialize
 
 
 # Module-level singleton: ZERO file I/O at import. We pass _env_file=None
