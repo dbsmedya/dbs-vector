@@ -9,7 +9,6 @@ description = "High-performance, local RAG search engine and MCP/API server for 
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.136.0",
     "lancedb==0.30.2",
     "loguru>=0.7.3",
     "markdown-it-py>=4.0.0",
@@ -24,7 +23,6 @@ dependencies = [
     "tantivy==0.25.1",
     "typer>=0.15.1",
     "types-pyyaml>=6.0.12.20260408",
-    "uvicorn>=0.45.0",
 ]
 
 [project.scripts]
