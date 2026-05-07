@@ -396,16 +396,60 @@ Expected: all green including the 4 new ones.
 Run: `uv run pytest tests/unit -v`
 Expected: all green (no regressions in other tests using the existing 6 engines, all of which have lowercase mapper_type values that pass Rule 7).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Add the config-import-safety test (subprocess-based)**
+
+Append to `tests/unit/test_config_import_safety.py`:
+
+```python
+def test_importing_config_does_not_load_mcp_modules():
+    """A fresh interpreter importing only `dbs_vector.config` must not
+    transitively load any `dbs_vector.mcp.*` modules. config.py validation
+    imports `dbs_vector.core.families` (lightweight, no presentation
+    coupling); it must NEVER reach into the mcp/ tree.
+
+    Implemented via subprocess so the test is independent of pytest
+    collection order — other tests in the suite eagerly import mcp/
+    modules, which would contaminate an in-process sys.modules check.
+    """
+    import subprocess
+    import sys
+
+    code = (
+        "import dbs_vector.config; "
+        "import sys; "
+        "leaked = sorted(m for m in sys.modules if m.startswith('dbs_vector.mcp')); "
+        "assert leaked == [], f'config.py leaked: {leaked}'; "
+        "print('OK')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"subprocess failed:\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
+    )
+    assert "OK" in result.stdout
+```
+
+Run: `uv run pytest tests/unit/test_config_import_safety.py -v`
+Expected: PASS — at this point in the plan no `dbs_vector.mcp.*` module exists yet, so the assertion is vacuously true. The test starts catching real regressions once Tasks 3-9 add modules under `mcp/`.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/dbs_vector/config.py tests/unit/test_config_validation.py
+git add src/dbs_vector/config.py tests/unit/test_config_validation.py tests/unit/test_config_import_safety.py
 git commit -m "feat(config): add EngineConfig.family + validation rules 6/7
 
 Rule 6 enforces engine-name pattern ^[a-z0-9][a-z0-9_-]*\$ for
 predictable MCP tool naming. Rule 7 verifies resolved_family is a
 known key in FamilyKeyRegistry. resolved_family property defaults to
-mapper_type, preserving backward compat with all six existing engines."
+mapper_type, preserving backward compat with all six existing engines.
+
+Also extend test_config_import_safety.py with a subprocess-based check
+that importing dbs_vector.config does not transitively load any
+dbs_vector.mcp.* modules — guards the core/mcp layering boundary."
 ```
 
 ---
@@ -1953,14 +1997,20 @@ Append to `tests/unit/test_cli_callback.py`:
 
 ```python
 def test_mcp_uses_global_config_when_no_subcommand_override(tmp_path, monkeypatch):
-    """`dbs-vector mcp` (no -c) uses the global callback's loaded config."""
+    """`dbs-vector mcp` (no -c at any level) uses the cwd's config.yaml.
+
+    The CLI callback's `--config-file` default is the literal string
+    "config.yaml", which resolves relative to the current working
+    directory. We monkeypatch chdir to make tmp_path the cwd so the
+    callback's default points at our test config.
+    """
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         'system:\n  db_path: "./global_db"\n'
         'profiles:\n  p: {max_token_length: 2048, chunk_max_chars: 0, batch_size: 1}\n'
         'engines: {}\n'
     )
-    monkeypatch.setenv("DBS_CONFIG_FILE", str(config_path))
+    monkeypatch.chdir(tmp_path)
 
     from typer.testing import CliRunner
 
@@ -2111,9 +2161,14 @@ Also DELETE the now-misleading inline comment near line 61 (`# Export to environ
     # transport invoked via uv run) inherit the same config.
 ```
 
-- [ ] **Step 3: Delete the `class TestServeCommand` block from `tests/integration/test_cli.py`**
+- [ ] **Step 3: Delete `class TestServeCommand` AND the standalone `test_serve_help` from `tests/integration/test_cli.py`**
 
-The file contains a class `TestServeCommand` with four methods that assert `uvicorn.run("dbs_vector.api.main:app", ...)`. Delete the entire class. The current span is approximately lines 385–443 (locate the class by name in case other edits shifted line numbers).
+The file has TWO sets of serve-related tests:
+
+1. `class TestServeCommand` (approx lines 385–443) — four methods asserting `uvicorn.run("dbs_vector.api.main:app", ...)`.
+2. `test_serve_help` (approx lines 566–575) — a method INSIDE another class (`TestHelp` or similar) asserting that `serve --help` exits 0 and the output contains `--host`, `--port`. This one is OUTSIDE TestServeCommand and is easy to miss.
+
+Both must go. Locate them by name (line numbers may shift if other tests changed).
 
 Concretely, delete this block:
 
@@ -2179,10 +2234,25 @@ class TestServeCommand:
             )
 ```
 
-Verify the deletion:
+Also delete the standalone `test_serve_help` method:
+
+```python
+    def test_serve_help(self):
+        """Test serve command help."""
+        from dbs_vector.cli import app
+
+        result = runner.invoke(app, ["serve", "--help"])
+
+        assert result.exit_code == 0
+        assert "serve" in result.output.lower()
+        assert "--host" in result.output
+        assert "--port" in result.output
+```
+
+Verify the deletion (broadened pattern catches all serve references):
 
 ```bash
-rg -n "TestServeCommand|main:app|uvicorn" tests/integration/test_cli.py
+rg -n 'TestServeCommand|main:app|uvicorn|test_serve|"serve"' tests/integration/test_cli.py
 ```
 
 Expected: no matches. Replacement coverage for "serve no longer exists" lives in `tests/unit/test_cli_callback.py::test_serve_subcommand_no_longer_exists` (added in Step 1).
@@ -2323,22 +2393,51 @@ uv lock
 uv sync
 ```
 
-- [ ] **Step 5: Verify acceptance #11**
+- [ ] **Step 5: Verify acceptance #11 — structural inspection of all dependency arrays**
 
 ```bash
 uv run python -c "
+import tomllib
 import sys
-src_imports = open('pyproject.toml').read()
-assert 'fastapi' not in src_imports, 'fastapi still in pyproject.toml'
-assert 'uvicorn' not in src_imports, 'uvicorn still in pyproject.toml'
+
+with open('pyproject.toml', 'rb') as f:
+    data = tomllib.load(f)
+
+found = []
+
+# 1. [project] dependencies
+for dep in data.get('project', {}).get('dependencies', []) or []:
+    name = dep.split('[')[0].split('>')[0].split('<')[0].split('=')[0].split('~')[0].strip()
+    if name in ('fastapi', 'uvicorn'):
+        found.append(('project.dependencies', dep))
+
+# 2. [project.optional-dependencies] groups
+for group, items in (data.get('project', {}).get('optional-dependencies', {}) or {}).items():
+    for dep in items:
+        name = dep.split('[')[0].split('>')[0].split('<')[0].split('=')[0].split('~')[0].strip()
+        if name in ('fastapi', 'uvicorn'):
+            found.append((f'project.optional-dependencies.{group}', dep))
+
+# 3. [dependency-groups] (PEP 735)
+for group, items in (data.get('dependency-groups', {}) or {}).items():
+    for dep in items:
+        if isinstance(dep, str):
+            name = dep.split('[')[0].split('>')[0].split('<')[0].split('=')[0].split('~')[0].strip()
+            if name in ('fastapi', 'uvicorn'):
+                found.append((f'dependency-groups.{group}', dep))
+
+if found:
+    print('FAIL: fastapi/uvicorn still declared:', found, file=sys.stderr)
+    sys.exit(1)
+
 print('OK')
 "
 ```
 
-Expected: prints `OK`.
+Expected: prints `OK`. If anything fails, the message names the exact dependency array (e.g., `project.optional-dependencies.dev`).
 
 ```bash
-rg -n "import fastapi|from fastapi|import uvicorn|from uvicorn" src tests
+rg -n "^(import|from) (fastapi|uvicorn)\b" src tests
 ```
 
 Expected: no matches.
@@ -2365,6 +2464,7 @@ consumers (verified via uv tree) do not require them."
 
 **Files:**
 - Delete: `docs/README_API.md`
+- Modify: `docs/README.md` (top-level — directory diagram + Engineering Highlights)
 - Modify: `docs/README_MCP.md`
 - Modify: `docs/README_PROFILES.md`
 - Modify: `CLAUDE.md`
@@ -2375,7 +2475,40 @@ consumers (verified via uv tree) do not require them."
 git rm docs/README_API.md
 ```
 
-- [ ] **Step 2: Rewrite README_MCP.md**
+- [ ] **Step 2: Update docs/README.md**
+
+In the **Directory Structure** code block (currently around line 18), replace the `api/` line with the new `mcp/` tree:
+
+Current line:
+```
+├── api/                   # FastAPI Search Service (Async offloading)
+```
+
+Replace with:
+```
+├── mcp/                   # MCP presentation layer (stdio-only)
+│   ├── server.py          # FastMCP instance + start_stdio_server()
+│   ├── dynamic_tools.py   # register_search_tools(mcp) — per-engine tool registration
+│   ├── discovery.py       # register_discovery_tool(mcp) + list_engines tool
+│   ├── state.py           # _services dict + initialize_services()
+│   └── families/          # SearchFamily Protocol + FamilyRegistry + DocumentFamily, SqlFamily
+```
+
+In the **Engineering Highlights** section (currently around line 80), DELETE this bullet entirely:
+
+```
+5.  **Async API Offloading:** The FastAPI server uses `asyncio.to_thread` to handle blocking MLX inference, ensuring the web loop remains responsive during heavy searches.
+```
+
+(There's a duplicate "5." numbering — the highlights have two bullets numbered 5. After deletion, renumber the remaining "5. Polymorphic Retrieval" if needed; it's already numbered 5 so just leaves a clean list.)
+
+In the **Docs Index** section (currently around line 87), DELETE the line for `README_API.md` if present (it isn't currently linked there, but verify), and ensure the index lists `README_MCP.md`. If not present, add:
+
+```
+- [README_MCP.md](README_MCP.md) — MCP server, per-engine tool naming, A/B testing workflow
+```
+
+- [ ] **Step 3: Rewrite README_MCP.md**
 
 The full content has these structural changes from the existing version:
 
@@ -2518,7 +2651,7 @@ profile knobs in your evaluation report.
   engine instances.
 ```
 
-- [ ] **Step 3: Add A/B testing section to README_PROFILES.md**
+- [ ] **Step 4: Add A/B testing section to README_PROFILES.md**
 
 Append this section to `docs/README_PROFILES.md`:
 
@@ -2582,7 +2715,7 @@ Drop the experimental variant from `engines:` once you've decided
 which configuration to keep.
 ```
 
-- [ ] **Step 4: Update CLAUDE.md**
+- [ ] **Step 5: Update CLAUDE.md**
 
 Open `CLAUDE.md`. In the **Commands** section, delete the line:
 
@@ -2623,18 +2756,20 @@ In the **`api/`** layer description, replace the entire bullet block with:
 - `families/`: `SearchFamily` Protocol + `FamilyRegistry` + built-in `DocumentFamily` and `SqlFamily`.
 ```
 
-- [ ] **Step 5: Run the full check**
+- [ ] **Step 6: Run the full check**
 
 Run: `uv run poe check`
 Expected: green.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add docs/README_MCP.md docs/README_PROFILES.md CLAUDE.md
+git add docs/README.md docs/README_MCP.md docs/README_PROFILES.md CLAUDE.md
 git rm docs/README_API.md
 git commit -m "docs: rewrite for MCP-stdio-only dynamic engine exposure
 
+- docs/README.md: replace api/ tree with mcp/; drop FastAPI bullet from
+  Engineering Highlights; add README_MCP.md to docs index.
 - README_MCP.md: drop Streamable HTTP method; new per-engine tool
   naming convention; A/B testing workflow; legacy-tool migration note.
 - README_PROFILES.md: add 'A/B testing tuning profiles' section.
@@ -2733,14 +2868,32 @@ uv run dbs-vector serve --help
 
 Expected: Typer error "No such command 'serve'." (non-zero exit).
 
-- [ ] **Step 9: Verify acceptance #11 — direct dependencies cleaned**
+- [ ] **Step 9: Verify acceptance #11 — direct dependencies cleaned (structural)**
 
 ```bash
-grep -E '^\s*"(fastapi|uvicorn)' pyproject.toml || echo "OK: not in pyproject.toml"
-rg -n "^(import|from) (fastapi|uvicorn)" src tests || echo "OK: no project imports"
+uv run python -c "
+import tomllib, sys
+with open('pyproject.toml', 'rb') as f:
+    data = tomllib.load(f)
+found = []
+for dep in data.get('project', {}).get('dependencies', []) or []:
+    n = dep.split('[')[0].split('>')[0].split('<')[0].split('=')[0].split('~')[0].strip()
+    if n in ('fastapi', 'uvicorn'): found.append(('project.dependencies', dep))
+for g, items in (data.get('project', {}).get('optional-dependencies', {}) or {}).items():
+    for dep in items:
+        n = dep.split('[')[0].split('>')[0].split('<')[0].split('=')[0].split('~')[0].strip()
+        if n in ('fastapi', 'uvicorn'): found.append((f'optional[{g}]', dep))
+for g, items in (data.get('dependency-groups', {}) or {}).items():
+    for dep in items if isinstance(items, list) else []:
+        if isinstance(dep, str):
+            n = dep.split('[')[0].split('>')[0].split('<')[0].split('=')[0].split('~')[0].strip()
+            if n in ('fastapi', 'uvicorn'): found.append((f'group[{g}]', dep))
+sys.exit(1) if found else print('OK')
+"
+rg -n "^(import|from) (fastapi|uvicorn)\b" src tests || echo "OK: no project imports"
 ```
 
-Expected: both print `OK`.
+Expected: both print `OK` (the second one prints `OK: no project imports` because `rg` exits non-zero with no matches).
 
 - [ ] **Step 10: Verify acceptance #12 — CLI override paths**
 

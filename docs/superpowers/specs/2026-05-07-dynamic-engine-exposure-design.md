@@ -591,9 +591,11 @@ Sourced from each family's `make_handler(engine_name)` return value via FastMCP'
 
 **stdio only.** FastMCP also supports a streamable-HTTP transport, but it is not shipped by this codebase. The only entry point is:
 
-- **stdio** — `dbs-vector mcp` subcommand. Process I/O. Each invocation a fresh process. All Claude Desktop / Claude Code / Cursor integration patterns use stdio (see `docs/README_MCP.md`).
+- **stdio** — `dbs-vector mcp` subcommand. Process I/O. Each invocation a fresh process. Claude Desktop and Claude Code work with stdio out of the box (see `docs/README_MCP.md`).
 
-If a future use case demands streamable-HTTP (or any other) transport, it can be re-introduced as a follow-up without touching the dynamic-registration design — see §10.6.
+**Cursor compatibility:** Cursor's MCP integration currently expects an HTTP endpoint and does NOT support stdio directly. With the streamable-HTTP transport dropped in this revision, Cursor cannot connect to `dbs-vector` without an external bridge (e.g., `mcp-proxy`). Re-introducing streamable-HTTP — see §10.6 — would restore native Cursor support.
+
+If a future use case demands streamable-HTTP (or any other) transport, it can be re-introduced as a follow-up without touching the dynamic-registration design.
 
 ---
 
