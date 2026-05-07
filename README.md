@@ -114,16 +114,27 @@ For setup instructions, see:
 ### Bundled Claude Skill: `slow-query-investigator`
 
 `dbs-vector` ships a Claude Skill at `skills/slow-query-investigator/SKILL.md`
-that teaches Claude how to route slow-query investigation questions ("show
-me all queries that lock `<table>` rows", "what are the slowest queries on
-`<table>`?", "where is our lock contention coming from?") to the right
-combination of `table_filter` / `min_lock_time` / `min_time` parameters
-on the SQL family MCP tools.
+covering two phases of slow-query work:
 
-Once the skill is installed in your Claude Code workspace, natural-language
-investigation requests get the right MCP tool call automatically. A future
-extension will add minimum-sufficient index recommendations based on the
-top-80% query traffic against a named table.
+**Phase 1 — Investigation (dbs-vector MCP only)**
+Routes natural-language questions like "show me all queries that lock
+`<table>` rows", "slowest queries on `<table>`", "where is our lock
+contention coming from?" to the right combination of `table_filter` /
+`min_lock_time` / `min_time` parameters on the SQL family MCP tools.
+
+**Phase 2 — Index recommendation (dbs-vector + database MCP)**
+Combines the slow-log corpus with live schema introspection from
+[`askdba/mysql-mcp-server`](https://github.com/askdba/mysql-mcp-server)
+(or a future PostgreSQL adapter) to recommend the **minimum sufficient
+set of indexes** that covers ~80% of call volume against a named table.
+The 10-step workflow fetches existing indexes, extracts WHERE / JOIN /
+ORDER BY signatures from the corpus, runs `EXPLAIN` on candidates,
+eliminates redundancy against existing indexes, and emits CREATE INDEX
+DDL with coverage % and write-amplification cost per recommendation.
+
+Triggers like "what indexes should I add to `<table>`?", "missing
+indexes on `<table>`", "optimize queries on `<table>`" activate Phase 2
+when the database adapter MCP is connected.
 
 ## 🏗 Architecture & Roadmap
 
