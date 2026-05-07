@@ -205,9 +205,8 @@ def mcp(
     """Starts the FastMCP standard input/output (stdio) server for integrations."""
     import os
 
-    from dbs_vector.api.mcp_server import mcp as mcp_server
     from dbs_vector.config import _populate_singleton_from, load_settings
-    from dbs_vector.mcp.state import initialize_services
+    from dbs_vector.mcp.server import start_stdio_server
 
     # If the subcommand was given a config file (e.g., `dbs-vector mcp -c X`),
     # re-load and re-populate the singleton; otherwise rely on what the global
@@ -220,12 +219,10 @@ def mcp(
 
     logger.info("Initializing MLX Embedders and LanceDB connections")
     try:
-        initialize_services()
+        start_stdio_server()
     except Exception as e:
         logger.error("Failed to initialize search services: {}", e)
         raise
-
-    mcp_server.run()
 
 
 if __name__ == "__main__":
