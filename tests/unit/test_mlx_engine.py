@@ -493,8 +493,10 @@ class TestAttentionMaskDtype:
         self._setup_tokenizer(mock_tokenizer, MagicMock())
 
         # Forward "succeeds" but returns an MLX-like object whose materialization fails.
+        # Mirror the NumPy 2.x __array__(dtype, copy) signature so the mock doesn't
+        # raise a DeprecationWarning before the type-promotion error we're testing.
         class _LazyEmbeds:
-            def __array__(self, dtype=None):
+            def __array__(self, dtype=None, copy=None):
                 raise ValueError("Cannot promote types: bf16, int32")
 
         mock_outputs = MagicMock()

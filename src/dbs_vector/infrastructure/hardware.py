@@ -6,7 +6,7 @@ def detect_memory_budget_gb() -> float | None:
     try:
         import mlx.core as mx
 
-        info = mx.metal.device_info()
+        info = mx.device_info()
         max_bytes = info.get("max_buffer_length")
         if isinstance(max_bytes, (int, float)) and max_bytes:
             return max_bytes / (1024**3)

@@ -10,17 +10,17 @@ from dbs_vector.infrastructure.hardware import (
 
 def test_detect_returns_gb_from_mlx():
     fake_info = {"max_buffer_length": 22 * 1024**3}
-    with patch("mlx.core.metal.device_info", return_value=fake_info):
+    with patch("mlx.core.device_info", return_value=fake_info):
         assert detect_memory_budget_gb() == pytest.approx(22.0, rel=1e-6)
 
 
 def test_detect_returns_none_when_mlx_unavailable():
-    with patch("mlx.core.metal.device_info", side_effect=ImportError("no metal")):
+    with patch("mlx.core.device_info", side_effect=ImportError("no metal")):
         assert detect_memory_budget_gb() is None
 
 
 def test_detect_returns_none_when_key_missing():
-    with patch("mlx.core.metal.device_info", return_value={}):
+    with patch("mlx.core.device_info", return_value={}):
         assert detect_memory_budget_gb() is None
 
 
