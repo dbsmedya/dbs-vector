@@ -199,6 +199,8 @@ def _validate_config(settings: Settings, config_file: str) -> None:
       3. profile.max_token_length ≤ contract.model_max_token_length.
       4. estimate_peak_buffer_bytes ≤ memory_budget × 0.9.
       5. (warn) chunk_max_chars routinely exceeds max_token_length × 4.
+      6. Engine name matches ^[a-z0-9][a-z0-9_-]*$ (MCP tool naming).
+      7. resolved_family is a known FamilyKeyRegistry key.
 
     Memory budget is resolved lazily (only when rule 4 actually runs) so a
     config with an unknown model/profile fails on rule 1/2 BEFORE we attempt
