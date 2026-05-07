@@ -101,6 +101,12 @@ class LanceDBStore:
     ) -> list[Any]:
         """Executes Hybrid (or pure Vector) search, filtering natively in Rust."""
 
+        # Pick up rows committed by another process (e.g., a `dbs-vector ingest`
+        # run while the MCP server is already loaded). LanceDB Table objects
+        # snapshot the dataset version at open-time; without this refresh, a
+        # long-lived SearchService would never see new rows.
+        self.table.checkout_latest()
+
         min_time = kwargs.get("min_time")
 
         def _apply_filters(op: Any) -> Any:

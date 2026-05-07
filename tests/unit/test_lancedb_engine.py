@@ -583,3 +583,28 @@ class TestSearch:
 
         results = store.search(query="test", query_vector=query_vector)
         assert results == [("chunk_0", None, 0.9), ("chunk_1", None, None)]
+
+    def test_search_refreshes_table_to_latest_version(self, lancedb_store):
+        """Each search must call table.checkout_latest() so a long-lived
+        SearchService picks up rows committed by another process (e.g.,
+        an out-of-band `dbs-vector ingest` while MCP is running)."""
+        import polars as pl
+
+        store, _, mock_table, _ = lancedb_store
+        query_vector = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        mock_search = MagicMock()
+        mock_search.vector.return_value = mock_search
+        mock_search.text.return_value = mock_search
+        mock_search.nprobes.return_value = mock_search
+        mock_search.limit.return_value = mock_search
+        mock_search.to_polars.return_value = pl.DataFrame(
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+        )
+        mock_table.search.return_value = mock_search
+
+        # Two calls — checkout_latest must fire each time, not just once.
+        store.search(query="first", query_vector=query_vector)
+        store.search(query="second", query_vector=query_vector)
+
+        assert mock_table.checkout_latest.call_count == 2
