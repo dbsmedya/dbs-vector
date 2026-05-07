@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from dbs_vector.config import EngineConfig
+from dbs_vector.config import EngineConfig, TuningProfile
 
 # Need to import after setting up mocks
 runner = CliRunner()
@@ -14,37 +14,41 @@ runner = CliRunner()
 
 @pytest.fixture
 def mock_settings():
-    """Create mock settings with engines.
+    """Create mock settings with engines on the new schema.
+
+    Both engines use the registered `gemma-bf16` ModelContract so we don't
+    need fresh ModelRegistry registrations per test. Sizing knobs come from
+    profiles.
 
     Patches both `dbs_vector.cli.settings` (used for CLI-level engine validation)
     and `dbs_vector.services.bootstrap.settings` (used by the DI factory).
     """
+    profiles = {
+        "test-md-profile": TuningProfile(max_token_length=512, chunk_max_chars=1000, batch_size=64),
+        "test-sql-profile": TuningProfile(max_token_length=256, chunk_max_chars=0, batch_size=64),
+    }
     engines = {
         "md": EngineConfig(
-            model_name="test-model",
             description="Markdown Engine",
-            vector_dimension=384,
-            max_token_length=512,
-            table_name="md_table",
+            model="gemma-bf16",
             mapper_type="document",
             chunker_type="document",
-            chunk_max_chars=1000,
+            table_name="md_table",
+            workflow="test_md",
             passage_prefix="passage: ",
             query_prefix="query: ",
-            workflow="test_md",
+            tuning_profile="test-md-profile",
         ),
         "sql": EngineConfig(
-            model_name="sql-model",
             description="SQL Engine",
-            vector_dimension=768,
-            max_token_length=256,
-            table_name="sql_table",
+            model="gemma-bf16",
             mapper_type="sql",
             chunker_type="sql",
-            chunk_max_chars=0,
+            table_name="sql_table",
+            workflow="test_sql",
             passage_prefix="",
             query_prefix="",
-            workflow="test_sql",
+            tuning_profile="test-sql-profile",
         ),
     }
     with (
@@ -53,9 +57,10 @@ def mock_settings():
     ):
         for mock in (cli_mock, bootstrap_mock):
             mock.engines = engines
+            mock.profiles = profiles
             mock.db_path = "./test_db"
-            mock.batch_size = 64
             mock.nprobes = 20
+            mock.memory_budget_gb = 22.0
         yield cli_mock
 
 
@@ -192,7 +197,7 @@ class TestIngestCommand:
         # Verify SQL engine was used (via embedder call with sql model)
         mock_embedder.assert_called_once()
         call_kwargs = mock_embedder.call_args.kwargs
-        assert call_kwargs["model_name"] == "sql-model"
+        assert call_kwargs["model_name"] == "mlx-community/embeddinggemma-300m-bf16"
 
     def test_ingest_unknown_engine(self, mock_settings):
         """Test ingest with unknown engine type."""
@@ -452,12 +457,12 @@ class TestBuildDependencies:
         assert deps.embedder is mock_embedder.return_value
         assert deps.store is mock_store.return_value
         mock_embedder.assert_called_once_with(
-            model_name="test-model",
-            max_token_length=512,
-            dimension=384,
+            model_name="mlx-community/embeddinggemma-300m-bf16",
+            max_token_length=512,  # from test-md-profile
+            dimension=768,  # from gemma-bf16 contract
             passage_prefix="passage: ",
             query_prefix="query: ",
-            attention_mask_dtype=None,
+            attention_mask_dtype="float16",  # from gemma-bf16 contract
         )
 
     def test_build_dependencies_unknown_engine(self, mock_settings):
@@ -502,7 +507,7 @@ class TestBuildDependencies:
         mock_store.assert_called_once_with(
             db_path="./test_db",
             table_name="md_table",
-            vector_dimension=384,
+            vector_dimension=768,  # from gemma-bf16 contract
             mapper=mock_mapper[1],
             nprobes=20,
         )
