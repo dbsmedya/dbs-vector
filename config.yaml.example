@@ -1,141 +1,195 @@
-# ==============================================================================
-# dbs-vector Configuration File Example
-# ==============================================================================
-# To use this configuration:
-#   1. Copy this file to `config.yaml`
-#   2. Adjust the `db_path` and `model_name` as needed.
+# =============================================================================
+# dbs-vector — Example Configuration
+# -----------------------------------------------------------------------------
+# Copy to config.yaml and edit. Validation runs on the first CLI command:
+#   uv run dbs-vector ingest ./docs/ --type md
 #
-# You can also pass a custom config via the CLI:
-#   uv run dbs-vector --config-file custom_config.yaml <command>
-# ==============================================================================
+# Override config path:  --config-file <path>  or  DBS_CONFIG_FILE=<path>
+#
+# Documentation:
+#   docs/README_PROFILES.md   — profiles, memory math, workload recipes, audit
+#   docs/README_granite.md    — Granite R2 specifics (no prefixes, why)
+#   docs/README_MCP.md        — MCP tool naming + per-engine tool surface
+#   docs/README_EMBEDDINGS.md — model contracts and supported models
+# =============================================================================
 
+
+# -----------------------------------------------------------------------------
+# system:  global runtime settings (one block, no nesting)
+# -----------------------------------------------------------------------------
 system:
-  # The local directory path where LanceDB will store the vector data and indices.
+  # LanceDB on-disk location. Change to keep separate indexes per project.
   db_path: "./lancedb_dbs_vector"
-  
-  # The number of chunks to embed and ingest in a single batch.
-  batch_size: 64
-  
-  # The number of IVF partitions to probe during a vector search.
+
+  # IVF_PQ vector search probe count. Higher = better recall, slower queries.
   nprobes: 20
-  
-  # Logging configuration
-  # Log level: DEBUG | INFO | WARNING | ERROR
+
+  # Loguru level. DEBUG | INFO | WARNING | ERROR.
   log_level: "INFO"
-  
-  # Serialize logs as JSON lines (useful for structured logging)
+
+  # Emit logs as JSON lines. Useful when piping into log aggregators.
   log_serialize: false
 
-# ==============================================================================
-# Engine Definitions
-# ==============================================================================
+  # Metal memory budget override (GB). Auto-detected on Apple Silicon.
+  # Set explicitly if auto-detection over-reports, or to cap headroom.
+  # memory_budget_gb: 22.0
+
+
+# -----------------------------------------------------------------------------
+# profiles:  hardware-sensitive tuning knobs
+# -----------------------------------------------------------------------------
+# Three knobs per profile (every engine references one profile by name):
+#   max_token_length  tokenizer cap; must be ≤ model contract max
+#                     (Gemma: 2048, Granite R2: 32768)
+#   chunk_max_chars   character budget per chunk; 0 = atomic (one record/chunk)
+#   batch_size        chunks per MLX forward pass (memory vs. throughput)
+#
+# Pick a recipe below, copy it, or write your own — see workload recipes
+# and audit script in docs/README_PROFILES.md.
+# -----------------------------------------------------------------------------
+profiles:
+  # Gemma defaults — short-context, instruction-tuned model.
+  gemma-md:           {max_token_length: 2048,  chunk_max_chars: 1000, batch_size: 64}
+  gemma-sql-atomic:   {max_token_length: 2048,  chunk_max_chars: 0,    batch_size: 64}
+
+  # Granite R2 long-form prose recipe (large chunks, modest batches).
+  granite-md-large:   {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8}
+
+  # Granite R2 fragmented techdoc recipe — finer chunks, throughput-optimized.
+  # max_token_length sized at ~4× the worst-case chunk tokens (3000/4 ≈ 750).
+  granite-md-medium:  {max_token_length: 4096,  chunk_max_chars: 3000, batch_size: 16}
+
+  # Granite R2 SQL atomic — one record per chunk; raise batch_size for throughput.
+  granite-sql-atomic: {max_token_length: 8192,  chunk_max_chars: 0,    batch_size: 32}
+
+
+# -----------------------------------------------------------------------------
+# engines:  per-deployment search engine definitions
+# -----------------------------------------------------------------------------
+# Each engine becomes:
+#   • A LanceDB table          (table_name)
+#   • An MCP tool              (search_<engine_name>, dashes → underscores)
+#   • A CLI --type alias       (uv run dbs-vector ingest|search --type <name>)
+#
+# Engine names must match ^[a-z0-9][a-z0-9_-]*$  (validator Rule 6).
+# resolved_family must be a known FamilyKeyRegistry key  (validator Rule 7).
+# -----------------------------------------------------------------------------
 engines:
-  
-  # --------------------------------------------------------------------------
-  # Markdown & Prose Document Engine (Gemma Search Result Workflow)
-  # --------------------------------------------------------------------------
+
+  # ----- Markdown / prose, Gemma (instruction-tuned, asymmetric retrieval) ----
   md:
-    description: "Markdown & Prose Document Engine (Gemma Search)"
-    model_name: "mlx-community/embeddinggemma-300m-bf16"
-    vector_dimension: 768
-    max_token_length: 2048
-    table_name: "knowledge_vault"
-    mapper_type: "document"
-    chunker_type: "document"
-    chunk_max_chars: 1000
-
-    # Task Prefixes for models like embeddinggemma
-    # 'search_result' is used for the documents (passage_prefix)
-    # 'search_query' or 'search_result' is used for queries (query_prefix)
+    description:    "Markdown & Prose Document Engine (Gemma Search)"
+    model:          "gemma-bf16"          # ModelRegistry key (core/model_registry.py)
+    mapper_type:    "document"            # storage schema for document chunks
+    chunker_type:   "document"            # markdown-it semantic chunker
+    table_name:     "knowledge_vault"     # LanceDB table; unique per (model × workflow)
+    workflow:       "md_search"           # workflow label written into every chunk
+    tuning_profile: "gemma-md"            # references profiles: block above
+    # Gemma is task-instruction-tuned: prefixes project queries and passages
+    # into a shared task-conditional subspace. REQUIRED for Gemma.
     passage_prefix: "title: none | text: "
-    query_prefix: "task: search result | query: "
-    workflow: "md_search"
+    query_prefix:   "task: search result | query: "
 
-  # --------------------------------------------------------------------------
-  # SQL Slow Query Log Engine — JSON file source (Gemma Clustering Workflow)
-  # --------------------------------------------------------------------------
+  # ----- Markdown / prose, Granite R2 (symmetric bi-encoder) ------------------
+  md-granite:
+    description:    "Markdown & Prose Engine (Granite R2 — long context)"
+    model:          "granite-r2"
+    mapper_type:    "document"
+    chunker_type:   "document"
+    table_name:     "knowledge_vault_granite"   # MUST differ from gemma's table
+    workflow:       "md_search_granite"
+    tuning_profile: "granite-md-large"
+    # Granite R2 is NOT instruction-tuned. Leave prefixes empty.
+    # Rationale: docs/README_granite.md (model card ships empty prompt slots).
+
+  # ----- A/B variant: same model, finer chunks ------------------------------
+  # Add a new engine row → automatically becomes MCP tool `search_md_granite_medium`.
+  # No source code changes required (validator Rule 6 enforces the name pattern).
+  md-granite-medium:
+    description:    "Granite R2, finer chunks (A/B candidate vs md-granite)"
+    model:          "granite-r2"
+    mapper_type:    "document"
+    chunker_type:   "document"
+    table_name:     "knowledge_vault_granite_medium"   # MUST differ from baseline
+    workflow:       "md_search_granite"
+    tuning_profile: "granite-md-medium"
+
+  # ----- SQL slow-query log, local DuckDB source -----------------------------
   sql:
-    description: "SQL Slow Query Log Engine (Gemma Clustering)"
-    model_name: "mlx-community/embeddinggemma-300m-bf16"
-    vector_dimension: 768
-    max_token_length: 2048
-    table_name: "query_vault"
-    mapper_type: "sql"
-    chunker_type: "sql"
-    chunk_max_chars: 0
-
-    # Task Prefixes for clustering workflow
+    description:    "SQL Slow Query Log Engine (Gemma Clustering)"
+    model:          "gemma-bf16"
+    mapper_type:    "sql"                 # SQL schema (raw_query, exec time, calls, ts)
+    chunker_type:   "duckdb"              # reads slow-log DuckDB files
+    table_name:     "query_vault"
+    workflow:       "sql_clustering"
+    tuning_profile: "gemma-sql-atomic"
+    # Symmetric clustering prefix (queries and passages encoded the same way).
     passage_prefix: "task: clustering | query: "
-    query_prefix: "task: clustering | query: "
-    workflow: "sql_clustering"
-
-  # --------------------------------------------------------------------------
-  # SQL Slow Query Log Engine — DuckDB file source
-  # Requires: uv sync --extra sql
-  # Usage:    uv run dbs-vector ingest "slow_logs.duckdb" --type sql-duckdb
-  # --------------------------------------------------------------------------
-  sql-duckdb:
-    description: "SQL Slow Query Log Engine — DuckDB source"
-    model_name: "mlx-community/embeddinggemma-300m-bf16"
-    vector_dimension: 768
-    max_token_length: 2048
-    table_name: "query_vault"
-    mapper_type: "sql"
-    chunker_type: "duckdb"
-    chunk_max_chars: 0
-
-    passage_prefix: "task: clustering | query: "
-    query_prefix: "task: clustering | query: "
-    workflow: "sql_clustering"
-
-    # Optional: override the default aggregation query executed against the
-    # DuckDB file. Leave unset to use the built-in 15-day window query.
+    query_prefix:   "task: clustering | query: "
+    # Optional override of the default 15-day aggregation query:
     # duckdb_query: >
     #   SELECT fingerprint_id AS id, sanitized_sql AS text, db AS source,
     #          SUM(query_time_sec) * 1000 AS execution_time_ms, COUNT(*) AS calls
     #   FROM slow_logs GROUP BY fingerprint_id ORDER BY execution_time_ms DESC
 
-  # --------------------------------------------------------------------------
-  # SQL Slow Query Log Engine — Remote HTTP API source
-  # Requires: uv sync --extra api
-  # Usage:    uv run dbs-vector ingest "https://host/api/v1" --type sql-api
-  #
-  # The API key can also be injected via the DBS_API_KEY environment variable
-  # instead of being written to this file.
-  # --------------------------------------------------------------------------
+  # ----- SQL slow-query log, remote HTTP API source --------------------------
+  # See docs/README_REMOTE_SQL_API.md for the expected API contract.
+  # Treat this file as a secret if api_key is non-empty (gitignore config.yaml).
   sql-api:
-    description: "SQL Slow Query Log Engine — Remote HTTP API source"
-    model_name: "mlx-community/embeddinggemma-300m-bf16"
-    vector_dimension: 768
-    max_token_length: 2048
-    table_name: "query_vault"
-    mapper_type: "sql"
-    chunker_type: "api"
-    chunk_max_chars: 0
-
+    description:    "Remote slow query log via HTTP API"
+    model:          "gemma-bf16"
+    mapper_type:    "sql"
+    chunker_type:   "api"                 # paginated REST API source
+    table_name:     "query_vault"
+    workflow:       "sql_clustering"
+    tuning_profile: "gemma-sql-atomic"
     passage_prefix: "task: clustering | query: "
-    query_prefix: "task: clustering | query: "
-    workflow: "sql_clustering"
+    query_prefix:   "task: clustering | query: "
+    api_base_url:   "http://localhost:8080/api/v1"   # version-prefixed endpoint
+    api_key:        ""                                # bearer token; "" disables auth header
+    api_page_size:  200                               # records per GET request (max 1000)
+    api_since_days: 15                                # fetch queries with latest_ts within N days
+    api_timeout_sec: 30                               # per-request HTTP timeout
+    api_min_execution_ms: 0                           # skip queries below this cumulative exec time
+    api_database:   ""                                # restrict to one db; "" fetches all
 
-    # Base URL of the remote slow-query API (including version prefix).
-    api_base_url: "https://slow-log-api.internal/api/v1"
+  # ----- SQL slow-query log, Granite R2 (no prefixes) -----------------------
+  sql-granite:
+    description:    "SQL Slow Query Log Engine (Granite Clustering)"
+    model:          "granite-r2"
+    mapper_type:    "sql"
+    chunker_type:   "duckdb"
+    table_name:     "query_vault_granite"
+    workflow:       "sql_clustering_granite"
+    tuning_profile: "granite-sql-atomic"
+    # Empty prefixes (Granite R2 — see docs/README_granite.md).
 
-    # Bearer token sent as:  Authorization: Bearer <api_key>
-    # Prefer injecting via environment:  export DBS_API_KEY=sk-...
-    api_key: ""
-
-    # Records requested per GET /sql/queries page (max 1000).
-    api_page_size: 200
-
-    # Fetch queries whose latest_ts falls within the last N days.
+  # ----- SQL slow-query log, Granite R2 + remote API ------------------------
+  sql-api-granite:
+    description:    "Remote slow query log via HTTP API (Granite)"
+    model:          "granite-r2"
+    mapper_type:    "sql"
+    chunker_type:   "api"
+    table_name:     "query_vault_granite_api"
+    workflow:       "sql_clustering_granite"
+    tuning_profile: "granite-sql-atomic"
+    api_base_url:   "http://localhost:8080/api/v1"
+    api_key:        ""
+    api_page_size:  200
     api_since_days: 15
-
-    # Per-request HTTP timeout in seconds.
     api_timeout_sec: 30
-
-    # Skip queries whose cumulative execution_time_ms is below this value.
     api_min_execution_ms: 0
+    api_database:   ""
 
-    # Restrict ingestion to a single database/schema name.
-    # Leave empty to fetch from all databases.
-    api_database: ""
+
+# =============================================================================
+# Adding a new engine
+# -----------------------------------------------------------------------------
+# 1. Pick (or define) a `tuning_profile:` from the profiles: block above.
+# 2. Add an engine entry under engines: with a unique table_name.
+# 3. Restart `dbs-vector mcp` — the new MCP tool `search_<engine_name>` is
+#    auto-registered, and `list_engines` will report it as `loaded: true`.
+#
+# Adding a new model contract (e.g., a new embedder) requires a code change
+# in src/dbs_vector/core/model_registry.py — see docs/README_EMBEDDINGS.md.
+# =============================================================================

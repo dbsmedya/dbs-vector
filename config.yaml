@@ -8,6 +8,7 @@ profiles:
   gemma-md:           {max_token_length: 2048,  chunk_max_chars: 1000, batch_size: 64}
   gemma-sql-atomic:   {max_token_length: 2048,  chunk_max_chars: 0,    batch_size: 64}
   granite-md-large:   {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8}
+  granite-md-medium:  {max_token_length: 4096,  chunk_max_chars: 3000, batch_size: 16}
   granite-sql-atomic: {max_token_length: 8192,  chunk_max_chars: 0,    batch_size: 32}
 
 engines:
@@ -58,7 +59,7 @@ engines:
     chunker_type: "document"
     table_name: "knowledge_vault_granite"
     workflow: "md_search_granite"
-    tuning_profile: "granite-md-large"
+    tuning_profile: "granite-md-medium"
 
   sql-granite:
     description: "SQL Slow Query Log Engine (Granite Clustering)"

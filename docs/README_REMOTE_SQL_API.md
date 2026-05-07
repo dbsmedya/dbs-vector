@@ -105,11 +105,20 @@ engines:
 
 ### Standard ingestion — paginated GET
 
-Pass the base URL as the path argument and name the engine with `--type`:
+Two equivalent ways to invoke this:
 
 ```bash
+# (a) URL inherited from config.yaml's api_base_url:
+uv run dbs-vector ingest --type sql-api
+
+# (b) URL passed explicitly (overrides api_base_url for this run only):
 uv run dbs-vector ingest "https://slow-log-api.internal/api/v1" --type sql-api
 ```
+
+Form (a) is preferred for the common case of a stable production endpoint.
+Use form (b) when pointing at staging, a colleague's machine, or a mirror
+without editing `config.yaml`. Both work for `sql-api` and `sql-api-granite`
+because they share the api-chunker contract.
 
 The chunker issues `GET /sql/queries` pages until `has_more` is `false`,
 yielding one `SqlChunk` per record.

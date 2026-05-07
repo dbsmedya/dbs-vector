@@ -92,8 +92,14 @@ def _build_dependencies(
 @app.command()
 def ingest(
     path: Annotated[
-        str, typer.Argument(help="Directory path, glob pattern, or JSON file to ingest.")
-    ],
+        str | None,
+        typer.Argument(
+            help=(
+                "Directory path, glob pattern, JSON file, or URL to ingest. "
+                "Optional for api-chunker engines: omit to use api_base_url from config.yaml."
+            ),
+        ),
+    ] = None,
     engine_name: Annotated[
         str, typer.Option("--type", "-t", help="The type of data to ingest (md, sql, etc).")
     ] = "md",
@@ -118,6 +124,29 @@ def ingest(
             f"Error: Unknown engine type '{engine_name}'. Available: {list(settings.engines.keys())}"
         )
         raise typer.Exit(code=1)
+
+    engine = settings.engines[engine_name]
+
+    # Resolve the path argument. For api-chunker engines, fall back to
+    # api_base_url from config.yaml when no path was supplied.
+    if path is None:
+        if engine.chunker_type == "api":
+            if not engine.api_base_url:
+                typer.echo(
+                    f"Error: engine '{engine_name}' has no api_base_url configured "
+                    f"and no URL was passed on the command line.",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+            path = engine.api_base_url
+        else:
+            typer.echo(
+                f"Error: 'path' argument is required for engine type '{engine_name}' "
+                f"(chunker_type='{engine.chunker_type}'). Only api-chunker engines may "
+                f"omit it (the URL falls back to api_base_url from config.yaml).",
+                err=True,
+            )
+            raise typer.Exit(code=1)
 
     if rebuild and not force:
         typer.confirm(
