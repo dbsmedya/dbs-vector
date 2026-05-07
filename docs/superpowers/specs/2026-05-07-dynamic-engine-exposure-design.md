@@ -640,11 +640,25 @@ src/dbs_vector/api/state.py → src/dbs_vector/mcp/state.py
 
 ```
 src/dbs_vector/cli.py
-  - mcp() command: import start_stdio_server from dbs_vector.mcp.server
-    and call it directly (no args). The current "initialize_services() +
-    mcp.run()" body is replaced by the single helper call. The CLI callback
-    has already populated the singleton via _populate_singleton_from before
-    this command runs.
+  - mcp() command: PRESERVE the existing subcommand-level --config-file
+    override (commit da0f48b). The signature stays:
+        def mcp(config_file: str | None = None)
+    Behavior:
+      - If config_file is None: rely on the global callback's already-populated
+        singleton, then call start_stdio_server().
+      - If config_file is not None: re-export DBS_CONFIG_FILE, run
+        load_settings(config_file, validate=True), call
+        _populate_singleton_from(new_settings), THEN call start_stdio_server().
+    This preserves all three invocation forms:
+      - `dbs-vector mcp`            — global callback's default config.yaml
+      - `dbs-vector -c X mcp`       — global callback loads X
+      - `dbs-vector mcp -c Y`       — global runs first with default; mcp
+                                      reloads and repopulates from Y before
+                                      calling start_stdio_server()
+    Implementation note: the body becomes the existing reload-if-set block
+    followed by `start_stdio_server()` instead of the current inline
+    `initialize_services()` + `mcp_server.run()`. Imports update from
+    dbs_vector.api.* to dbs_vector.mcp.*.
   - serve() command: REMOVED entirely (resolves Findings 1, 2 and the
     "no coding tool requires HTTP MCP" decision).
 
@@ -776,6 +790,12 @@ Per locked design decision: rename + FastAPI removal is a clean breaking change.
 - **`tests/unit/test_config_import_safety.py` (extend)**
   - `test_importing_config_does_not_load_mcp_modules` — asserts `dbs_vector.mcp` not in `sys.modules` after `import dbs_vector.config` (resolves Finding 5)
 
+- **`tests/unit/test_cli_callback.py` (extend) — preserves `mcp --config-file` override**
+  - `test_mcp_uses_global_config_when_no_subcommand_override` — invoking `dbs-vector mcp` after `_populate_singleton_from(default)` uses the default config
+  - `test_mcp_uses_global_callback_config` — `dbs-vector -c X mcp` uses X (existing assertion, kept)
+  - `test_mcp_subcommand_config_overrides_global` — `dbs-vector mcp -c Y` reloads from Y and the singleton's `db_path` matches Y after the subcommand body runs (verifies the reload-before-`start_stdio_server` order)
+  - `test_mcp_subcommand_config_sets_env_var` — DBS_CONFIG_FILE env var is set to Y when `mcp -c Y` is invoked, so any spawned subprocess inherits it
+
 ### 9.2 New integration tests (MCP-only)
 
 - **`tests/integration/test_mcp_server.py`**
@@ -849,6 +869,7 @@ Re-introducing an HTTP MCP server (via uvicorn over `mcp.streamable_http_app()`)
 | 19 | Drop `fastapi` and `uvicorn` from pyproject.toml (subject to dependency audit) | Resolves Finding 4; honest about what's required |
 | 20 | `list_engines.loaded` flag is honest about partial maps but startup is still all-or-nothing | Resolves Finding 5 wording |
 | 21 | Update `README_MCP.md`, `README_PROFILES.md`, `CLAUDE.md` in scope; delete `README_API.md` | Surface change is breaking; docs ship with code |
+| 22 | **Preserve `dbs-vector mcp -c Y` subcommand-level config-file override** (commit `da0f48b`) | Existing capability; the singleton-only ownership pattern (Finding 1) does not eliminate the need for per-subcommand reload — `start_stdio_server()` is still settings-free, but the CLI command body is allowed to repopulate the singleton before calling it |
 
 ---
 
@@ -869,4 +890,8 @@ A reviewer can verify the implementation by:
 9. **`api/` package gone** — `uv run python -c "import dbs_vector.api"` raises `ModuleNotFoundError`. `uv run python -c "import dbs_vector.api.main"` raises `ModuleNotFoundError`.
 10. **`serve` subcommand gone** — `uv run dbs-vector serve` exits with a Typer "no such command" error.
 11. **Direct dependencies cleaned** — `fastapi` and `uvicorn` are absent from `pyproject.toml`'s `[project] dependencies` (and any extras / optional groups). No source file under `src/dbs_vector/` or `tests/` imports `fastapi` or `uvicorn`. (The packages MAY still be importable if a transitive dependency keeps them installed — that is acceptable per §7.6 and not asserted here.)
-12. **(Gated, opt-in) End-to-end Granite** — `DBS_RUN_E2E_GRANITE=1 uv run pytest tests/integration/test_granite_engines.py` passes when local Granite indices and model are available.
+12. **CLI config-file override paths preserved** — Verified by `tests/unit/test_cli_callback.py`:
+    - `dbs-vector mcp` uses the global callback's default config.yaml
+    - `dbs-vector -c X mcp` uses global config X
+    - `dbs-vector mcp -c Y` reloads and uses subcommand config Y (singleton's `db_path` reflects Y after the subcommand body runs; `DBS_CONFIG_FILE` env var is set to Y)
+13. **(Gated, opt-in) End-to-end Granite** — `DBS_RUN_E2E_GRANITE=1 uv run pytest tests/integration/test_granite_engines.py` passes when local Granite indices and model are available.
