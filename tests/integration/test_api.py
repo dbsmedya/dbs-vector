@@ -13,15 +13,17 @@ def mocked_client():
     patches = []
 
     try:
-        # Mock settings
+        # Mock settings — use real ModelRegistry keys so /health's
+        # ModelRegistry.get(engine.model) resolves successfully.
         mock_settings = MagicMock()
         mock_settings.engines = {
-            "md": MagicMock(model_name="test-model", vector_dimension=384),
-            "sql": MagicMock(model_name="sql-model", vector_dimension=768),
+            "md": MagicMock(model="gemma-bf16"),
+            "sql": MagicMock(model="gemma-bf16"),
         }
         mock_settings.db_path = "./test_db"
-        mock_settings.batch_size = 64
         mock_settings.nprobes = 20
+        mock_settings.profiles = {}
+        mock_settings.memory_budget_gb = 22.0
 
         # Create mock services
         mock_md_service = MagicMock()
