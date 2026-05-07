@@ -20,6 +20,7 @@ dependencies = [
     "pydantic-settings>=2.14.0",
     "pydantic>=2.13.3",
     "pyyaml>=6.0.3",
+    "sqlglot>=27.0.0",
     "tantivy==0.25.1",
     "typer>=0.15.1",
     "types-pyyaml>=6.0.12.20260408",
@@ -90,7 +91,9 @@ module = [
     "duckdb",
     "duckdb.*",
     "mlx_embeddings",
-    "mlx_embeddings.*"
+    "mlx_embeddings.*",
+    "sqlglot",
+    "sqlglot.*"
 ]
 ignore_missing_imports = true
 ignore_errors = true

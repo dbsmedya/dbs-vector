@@ -329,35 +329,54 @@ Persist these as in-memory state for the rest of the workflow.
 
 #### Step 5 — Extract predicate signatures
 
-For each query in the covered set, parse out:
+Use the project's bundled extractor — it sanitizes slow-log placeholders
+(`?+`, `?,?,?`, bare `?`), tries sqlglot first, falls back to regex for
+queries sqlglot can't parse (commonly `INSERT … ON DUPLICATE KEY UPDATE`
+with nested IF/values expressions):
 
-- **Equality columns**: `WHERE col = ?` or `WHERE col IN (...)` or `WHERE col1 = ? AND col2 = ?`
-- **Range columns**: `WHERE col >= ? AND col < ?`, `WHERE col > ?`, `WHERE col BETWEEN ? AND ?`
-- **JOIN keys**: `INNER JOIN T2 ON T.col = T2.other_col` (T's side only)
-- **GROUP BY columns**: `GROUP BY col, col`
-- **ORDER BY columns**: `ORDER BY col [DESC]`, including direction
+```python
+from dbs_vector.services.sql_parser import extract_predicate_signature
 
-Use `sqlglot` (already a project dependency) when available — it handles
-MySQL dialect quirks. Fall back to regex for the common shapes when
-sqlglot fails. Skip queries that fail to parse, but **report the count
-of unparsed queries** at the end so the user knows coverage is
-incomplete.
+for q in covered_queries:
+    sig = extract_predicate_signature(q["raw_query"])
+    # sig keys: eq_cols, range_cols, join_keys, order_by, is_write, kind, parser
+```
 
-The output of Step 5 is a list:
+The returned dict guarantees these keys for every input — no parse
+failures bubble up; pathological SQL still returns an empty-but-shaped
+signature. Aggregate the `parser` field across the corpus to gauge
+confidence: if more than ~5% fall to the regex path, the recommendation
+is built on partial structural information and you should say so in the
+final report.
+
+The fields:
+
+| Field | Meaning |
+|---|---|
+| `eq_cols` | Equality predicates: `WHERE col = ?` or `WHERE col IN (...)` |
+| `range_cols` | Range predicates: `>`, `>=`, `<`, `<=`, `BETWEEN` |
+| `join_keys` | JOIN ON columns from any side of the join condition |
+| `order_by` | List of `(column, "ASC" \| "DESC")` tuples |
+| `is_write` | True for INSERT/UPDATE/DELETE |
+| `kind` | Statement kind: `SELECT` / `INSERT` / `UPDATE` / `DELETE` / `?` |
+| `parser` | Which path produced this — `"sqlglot"` or `"regex"` |
+
+Aggregate across covered queries:
 ```
 [
-    {
-        "query_id": "...",
-        "calls": 8478,
-        "eq_cols": ["customer_id", "process_send_type"],
-        "range_cols": [],
-        "join_keys": ["process_id"],
-        "group_by": [],
-        "order_by": [],
-    },
+    {"query_id": "...", "calls": 8478,
+     "eq_cols": ["process_id"], "range_cols": [], "join_keys": [],
+     "order_by": [], "is_write": False, "parser": "sqlglot"},
     ...
 ]
 ```
+
+The parse-success rate against real slow-log corpora is verified by
+`tests/integration/test_skill_predicate_extraction.py` (99% yield rate
+against the project's reference corpus). If you encounter a query
+shape that yields empty signatures even though it has a real WHERE
+clause, that's a parser regression — add it as a unit test to
+`tests/unit/test_sql_parser.py` so it doesn't recur.
 
 #### Step 6 — Synthesize index candidates
 
