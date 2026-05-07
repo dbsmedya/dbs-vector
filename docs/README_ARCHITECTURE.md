@@ -26,7 +26,7 @@ Instead of hardcoding database schemas or branching logic (`if is_sql: ... else:
 *   **Why this matters:** The database engine only knows how to append Arrow arrays and execute searches. It has zero knowledge of the domain objects (`SqlChunk`, `Chunk`), making it infinitely reusable.
 
 ### B. Dynamic Engine Registry (OCP)
-The entire application is driven by `config.yaml`. The shared DI factory (`services/bootstrap.build_dependencies`, used by both the CLI and the API via `api/state.initialize_services`) dynamically instantiates the correct Embedder, Mapper, and Chunker based on the `--type` flag (e.g., `md` or `sql`) by looking them up in `ComponentRegistry`. `cli._build_dependencies` is a thin wrapper that only converts schema-mismatch errors into `typer.Exit`.
+The entire application is driven by `config.yaml`. The shared DI factory (`services/bootstrap.build_dependencies`, used by both the CLI and MCP lifecycle in `mcp/state.initialize_services`) dynamically instantiates the correct Embedder, Mapper, and Chunker based on the engine name (e.g., `md` or `sql`) by looking them up in `ComponentRegistry`. `cli._build_dependencies` is a thin wrapper that only converts schema-mismatch errors into `typer.Exit`.
 *   **Why this matters:** Adding a new engine (like an AST parser) requires *zero* modifications to the core orchestration code. You simply write the new parser, register it, and add its YAML configuration.
 
 ### C. The Unified Memory Bridge (Compute to Transfer)
@@ -58,7 +58,7 @@ table.add(arrow_batch)
 The architecture supports specialized parallel pipelines:
 *   **MD Engine:** Uses `mlx-community/embeddinggemma-300m-bf16` with a robust `markdown-it-py` chunker that guarantees code fences remain atomic.
 *   **SQL Engine:** Uses the same `mlx-community/embeddinggemma-300m-bf16` model with task-specific prefixes to cluster parsed execution logs, finding identical logic hidden behind structural query differences.
-*   **Granite engines (`md-granite`, `sql-granite`, `sql-api-granite`):** Use `ibm-granite/granite-embedding-311m-multilingual-r2` (ModernBERT, dim 768, 32 768-token context, 52 enhanced languages including Turkish). Same code path as the Gemma engines; selected per `--type` flag. **Currently CLI-only** — the FastAPI / MCP routes still expose only the Gemma engines (Phase 2 generalizes them). See [README_EMBEDDINGS.md](README_EMBEDDINGS.md).
+*   **Granite engines (`md-granite`, `sql-granite`, `sql-api-granite`):** Use `ibm-granite/granite-embedding-311m-multilingual-r2` (ModernBERT, dim 768, 32 768-token context, 52 enhanced languages including Turkish). Same code path as the Gemma engines; selected per `--type` flag in the CLI and exposed dynamically as MCP tools (`search_md_granite`, `search_sql_granite`, `search_sql_api_granite`). See [README_EMBEDDINGS.md](README_EMBEDDINGS.md).
 
 ### B. Deduplication & Delta-Updates
 Before running expensive GPU embeddings, `IngestionService` queries the database for all existing `content_hash` values. Any chunk that hasn't changed is skipped entirely, preventing index bloat and accelerating re-ingestion.
@@ -66,8 +66,8 @@ Before running expensive GPU embeddings, `IngestionService` queries the database
 ### C. Hybrid Search & Rust-Level Pushdown
 LanceDB simultaneously executes an Approximate Nearest Neighbor (ANN) vector search (enforced `metric="cosine"`) alongside a native **Tantivy** Full-Text Search (FTS). Metadata filters (like `--min-time` for SQL) are pushed down to the Rust layer *before* the vector scan.
 
-### D. Async API Concurrency
-The FastAPI server exposes both engines over HTTP. Because MLX inference is synchronous and locks the GPU, the API utilizes `asyncio.to_thread` and a strict `threading.Lock` within `MLXEmbedder` to serialize inference while keeping the web event loop responsive to concurrent requests (like health checks).
+### D. MCP Stdio Presentation
+`dbs-vector mcp` is the only server surface. It registers one FastMCP stdio tool per configured engine using the family registry (`document`, `sql`, and future families). Because MLX inference is synchronous and locks the GPU, `MLXEmbedder` keeps a strict `threading.Lock` around model execution so concurrent tool calls cannot overlap GPU inference unsafely.
 
 ---
 

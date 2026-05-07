@@ -83,7 +83,7 @@ When you run `uv run dbs-vector search "SELECT name FROM users" --type sql`:
 
 To efficiently handle multiple workflows that use the same underlying model (e.g., both `md` and `sql` use `embeddinggemma-300m-bf16`), `dbs-vector` employs a centralized model cache.
 
-1. **Shared Model Weights:** When the API server starts (`dbs-vector serve`), the system loads the heavy model weights into Apple Unified Memory exactly once.
+1. **Shared Model Weights:** When a runtime path initializes an engine (`dbs-vector search`, `dbs-vector ingest`, or `dbs-vector mcp`), the system loads the heavy model weights into Apple Unified Memory once per model contract and reuses the cached model for all engines that reference it.
 2. **Isolated Prefixes:** Even though the `md` and `sql` engines share the exact same model in memory, they instantiate separate `MLXEmbedder` objects. Each embedder instance holds its own `passage_prefix` and `query_prefix` configuration.
 3. **Transparent Execution:** Developers do not need to manually append strings. The `embed_batch(texts)` method automatically applies the `passage_prefix`, and the `embed_query(text)` method automatically applies the `query_prefix` before the text reaches the MLX tokenizer.
 

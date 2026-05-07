@@ -38,7 +38,7 @@ src/dbs_vector/
 │       └── mappers.py     # Domain-to-Arrow Adapters (Document & SQL)
 │
 └── services/              # Application Orchestration
-    ├── bootstrap.py       # DI factory (build_dependencies) used by CLI & API
+    ├── bootstrap.py       # DI factory (build_dependencies) used by CLI & MCP
     ├── ingestion.py       # Manages batching -> deduplication -> storage stream
     └── search.py          # Manages embedding queries -> generic store search
 ```

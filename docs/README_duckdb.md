@@ -205,7 +205,7 @@ Because the vector store clusters conceptually similar queries and includes exec
 Here are **5 prompt examples** you can give your AI assistant to kick off an optimization investigation:
 
 ### 1. Identify Missing Indexes
-> "Use the search_sql_logs tool to find the most frequent SELECT queries hitting the `MagentoOrders` table. Analyze the ratio of `rows_examined` vs `rows_sent` in the results. If a query examines thousands of rows but only returns a few, suggest the exact `CREATE INDEX` statement needed to optimize it."
+> "Use the search_sql tool to find the most frequent SELECT queries hitting the `MagentoOrders` table. Analyze the ratio of `rows_examined` vs `rows_sent` in the results. If a query examines thousands of rows but only returns a few, suggest the exact `CREATE INDEX` statement needed to optimize it."
 
 ### 2. N+1 Query Detection
 > "Search the SQL logs for simple `SELECT * FROM CustomerAddress WHERE id = ?` or similar exact-match lookups. Look at the `Calls` count. If you see an extremely high call count with a very low average execution time, this might be an N+1 query issue in the ORM. Explain how to refactor the application code to use a bulk `WHERE id IN (...)` fetch instead."

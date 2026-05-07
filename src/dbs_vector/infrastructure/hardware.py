@@ -9,7 +9,7 @@ def detect_memory_budget_gb() -> float | None:
         info = mx.metal.device_info()
         max_bytes = info.get("max_buffer_length")
         if isinstance(max_bytes, (int, float)) and max_bytes:
-            return max_bytes / (1024 ** 3)
+            return max_bytes / (1024**3)
     except Exception as e:  # noqa: BLE001 — any failure means "fall back to config"
         logger.debug("Metal device_info unavailable: {}", e)
     return None

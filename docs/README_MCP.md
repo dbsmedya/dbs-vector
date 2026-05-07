@@ -244,7 +244,7 @@ Internal tool call:
 
 ```json
 {
-  "name": "search_documents",
+  "name": "search_md",
   "arguments": {
     "query": "how to configure the MLX engine",
     "limit": 3
@@ -264,7 +264,7 @@ Internal tool call:
 
 ```json
 {
-  "name": "search_sql_logs",
+  "name": "search_sql",
   "arguments": {
     "query": "join users and subscriptions",
     "min_time": 200

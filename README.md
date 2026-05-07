@@ -1,6 +1,6 @@
 # ⚡️ dbs-vector
 
-**A High-Performance, Arrow-Native Local Codebase Search Engine for Apple Silicon.**
+**A High-Performance, Arrow-Native Local Codebase Search Engine and MCP Stdio Server for Apple Silicon.**
 
 `dbs-vector` is a optimized Retrieval-Augmented Generation (RAG) search engine designed specifically for macOS (M-Series chips). It bypasses traditional Python serialization bottlenecks by utilizing Apple's Unified Memory Architecture (UMA) and pure Apache Arrow data pipelines.
 
@@ -16,6 +16,7 @@ It enables lightning-fast, hybrid (Vector + Full-Text) search across your local 
 *   **Code-Aware Chunking**: Intelligently splits documentation and code, respecting markdown fences so that code blocks are indexed as atomic units.
 *   **Production Robustness**: Features dynamic `IVF_PQ` indexing, Rust-level predicate pushdown (metadata filtering), and dataset compaction for delta-updates.
 *   **Remote SQL API Ingestion**: `ApiChunker` pulls pre-aggregated slow-query records from any networked backend over HTTP, replacing local files with a paginated REST API — no changes to the embedding or storage layers.
+*   **Dynamic MCP Tools**: `dbs-vector mcp` exposes one stdio MCP tool per configured engine, so Gemma, Granite, SQL, and future engines become available from `config.yaml`.
 
 ## 🚀 Installation
 
@@ -94,29 +95,17 @@ For detailed specifications on each ingestion source, see:
 👉 **[DuckDB Ingestion Documentation](docs/README_duckdb.md)**
 👉 **[Remote SQL API Ingestion](docs/README_REMOTE_SQL_API.md)**
 
-### Async API Server
-The application includes a high-performance FastAPI server to expose the search engine over HTTP.
-
-```bash
-# Start the API server (loads all engines defined in config.yaml)
-uv run dbs-vector serve
-```
-
-For full API specifications and swagger documentation, see:
-👉 **[API Usage & Documentation](docs/README_API.md)**
-
 ### Model Context Protocol (MCP) Server
-`dbs-vector` includes a built-in MCP server compatible with Claude Desktop, Claude Code (CLI), and Cursor. Supports both **stdio** (no server required) and **Streamable HTTP** (shared instance, saves VRAM).
+`dbs-vector` includes a built-in FastMCP server compatible with stdio-based MCP clients such as Claude Desktop and Claude Code.
 
 ```bash
-# stdio — each client spawns its own process
+# stdio — each client spawns its own dbs-vector process
 uv run dbs-vector mcp
-
-# HTTP — one shared server for all clients
-uv run dbs-vector serve   # MCP endpoint: http://127.0.0.1:8000/mcp
 ```
 
-For setup instructions for all clients and transport types, see:
+Each configured engine registers a tool named `search_<engine_name>` with dashes replaced by underscores, for example `search_md`, `search_sql`, and `search_md_granite`. Use the `list_engines` tool to inspect loaded engines, model contracts, profiles, and table names.
+
+For setup instructions, see:
 👉 **[MCP Server Documentation](docs/README_MCP.md)**
 
 ## 🏗 Architecture & Roadmap
@@ -130,9 +119,9 @@ For setup instructions for all clients and transport types, see:
 | `md` | embeddinggemma-300m-bf16 | Markdown/prose, default |
 | `sql` | embeddinggemma-300m-bf16 | DuckDB slow-query log |
 | `sql-api` | embeddinggemma-300m-bf16 | Remote slow-query API |
-| `md-granite` | granite-embedding-311m-multilingual-r2 | 32K context, multilingual (CLI-only) |
-| `sql-granite` | granite-embedding-311m-multilingual-r2 | DuckDB log, Granite (CLI-only) |
-| `sql-api-granite` | granite-embedding-311m-multilingual-r2 | Remote API, Granite (CLI-only) |
+| `md-granite` | granite-embedding-311m-multilingual-r2 | 32K context, multilingual |
+| `sql-granite` | granite-embedding-311m-multilingual-r2 | DuckDB log, Granite |
+| `sql-api-granite` | granite-embedding-311m-multilingual-r2 | Remote API, Granite |
 
 See `docs/README_EMBEDDINGS.md` for model details.
 
@@ -142,7 +131,7 @@ The project is optimized for instruction-tuned models like `embeddinggemma`. It 
 *   **SQL (Clustering)**: Uses the `task: clustering` prefix for both ingestion and search, enabling high-precision semantic grouping of logically similar slow queries.
 
 ### Future Hardware Support (CUDA/TPU)
-Because the core RAG orchestration relies exclusively on the `IEmbedder` Protocol, the application is strictly hardware-agnostic at its core. While currently optimized for Apple Silicon via `MLXEmbedder`, future deployment to cloud GPUs or Linux environments simply requires implementing a new `CudaEmbedder` (using PyTorch/Transformers) that returns standard NumPy arrays. No changes to the ingestion, storage, or API layers are necessary to support new hardware accelerators. No access to a CUDA hardware at the moment.
+Because the core RAG orchestration relies exclusively on the `IEmbedder` Protocol, the application is strictly hardware-agnostic at its core. While currently optimized for Apple Silicon via `MLXEmbedder`, future deployment to cloud GPUs or Linux environments simply requires implementing a new `CudaEmbedder` (using PyTorch/Transformers) that returns standard NumPy arrays. No changes to the ingestion, storage, CLI, or MCP layers are necessary to support new hardware accelerators. No access to a CUDA hardware at the moment.
 
 For a deep dive into the engineering, the Apache Arrow ingestion lifecycle, and the blueprint for AST/LibCST integration, see the official documentation:
 
@@ -159,4 +148,3 @@ uv run poe check
 # Run tests with coverage
 uv run poe test-cov
 ```
-

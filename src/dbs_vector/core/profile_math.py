@@ -35,9 +35,7 @@ _MIN_SEQ_LEN = 512
 _CHUNK_TO_CONTEXT_FRACTION = 0.5
 
 
-def estimate_peak_buffer_bytes(
-    profile: _ProfileShape, contract: "ModelContract"
-) -> int:
+def estimate_peak_buffer_bytes(profile: _ProfileShape, contract: "ModelContract") -> int:
     """Approximate peak Metal memory pressure during a forward pass.
 
     Dominated by attention: O(batch × seq² × dtype_bytes), with a 3× safety
@@ -51,7 +49,7 @@ def estimate_peak_buffer_bytes(
     return int(
         _PEAK_BUFFER_OVERHEAD
         * profile.batch_size
-        * profile.max_token_length ** 2
+        * profile.max_token_length**2
         * contract.compute_dtype_bytes
     )
 
@@ -79,13 +77,13 @@ def recommend_profile(
         dict with keys: max_token_length, chunk_max_chars, batch_size,
         seq_len_reduced (bool — True if step 3 fired).
     """
-    budget = int(memory_budget_gb * 1024 ** 3 * _BUDGET_HEADROOM)
+    budget = int(memory_budget_gb * 1024**3 * _BUDGET_HEADROOM)
     seq = target_seq_len if target_seq_len is not None else contract.model_max_token_length
     seq = min(seq, contract.model_max_token_length)
     seq_len_reduced = False
 
     while seq >= _MIN_SEQ_LEN:
-        per_sample = int(_PEAK_BUFFER_OVERHEAD * seq ** 2 * contract.compute_dtype_bytes)
+        per_sample = int(_PEAK_BUFFER_OVERHEAD * seq**2 * contract.compute_dtype_bytes)
         max_batch = budget // per_sample if per_sample > 0 else 0
         if max_batch >= 1:
             chunk = (

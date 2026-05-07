@@ -70,11 +70,22 @@ Truncating 3/64 inputs above max_token_length=8192 for model 'ibm-granite/...' (
 
 Use this signal to tune `max_token_length` and `chunk_max_chars` in the relevant `profiles:` block in `config.yaml` — the alarm is the project's evidence-based way to decide when to spend more memory on longer context.
 
-## API / MCP Constraint (current)
+## MCP Exposure
 
-The FastAPI routes (`/search/md`, `/search/sql`) and the MCP tools (`search_documents`, `search_sql_logs`) are hardcoded to the Gemma engines. The Granite engines are **CLI-only** at the route level — `dbs-vector ingest|search --type md-granite|sql-granite|sql-api-granite` works, but they are not reachable over HTTP/MCP without route changes (a tracked Phase 2 follow-up).
+`dbs-vector` no longer ships a FastAPI HTTP surface. `dbs-vector mcp` is the only presentation server and uses stdio transport.
 
-**Caveat:** even though Granite routes don't exist, `dbs-vector serve` and `dbs-vector mcp` still call `initialize_services()` which iterates every configured engine. After this change, both binaries will load all six models on startup (~1 GB extra download for Granite, plus the per-process memory cost). Operators who don't want this in the current window can comment out the three Granite engine blocks in `config.yaml` until Phase 2 introduces selective loading.
+Every configured engine is exposed as an MCP tool named `search_<engine_name>`, with dashes replaced by underscores:
+
+| Engine | MCP tool |
+|---|---|
+| `md` | `search_md` |
+| `sql` | `search_sql` |
+| `sql-api` | `search_sql_api` |
+| `md-granite` | `search_md_granite` |
+| `sql-granite` | `search_sql_granite` |
+| `sql-api-granite` | `search_sql_api_granite` |
+
+`list_engines` returns the loaded engine metadata, including model key, model repo, profile, table name, and tool name. MCP startup eagerly initializes every configured engine, so multiple Granite/Gemma variants increase startup time and memory use by design.
 
 ## Adding a New Model
 

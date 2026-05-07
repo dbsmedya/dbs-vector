@@ -28,17 +28,17 @@ def test_estimate_calibration_point():
     """Calibration: batch=64, seq=16384, bf16 → raw 34.4 GB; with 3.0× factor ~103 GB."""
     profile = FakeProfile(max_token_length=16384, batch_size=64)
     bytes_estimated = estimate_peak_buffer_bytes(profile, GRANITE)
-    raw_attention = 64 * (16384 ** 2) * 2
+    raw_attention = 64 * (16384**2) * 2
     expected = int(_PEAK_BUFFER_OVERHEAD * raw_attention)
     assert bytes_estimated == expected
-    assert bytes_estimated > 100 * 1000 ** 3  # 100 GB decimal, matching the ~103 GB comment
-    assert bytes_estimated < 110 * 1024 ** 3
+    assert bytes_estimated > 100 * 1000**3  # 100 GB decimal, matching the ~103 GB comment
+    assert bytes_estimated < 110 * 1024**3
 
 
 def test_estimate_small_profile_fits_easily():
     profile = FakeProfile(max_token_length=2048, batch_size=64)
     bytes_estimated = estimate_peak_buffer_bytes(profile, GRANITE)
-    assert bytes_estimated < 2 * 1024 ** 3
+    assert bytes_estimated < 2 * 1024**3
 
 
 def test_recommend_preserves_target_seq_len():

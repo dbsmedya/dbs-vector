@@ -36,9 +36,7 @@ def test_run_search_passes_min_time_filter():
 
     fam.run_search(service, query="q", limit=2, source_filter=None, min_time=100.0)
 
-    service.execute_query.assert_called_once_with(
-        "q", None, 2, extra_filters={"min_time": 100.0}
-    )
+    service.execute_query.assert_called_once_with("q", None, 2, extra_filters={"min_time": 100.0})
 
 
 def test_run_search_omits_min_time_when_unset():
@@ -88,9 +86,7 @@ async def test_make_handler_runs_search_and_formats(monkeypatch):
     handler = fam.make_handler("sql-test")
     out = await handler(query="q", limit=1, min_time=200.0)
 
-    service.execute_query.assert_called_once_with(
-        "q", None, 1, extra_filters={"min_time": 200.0}
-    )
+    service.execute_query.assert_called_once_with("q", None, 1, extra_filters={"min_time": 200.0})
     assert "Source Database: prod_db" in out
 
 

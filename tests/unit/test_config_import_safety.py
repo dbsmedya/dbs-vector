@@ -20,7 +20,12 @@ def test_importing_config_does_not_open_files(tmp_path, monkeypatch):
         # Each call_args is roughly call(path, *args, **kwargs); coerce to str
         # then look for our two targets. Catches absolute and relative paths.
         rendered = str(call)
-        return "config.yaml" in rendered or rendered.endswith(".env'") or "/.env" in rendered or "\\.env" in rendered
+        return (
+            "config.yaml" in rendered
+            or rendered.endswith(".env'")
+            or "/.env" in rendered
+            or "\\.env" in rendered
+        )
 
     with patch("pathlib.Path.open") as mock_open, patch("builtins.open") as builtin_open:
         importlib.import_module("dbs_vector.config")
