@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 import yaml
@@ -26,6 +27,7 @@ class EngineConfig(BaseModel):
     description: str
     model: str  # key into ModelRegistry
     mapper_type: str
+    family: str | None = None  # optional override; defaults to mapper_type
     chunker_type: str
     table_name: str
     workflow: str
@@ -45,6 +47,16 @@ class EngineConfig(BaseModel):
     api_timeout_sec: int = 30
     api_min_execution_ms: float = 0.0
     api_database: str = ""
+
+    @property
+    def resolved_family(self) -> str:
+        """Family key for presentation-layer dispatch.
+
+        Defaults to mapper_type for backwards compatibility; overridable via
+        the `family:` config field when an engine's mapper differs from its
+        intended presentation surface.
+        """
+        return self.family or self.mapper_type
 
     def chunker_kwargs(
         self,
@@ -101,6 +113,8 @@ class Settings(BaseSettings):
 
     # REMOVED: batch_size (now per-profile)
 
+
+_ENGINE_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 _LEGACY_ENGINE_FIELDS = {
     "model_name",
@@ -191,6 +205,7 @@ def _validate_config(settings: Settings, config_file: str) -> None:
     Metal auto-detection — otherwise an MLX-unavailable environment would
     mask real config errors with "Could not auto-detect Metal memory budget."
     """
+    from dbs_vector.core.families import FamilyKeyRegistry
     from dbs_vector.core.model_registry import ModelRegistry
     from dbs_vector.core.profile_math import (
         estimate_peak_buffer_bytes,
@@ -205,6 +220,24 @@ def _validate_config(settings: Settings, config_file: str) -> None:
     budget_gb: float | None = None
 
     for engine_name, engine in settings.engines.items():
+        # Rule 6: legal engine name (presentation layer requires this for
+        # MCP tool naming and predictable URLs).
+        if not _ENGINE_NAME_PATTERN.match(engine_name):
+            raise ValueError(
+                f"Engine name '{engine_name}' must match "
+                f"{_ENGINE_NAME_PATTERN.pattern}. Allowed: lowercase letters, "
+                f"digits, dash, underscore (must start with letter or digit). "
+                f"Edit {config_file}."
+            )
+
+        # Rule 7: family resolves to a known FamilyKeyRegistry entry.
+        if not FamilyKeyRegistry.is_valid(engine.resolved_family):
+            raise ValueError(
+                f"Engine '{engine_name}' references unknown family "
+                f"'{engine.resolved_family}'. Known families: "
+                f"{FamilyKeyRegistry.keys()}. Edit {config_file}."
+            )
+
         # Rule 1: model contract exists
         try:
             contract = ModelRegistry.get(engine.model)

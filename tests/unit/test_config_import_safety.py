@@ -63,3 +63,35 @@ def test_load_settings_default_does_not_validate(tmp_path):
     yaml_path.write_text("")
     s = load_settings(str(yaml_path))
     assert s.engines == {}
+
+
+def test_importing_config_does_not_load_mcp_modules():
+    """A fresh interpreter importing only `dbs_vector.config` must not
+    transitively load any `dbs_vector.mcp.*` modules. config.py validation
+    imports `dbs_vector.core.families` (lightweight, no presentation
+    coupling); it must NEVER reach into the mcp/ tree.
+
+    Implemented via subprocess so the test is independent of pytest
+    collection order — other tests in the suite eagerly import mcp/
+    modules, which would contaminate an in-process sys.modules check.
+    """
+    import subprocess
+    import sys
+
+    code = (
+        "import dbs_vector.config; "
+        "import sys; "
+        "leaked = sorted(m for m in sys.modules if m.startswith('dbs_vector.mcp')); "
+        "assert leaked == [], f'config.py leaked: {leaked}'; "
+        "print('OK')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"subprocess failed:\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
+    )
+    assert "OK" in result.stdout

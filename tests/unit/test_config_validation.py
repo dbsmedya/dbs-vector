@@ -192,3 +192,93 @@ def test_valid_config_passes_validation(tmp_path):
     )
     s = load_settings(yaml_path, validate=True)
     assert "md-granite" in s.engines
+
+
+def test_resolved_family_falls_back_to_mapper_type():
+    """When EngineConfig.family is None, resolved_family equals mapper_type."""
+    from dbs_vector.config import EngineConfig
+
+    engine = EngineConfig(
+        description="t",
+        model="gemma-bf16",
+        mapper_type="document",
+        chunker_type="document",
+        table_name="t",
+        workflow="t",
+        tuning_profile="p",
+    )
+    assert engine.family is None
+    assert engine.resolved_family == "document"
+
+
+def test_resolved_family_uses_explicit_family_when_set():
+    """When EngineConfig.family is set, resolved_family uses it."""
+    from dbs_vector.config import EngineConfig
+
+    engine = EngineConfig(
+        description="t",
+        model="gemma-bf16",
+        mapper_type="custom-mapper",
+        chunker_type="document",
+        table_name="t",
+        workflow="t",
+        tuning_profile="p",
+        family="document",
+    )
+    assert engine.resolved_family == "document"
+
+
+def test_validate_rejects_illegal_engine_name():
+    """Engine names must match ^[a-z0-9][a-z0-9_-]*$ (Rule 6)."""
+    import tempfile
+    from pathlib import Path
+
+    from dbs_vector.config import load_settings
+
+    config_yaml = """
+profiles:
+  p: {max_token_length: 2048, chunk_max_chars: 1000, batch_size: 64}
+
+engines:
+  Bad-Name:
+    description: "x"
+    model: "gemma-bf16"
+    mapper_type: "document"
+    chunker_type: "document"
+    table_name: "t"
+    workflow: "w"
+    tuning_profile: "p"
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "config.yaml"
+        path.write_text(config_yaml)
+        with pytest.raises(ValueError, match="Engine name 'Bad-Name'"):
+            load_settings(str(path), validate=True)
+
+
+def test_validate_rejects_unknown_family():
+    """An engine whose resolved_family is not in FamilyKeyRegistry raises (Rule 7)."""
+    import tempfile
+    from pathlib import Path
+
+    from dbs_vector.config import load_settings
+
+    config_yaml = """
+profiles:
+  p: {max_token_length: 2048, chunk_max_chars: 1000, batch_size: 64}
+
+engines:
+  oddball:
+    description: "x"
+    model: "gemma-bf16"
+    mapper_type: "nope-not-a-family"
+    chunker_type: "document"
+    table_name: "t"
+    workflow: "w"
+    tuning_profile: "p"
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "config.yaml"
+        path.write_text(config_yaml)
+        with pytest.raises(ValueError, match="unknown family"):
+            load_settings(str(path), validate=True)
