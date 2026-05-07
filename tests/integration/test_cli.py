@@ -382,67 +382,6 @@ class TestSearchCommand:
         mock_search_service.return_value.print_results.assert_called_once()
 
 
-class TestServeCommand:
-    """Tests for the serve command."""
-
-    def test_serve_default_options(self, mock_settings):
-        """Test serve with default options."""
-        from dbs_vector.cli import app
-
-        with patch("uvicorn.run") as mock_uvicorn:
-            result = runner.invoke(app, ["serve"])
-
-            assert result.exit_code == 0
-            mock_uvicorn.assert_called_once_with(
-                "dbs_vector.api.main:app",
-                host="127.0.0.1",
-                port=8000,
-                reload=False,
-            )
-
-    def test_serve_custom_host_port(self, mock_settings):
-        """Test serve with custom host and port."""
-        from dbs_vector.cli import app
-
-        with patch("uvicorn.run") as mock_uvicorn:
-            runner.invoke(app, ["serve", "--host", "0.0.0.0", "--port", "9000"])
-
-            mock_uvicorn.assert_called_once_with(
-                "dbs_vector.api.main:app",
-                host="0.0.0.0",
-                port=9000,
-                reload=False,
-            )
-
-    def test_serve_with_reload(self, mock_settings):
-        """Test serve with reload option."""
-        from dbs_vector.cli import app
-
-        with patch("uvicorn.run") as mock_uvicorn:
-            runner.invoke(app, ["serve", "--reload"])
-
-            mock_uvicorn.assert_called_once_with(
-                "dbs_vector.api.main:app",
-                host="127.0.0.1",
-                port=8000,
-                reload=True,
-            )
-
-    def test_serve_short_options(self, mock_settings):
-        """Test short options for serve command."""
-        from dbs_vector.cli import app
-
-        with patch("uvicorn.run") as mock_uvicorn:
-            runner.invoke(app, ["serve", "-h", "0.0.0.0", "-p", "8080"])
-
-            mock_uvicorn.assert_called_once_with(
-                "dbs_vector.api.main:app",
-                host="0.0.0.0",
-                port=8080,
-                reload=False,
-            )
-
-
 class TestBuildDependencies:
     """Tests for the _build_dependencies function."""
 
@@ -562,14 +501,3 @@ class TestHelpOutput:
         assert "search" in result.output.lower()
         assert "--source" in result.output
         assert "--limit" in result.output
-
-    def test_serve_help(self):
-        """Test serve command help."""
-        from dbs_vector.cli import app
-
-        result = runner.invoke(app, ["serve", "--help"])
-
-        assert result.exit_code == 0
-        assert "serve" in result.output.lower()
-        assert "--host" in result.output
-        assert "--port" in result.output

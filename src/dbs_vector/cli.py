@@ -58,7 +58,8 @@ def main(
 
     from dbs_vector.config import _populate_singleton_from, load_settings, settings
 
-    # Export to environment so uvicorn subprocesses (in API mode) inherit it
+    # Export to environment so any spawned subprocesses (e.g., MCP stdio
+    # transport invoked via uv run) inherit the same config.
     os.environ["DBS_CONFIG_FILE"] = config_file
 
     # Load AND validate the config; copy fields onto the singleton.
@@ -170,25 +171,6 @@ def search(
         query, source_filter=filter_source, limit=limit, extra_filters=extra_filters
     )
     service.print_results(results)
-
-
-@app.command()
-def serve(
-    host: Annotated[
-        str, typer.Option("--host", "-h", help="Host to bind the API server to.")
-    ] = "127.0.0.1",
-    port: Annotated[
-        int, typer.Option("--port", "-p", help="Port to bind the API server to.")
-    ] = 8000,
-    reload: Annotated[
-        bool, typer.Option("--reload", help="Enable auto-reload for development.")
-    ] = False,
-) -> None:
-    """Starts the asynchronous FastAPI search server."""
-    import uvicorn
-
-    logger.info("Starting dbs-vector API server at http://{}:{}", host, port)
-    uvicorn.run("dbs_vector.api.main:app", host=host, port=port, reload=reload)
 
 
 @app.command()

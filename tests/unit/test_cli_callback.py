@@ -108,3 +108,143 @@ def test_populate_singleton_does_not_set_legacy_batch_size():
     assert "batch_size" not in Settings.model_fields
     # And the singleton instance does not have one either.
     assert not hasattr(settings, "batch_size")
+
+
+def test_mcp_uses_global_config_when_no_subcommand_override(tmp_path, monkeypatch):
+    """`dbs-vector mcp` (no -c at any level) uses the cwd's config.yaml.
+
+    The CLI callback's `--config-file` default is the literal string
+    "config.yaml", which resolves relative to the current working
+    directory. We monkeypatch chdir to make tmp_path the cwd so the
+    callback's default points at our test config.
+    """
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        'system:\n  db_path: "./global_db"\n'
+        "profiles:\n  p: {max_token_length: 2048, chunk_max_chars: 0, batch_size: 1}\n"
+        "engines: {}\n"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    from typer.testing import CliRunner
+
+    from dbs_vector.cli import app
+
+    runner = CliRunner()
+    with monkeypatch.context() as ctx:
+        from dbs_vector.mcp import server as server_mod
+
+        called = {"yes": False}
+
+        def fake_start():
+            called["yes"] = True
+
+        ctx.setattr(server_mod, "start_stdio_server", fake_start)
+        result = runner.invoke(app, ["mcp"])
+    assert result.exit_code == 0
+    assert called["yes"] is True
+
+    from dbs_vector.config import settings
+
+    assert settings.db_path == "./global_db"
+
+
+def test_mcp_uses_global_callback_config(tmp_path, monkeypatch):
+    """`dbs-vector -c X mcp` uses global config X."""
+    config_path = tmp_path / "global.yaml"
+    config_path.write_text(
+        'system:\n  db_path: "./X_db"\n'
+        "profiles:\n  p: {max_token_length: 2048, chunk_max_chars: 0, batch_size: 1}\n"
+        "engines: {}\n"
+    )
+
+    from typer.testing import CliRunner
+
+    from dbs_vector.cli import app
+
+    runner = CliRunner()
+    with monkeypatch.context() as ctx:
+        from dbs_vector.mcp import server as server_mod
+
+        ctx.setattr(server_mod, "start_stdio_server", lambda: None)
+        result = runner.invoke(app, ["-c", str(config_path), "mcp"])
+    assert result.exit_code == 0
+
+    from dbs_vector.config import settings
+
+    assert settings.db_path == "./X_db"
+
+
+def test_mcp_subcommand_config_overrides_global(tmp_path, monkeypatch):
+    """`dbs-vector mcp -c Y` reloads from Y AFTER the global callback ran."""
+    global_path = tmp_path / "global.yaml"
+    global_path.write_text(
+        'system:\n  db_path: "./GLOBAL_db"\n'
+        "profiles:\n  p: {max_token_length: 2048, chunk_max_chars: 0, batch_size: 1}\n"
+        "engines: {}\n"
+    )
+    sub_path = tmp_path / "sub.yaml"
+    sub_path.write_text(
+        'system:\n  db_path: "./SUB_db"\n'
+        "profiles:\n  p: {max_token_length: 2048, chunk_max_chars: 0, batch_size: 1}\n"
+        "engines: {}\n"
+    )
+
+    from typer.testing import CliRunner
+
+    from dbs_vector.cli import app
+
+    runner = CliRunner()
+    with monkeypatch.context() as ctx:
+        from dbs_vector.mcp import server as server_mod
+
+        ctx.setattr(server_mod, "start_stdio_server", lambda: None)
+        result = runner.invoke(app, ["-c", str(global_path), "mcp", "-c", str(sub_path)])
+    assert result.exit_code == 0
+
+    from dbs_vector.config import settings
+
+    assert settings.db_path == "./SUB_db"
+
+
+def test_mcp_subcommand_config_sets_env_var(tmp_path, monkeypatch):
+    """`dbs-vector mcp -c Y` re-exports DBS_CONFIG_FILE so spawned subprocesses
+    inherit Y, not the global value."""
+    import os
+
+    global_path = tmp_path / "global.yaml"
+    global_path.write_text(
+        'system:\n  db_path: "./G"\n'
+        "profiles:\n  p: {max_token_length: 2048, chunk_max_chars: 0, batch_size: 1}\n"
+        "engines: {}\n"
+    )
+    sub_path = tmp_path / "sub.yaml"
+    sub_path.write_text(
+        'system:\n  db_path: "./S"\n'
+        "profiles:\n  p: {max_token_length: 2048, chunk_max_chars: 0, batch_size: 1}\n"
+        "engines: {}\n"
+    )
+
+    from typer.testing import CliRunner
+
+    from dbs_vector.cli import app
+
+    runner = CliRunner()
+    with monkeypatch.context() as ctx:
+        from dbs_vector.mcp import server as server_mod
+
+        ctx.setattr(server_mod, "start_stdio_server", lambda: None)
+        runner.invoke(app, ["-c", str(global_path), "mcp", "-c", str(sub_path)])
+
+    assert os.environ.get("DBS_CONFIG_FILE") == str(sub_path)
+
+
+def test_serve_subcommand_no_longer_exists():
+    """The serve CLI command was deleted in the MCP-only revision."""
+    from typer.testing import CliRunner
+
+    from dbs_vector.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["serve", "--help"])
+    assert result.exit_code != 0
