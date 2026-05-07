@@ -206,8 +206,8 @@ def mcp(
     import os
 
     from dbs_vector.api.mcp_server import mcp as mcp_server
-    from dbs_vector.api.state import initialize_services
     from dbs_vector.config import _populate_singleton_from, load_settings
+    from dbs_vector.mcp.state import initialize_services
 
     # If the subcommand was given a config file (e.g., `dbs-vector mcp -c X`),
     # re-load and re-populate the singleton; otherwise rely on what the global

@@ -4,8 +4,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from dbs_vector.api.mcp_server import search_documents, search_sql_logs
-from dbs_vector.api.state import _services
 from dbs_vector.core.models import Chunk, SearchResult, SqlChunk, SqlSearchResult
+from dbs_vector.mcp.state import _services
 
 
 @pytest.fixture

@@ -2,7 +2,7 @@ import asyncio
 
 from mcp.server.fastmcp import FastMCP
 
-from dbs_vector.api.state import _services
+from dbs_vector.mcp.state import _services
 
 mcp = FastMCP(
     "dbs-vector",

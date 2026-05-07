@@ -9,10 +9,10 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from dbs_vector.api.mcp_server import mcp
-from dbs_vector.api.state import _services, initialize_services
 from dbs_vector.config import _populate_singleton_from, load_settings, settings
 from dbs_vector.core.model_registry import ModelRegistry
 from dbs_vector.core.models import SearchResult, SqlSearchResult
+from dbs_vector.mcp.state import _services, initialize_services
 
 
 @asynccontextmanager
