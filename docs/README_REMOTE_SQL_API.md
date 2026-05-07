@@ -62,19 +62,20 @@ Add an engine block to `config.yaml` with `chunker_type: "api"`.  All
 required additions are `api_base_url` and `api_key`.
 
 ```yaml
+profiles:
+  gemma-sql-atomic: {max_token_length: 2048, chunk_max_chars: 0, batch_size: 64}
+
 engines:
   sql-api:
     description: "Remote slow query log via HTTP API"
-    model_name: "mlx-community/embeddinggemma-300m-bf16"
-    vector_dimension: 768
-    max_token_length: 2048
+    model: "gemma-bf16"
     table_name: "query_vault"
     mapper_type: "sql"
     chunker_type: "api"
-    chunk_max_chars: 0
     passage_prefix: "task: clustering | query: "
     query_prefix: "task: clustering | query: "
     workflow: "sql_clustering"
+    tuning_profile: "gemma-sql-atomic"
 
     # --- ApiChunker-specific fields ---
     api_base_url: "https://slow-log-api.internal/api/v1"

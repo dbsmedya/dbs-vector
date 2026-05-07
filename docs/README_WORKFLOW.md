@@ -24,10 +24,11 @@ This workflow is used for general prose, code documentation, and markdown files.
 ```yaml
 engines:
   md:
-    model_name: "mlx-community/embeddinggemma-300m-bf16"
+    model: "gemma-bf16"
     passage_prefix: "title: none | text: "
     query_prefix: "task: search result | query: "
     workflow: "md_search"
+    tuning_profile: "gemma-md"
 ```
 
 ### How it works during Ingestion
@@ -55,10 +56,11 @@ This workflow is used for structured data like SQL Slow Query Logs. The goal is 
 ```yaml
 engines:
   sql:
-    model_name: "mlx-community/embeddinggemma-300m-bf16"
+    model: "gemma-bf16"
     passage_prefix: "task: clustering | query: "
     query_prefix: "task: clustering | query: "
     workflow: "sql_clustering"
+    tuning_profile: "gemma-sql-atomic"
 ```
 
 ### How it works during Ingestion

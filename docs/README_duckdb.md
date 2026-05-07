@@ -69,16 +69,17 @@ LIMIT 500
 You can override the default query by editing your `config.yaml` to specify a custom `duckdb_query` for the engine:
 
 ```yaml
+profiles:
+  gemma-sql-atomic: {max_token_length: 2048, chunk_max_chars: 0, batch_size: 64}
+
 engines:
   sql:
     description: "SQL Slow Query Log Engine"
-    model_name: "mlx-community/embeddinggemma-300m-bf16"
-    vector_dimension: 768
-    max_token_length: 2048
+    model: "gemma-bf16"
     table_name: "query_vault"
     mapper_type: "sql"
     chunker_type: "duckdb"  # Important: Must be set to duckdb
-    chunk_max_chars: 0
+    tuning_profile: "gemma-sql-atomic"
     # Custom Query Override:
     duckdb_query: >
       SELECT 

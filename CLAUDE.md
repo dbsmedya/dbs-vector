@@ -72,16 +72,46 @@ This is a Clean Architecture, configuration-driven RAG search engine for Apple S
 
 The FastAPI routes (`/search/md`, `/search/sql`) and MCP tools (`search_documents`, `search_sql_logs`) are currently hardcoded to the Gemma engines. The Granite engines (`md-granite`, `sql-granite`, `sql-api-granite`) are CLI-only this PR; generalizing the routes is a tracked Phase 2 follow-up. Note that `initialize_services()` still loads every configured engine on startup, so adding Granite engines to `config.yaml` increases `serve`/`mcp` startup time and memory.
 
-**`config.py`** — `Settings` (pydantic-settings) + `EngineConfig` per engine. Loaded from `config.yaml` at startup. Env prefix: `DBS_`. The path can be overridden with `--config-file` or `DBS_CONFIG_FILE` env var. The `attention_mask_dtype` field (`str | None`, default `None`) controls whether `MLXEmbedder` casts the tokenizer's attention mask to a specific dtype — required for `embeddinggemma-bf16` (`"float16"`), unset for ModernBERT-based encoders like Granite.
+**`config.py`** — `Settings` (pydantic-settings) + `EngineConfig` per engine. Loaded from `config.yaml` at startup. Env prefix: `DBS_`. The path can be overridden with `--config-file` or `DBS_CONFIG_FILE` env var. dtype casting behaviour (formerly `attention_mask_dtype` on `EngineConfig`) is now a per-model contract stored in `ModelRegistry` (`core/model_registry.py`) as part of `ModelContract`.
 
 ### Configuration-Driven Registry Pattern
 
 Adding a new engine type requires:
 1. Implement `IChunker` and `IStoreMapper` concrete classes.
 2. Register them in `ComponentRegistry._chunkers` / `ComponentRegistry._mappers`.
-3. Add the engine block to `config.yaml` with appropriate `mapper_type`, `chunker_type`, `model_name`, etc.
+3. Add the engine block to `config.yaml` with `mapper_type`, `chunker_type`, `model:` (a `ModelRegistry` key), and `tuning_profile:` (a `profiles:` block key). The fields `model_name`, `vector_dimension`, `max_token_length`, and `attention_mask_dtype` are no longer per-engine fields — they live in `ModelRegistry`.
 
 No changes to services, CLI, or API are needed.
+
+### Tuning Profiles & Model Registry
+
+Three layers for engine config:
+
+1. **`ModelRegistry` (code, hardcoded)** — `core/model_registry.py` carries
+   `vector_dimension`, `model_max_token_length`, `attention_mask_dtype`,
+   `compute_dtype_bytes` per model. Adding a model is a `register()` call.
+   Built-ins: `gemma-bf16`, `granite-r2`.
+
+2. **`profiles:` block in `config.yaml`** — three numeric knobs per profile:
+   `max_token_length`, `chunk_max_chars`, `batch_size`. Validated against
+   the engine's model + Metal memory budget at load time.
+
+3. **`engines:` block in `config.yaml`** — references `model:` (registry key)
+   and `tuning_profile:` (profile name). Holds pipeline shape (mapper,
+   chunker, table, workflow) and prefixes (which vary per engine for the
+   same underlying model).
+
+Memory budget auto-detected from `mlx.core.metal.device_info()`; override
+via `system.memory_budget_gb`.
+
+Module-level `settings = Settings(_env_file=None)` performs zero file I/O at
+import (no YAML, no `.env`); CLI callback / API lifespan call
+`load_settings(config_file, validate=True)` explicitly and copy fields onto
+the singleton via `_populate_singleton_from()`. This makes
+`dbs-vector --help` / `--version` survive a malformed or absent `config.yaml`.
+
+Adding a new engine: see spec
+`docs/superpowers/specs/2026-05-06-tuning-profiles-design.md`.
 
 ### Key Design Details
 

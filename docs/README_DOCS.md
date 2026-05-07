@@ -16,7 +16,7 @@ When the parser encounters a markdown code fence (e.g., ````python ... ````), it
 *   **Benefit:** A 150-line function will never be split across two separate database chunks. The LLM will always receive the complete, unbroken logic.
 
 ### 2. Prose Accumulation
-For standard prose (paragraphs, lists, blockquotes), the chunker accumulates text until it approaches the `chunk_max_chars` limit defined in your `config.yaml` (default: 1000 characters).
+For standard prose (paragraphs, lists, blockquotes), the chunker accumulates text until it approaches the `chunk_max_chars` limit defined in the engine's tuning profile in `config.yaml` (default: 1000 characters for the `gemma-md` profile).
 *   **Benefit:** Keeps context dense and reduces the number of small, fragmented vectors in the database.
 
 ### 3. Plain Text Fallback
@@ -43,7 +43,7 @@ This teaches the model to project short questions and long, factual answers into
 Embedding models (like `all-MiniLM-L6-v2`) require significant GPU memory to process text into vectors. To handle massive codebases (e.g., thousands of files) without crashing, `dbs-vector` employs a **Streaming Batch Architecture**.
 
 1.  **Lazy Generation:** The `DocumentChunker` uses Python generators (`yield`) to extract chunks one by one, meaning the entire codebase is never loaded into RAM simultaneously.
-2.  **Configurable Batching:** The `IngestionService` groups these chunks into strict batches (controlled by `batch_size` in `config.yaml`, default: 64). 
+2.  **Configurable Batching:** The `IngestionService` groups these chunks into strict batches (controlled by `batch_size` in the engine's tuning profile in `config.yaml`, default: 64). 
 3.  **GPU Offloading:** Only one batch is sent to the Apple MLX GPU at a time. 
 4.  **Zero-Copy Storage:** The resulting tensors are instantly mapped to PyArrow `RecordBatch` arrays and flushed to disk via LanceDB.
 
