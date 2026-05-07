@@ -24,6 +24,7 @@ class _StubFamily:
     def make_handler(self, engine_name: str) -> Any:
         async def handler() -> str:
             return ""
+
         return handler
 
 
@@ -31,7 +32,11 @@ class _StubFamily:
 def _restore_registries():
     key_snapshot = set(FamilyKeyRegistry.keys())
     fam_snapshot = dict(FamilyRegistry._families)
+    # Reset before the test to start clean
+    FamilyRegistry._reset_for_testing()
+    FamilyKeyRegistry._reset_for_testing()
     yield
+    # Restore after the test
     FamilyRegistry._reset_for_testing()
     FamilyKeyRegistry._reset_for_testing()
     for k in key_snapshot:
@@ -81,3 +86,26 @@ def test_reset_for_testing_clears_families():
     FamilyRegistry.register(_StubFamily("document"))
     FamilyRegistry._reset_for_testing()
     assert FamilyRegistry.keys() == []
+
+
+def test_builtin_registrations_present():
+    """Importing dbs_vector.mcp.families registers DocumentFamily and SqlFamily."""
+    # Reset both registries to a clean state
+    FamilyRegistry._reset_for_testing()
+    FamilyKeyRegistry._reset_for_testing()
+    # Re-register core keys (the dbs_vector.core.families module-level
+    # registrations only run once at import time)
+    FamilyKeyRegistry.register("document")
+    FamilyKeyRegistry.register("sql")
+
+    # Re-import the package's __init__ to re-trigger registrations
+    import importlib
+
+    import dbs_vector.mcp.families
+
+    importlib.reload(dbs_vector.mcp.families)
+
+    assert "document" in FamilyRegistry.keys()
+    assert "sql" in FamilyRegistry.keys()
+    assert FamilyRegistry.get("document").name == "document"
+    assert FamilyRegistry.get("sql").name == "sql"
