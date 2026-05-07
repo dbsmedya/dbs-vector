@@ -6,13 +6,9 @@ os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"  # Disable hf-transfer to use standard downloads
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
 import typer
-
-if TYPE_CHECKING:
-    from dbs_vector.config import Settings
-
 from loguru import logger
 
 from dbs_vector.config import settings
@@ -34,24 +30,6 @@ def version_callback(value: bool) -> None:
 
         typer.echo(f"dbs-vector version: {__version__}")
         raise typer.Exit()
-
-
-def _populate_singleton_from(new_settings: "Settings") -> None:
-    """Copy fields from a freshly-loaded Settings onto the module-level singleton.
-
-    Extracted as a top-level function so it can be unit-tested without driving
-    the entire Typer callback. The field list is the source of truth for what
-    runtime callers (CLI, API lifespan) propagate from disk to the singleton.
-    """
-    from dbs_vector.config import settings
-
-    settings.db_path = new_settings.db_path
-    settings.nprobes = new_settings.nprobes
-    settings.engines = new_settings.engines
-    settings.profiles = new_settings.profiles
-    settings.memory_budget_gb = new_settings.memory_budget_gb
-    settings.log_level = new_settings.log_level
-    settings.log_serialize = new_settings.log_serialize
 
 
 @app.callback()
@@ -78,7 +56,7 @@ def main(
 
     import os
 
-    from dbs_vector.config import load_settings, settings
+    from dbs_vector.config import _populate_singleton_from, load_settings, settings
 
     # Export to environment so uvicorn subprocesses (in API mode) inherit it
     os.environ["DBS_CONFIG_FILE"] = config_file
@@ -216,17 +194,29 @@ def serve(
 @app.command()
 def mcp(
     config_file: Annotated[
-        str, typer.Option("--config-file", "-c", help="Path to config.yaml file.")
-    ] = "config.yaml",
+        str | None,
+        typer.Option(
+            "--config-file",
+            "-c",
+            help="Override the global --config-file for this subcommand.",
+        ),
+    ] = None,
 ) -> None:
     """Starts the FastMCP standard input/output (stdio) server for integrations."""
     import os
 
     from dbs_vector.api.mcp_server import mcp as mcp_server
     from dbs_vector.api.state import initialize_services
+    from dbs_vector.config import _populate_singleton_from, load_settings
 
-    # Export to environment so the MCP subprocess inherits it
-    os.environ["DBS_CONFIG_FILE"] = config_file
+    # If the subcommand was given a config file (e.g., `dbs-vector mcp -c X`),
+    # re-load and re-populate the singleton; otherwise rely on what the global
+    # callback already loaded. Also re-export DBS_CONFIG_FILE so spawned
+    # subprocesses see the same path.
+    if config_file is not None:
+        os.environ["DBS_CONFIG_FILE"] = config_file
+        new_settings = load_settings(config_file, validate=True)
+        _populate_singleton_from(new_settings)
 
     logger.info("Initializing MLX Embedders and LanceDB connections")
     try:
