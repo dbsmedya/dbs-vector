@@ -61,7 +61,10 @@ uv run dbs-vector ingest "slow_queries.json" --type sql
 # Ingest SQL slow queries from DuckDB (High-Performance Columnar)
 uv run dbs-vector ingest "slow_queries.duckdb" --type sql --rebuild
 
-# Ingest from a remote HTTP API (paginated GET)
+# Ingest from a remote HTTP API (paginated GET) — uses api_base_url from config.yaml
+uv run dbs-vector ingest --type sql-api
+
+# Or override the URL on the fly (without editing config.yaml):
 uv run dbs-vector ingest "https://slow-log-api.internal/api/v1" --type sql-api
 
 # Ingest via a custom SELECT sent to the remote API
@@ -108,6 +111,20 @@ Each configured engine registers a tool named `search_<engine_name>` with dashes
 For setup instructions, see:
 👉 **[MCP Server Documentation](docs/README_MCP.md)**
 
+### Bundled Claude Skill: `slow-query-investigator`
+
+`dbs-vector` ships a Claude Skill at `skills/slow-query-investigator/SKILL.md`
+that teaches Claude how to route slow-query investigation questions ("show
+me all queries that lock `<table>` rows", "what are the slowest queries on
+`<table>`?", "where is our lock contention coming from?") to the right
+combination of `table_filter` / `min_lock_time` / `min_time` parameters
+on the SQL family MCP tools.
+
+Once the skill is installed in your Claude Code workspace, natural-language
+investigation requests get the right MCP tool call automatically. A future
+extension will add minimum-sufficient index recommendations based on the
+top-80% query traffic against a named table.
+
 ## 🏗 Architecture & Roadmap
 
 `dbs-vector` is built upon strict **Clean Architecture** and **SOLID** principles. It utilizes a **Configuration-Driven Registry Pattern**, allowing new data engines (e.g., LibCST, Logs) to be added by simply updating `config.yaml` and registering new mappers/chunkers without modifying core orchestration logic.
@@ -124,6 +141,10 @@ For setup instructions, see:
 | `sql-api-granite` | granite-embedding-311m-multilingual-r2 | Remote API, Granite |
 
 See `docs/README_EMBEDDINGS.md` for model details.
+
+### Gemma vs Granite — which to use
+
+Gemma engines (`md`, `sql`, `sql-api`) are the recommended default for most workloads: instruction-tuned with asymmetric search/clustering prefixes, fast on Apple Silicon, and consistently the strongest on English documentation. Reach for Granite engines (`md-granite`, `sql-granite`, `sql-api-granite`) when your corpus contains substantial non-English content (Granite R2 supports 200+ languages, Gemma 100+), when individual documents exceed Gemma's 2K-token context (Granite handles up to 32K), or when you want to A/B test chunk-size profiles against the Gemma baseline. Granite is a symmetric bi-encoder trained without instruction prefixes — leave `passage_prefix` and `query_prefix` empty when wiring a Granite engine. See [`docs/README_granite.md`](docs/README_granite.md) for tuning recipes and the rationale.
 
 ### Specialized Gemma Workflows
 The project is optimized for instruction-tuned models like `embeddinggemma`. It supports asymmetric task-based workflows defined in `config.yaml`:
