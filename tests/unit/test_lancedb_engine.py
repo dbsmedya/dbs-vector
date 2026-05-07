@@ -584,6 +584,87 @@ class TestSearch:
         results = store.search(query="test", query_vector=query_vector)
         assert results == [("chunk_0", None, 0.9), ("chunk_1", None, None)]
 
+    def test_search_min_lock_time_filter_emits_where_clause(self, lancedb_store):
+        """min_lock_time kwarg must add a `lock_time_sec >= X` prefilter."""
+        import polars as pl
+
+        store, _, mock_table, _ = lancedb_store
+        query_vector = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        mock_search = MagicMock()
+        mock_search.vector.return_value = mock_search
+        mock_search.text.return_value = mock_search
+        mock_search.nprobes.return_value = mock_search
+        mock_search.limit.return_value = mock_search
+        mock_search.where.return_value = mock_search
+        mock_search.to_polars.return_value = pl.DataFrame(
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+        )
+        mock_table.search.return_value = mock_search
+
+        store.search(query="q", query_vector=query_vector, min_lock_time=10.0)
+
+        where_calls = [c.args[0] for c in mock_search.where.call_args_list]
+        assert any("lock_time_sec >= 10.0" in w for w in where_calls), (
+            f"min_lock_time filter not emitted; got where calls: {where_calls}"
+        )
+
+    def test_search_table_filter_emits_array_has_and_bypasses_index(self, lancedb_store):
+        """table_filter wraps the value with double-quote chars (SQLGlot
+        qualified-name artifact) and bypasses the IVF index — selective
+        array predicates can otherwise land in unscanned partitions and
+        silently return zero results."""
+        import polars as pl
+
+        store, _, mock_table, _ = lancedb_store
+        query_vector = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        mock_search = MagicMock()
+        mock_search.vector.return_value = mock_search
+        mock_search.text.return_value = mock_search
+        mock_search.nprobes.return_value = mock_search
+        mock_search.bypass_vector_index.return_value = mock_search
+        mock_search.limit.return_value = mock_search
+        mock_search.where.return_value = mock_search
+        mock_search.to_polars.return_value = pl.DataFrame(
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+        )
+        mock_table.search.return_value = mock_search
+
+        store.search(query="q", query_vector=query_vector, table_filter="tx_process")
+
+        where_calls = [c.args[0] for c in mock_search.where.call_args_list]
+        assert any("array_has(tables, '\"tx_process\"')" in w for w in where_calls), (
+            f"table_filter not emitted with quoted value; got where calls: {where_calls}"
+        )
+        # When table_filter is set, the IVF index must be bypassed.
+        mock_search.bypass_vector_index.assert_called()
+        mock_search.nprobes.assert_not_called()
+
+    def test_search_no_table_filter_uses_nprobes(self, lancedb_store):
+        """Without table_filter, the default IVF approximate path with
+        nprobes() is used (faster, well-suited for non-selective queries)."""
+        import polars as pl
+
+        store, _, mock_table, _ = lancedb_store
+        query_vector = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        mock_search = MagicMock()
+        mock_search.vector.return_value = mock_search
+        mock_search.text.return_value = mock_search
+        mock_search.nprobes.return_value = mock_search
+        mock_search.bypass_vector_index.return_value = mock_search
+        mock_search.limit.return_value = mock_search
+        mock_search.to_polars.return_value = pl.DataFrame(
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+        )
+        mock_table.search.return_value = mock_search
+
+        store.search(query="q", query_vector=query_vector)
+
+        mock_search.nprobes.assert_called()
+        mock_search.bypass_vector_index.assert_not_called()
+
     def test_search_refreshes_table_to_latest_version(self, lancedb_store):
         """Each search must call table.checkout_latest() so a long-lived
         SearchService picks up rows committed by another process (e.g.,

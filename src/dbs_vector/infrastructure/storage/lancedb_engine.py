@@ -108,6 +108,8 @@ class LanceDBStore:
         self.table.checkout_latest()
 
         min_time = kwargs.get("min_time")
+        min_lock_time = kwargs.get("min_lock_time")
+        table_filter = kwargs.get("table_filter")
 
         def _apply_filters(op: Any) -> Any:
             if source_filter:
@@ -115,21 +117,43 @@ class LanceDBStore:
                 op = op.where(f"source = '{safe_filter}'", prefilter=True)
             if min_time is not None:
                 op = op.where(f"execution_time_ms >= {min_time}", prefilter=True)
+            if min_lock_time is not None:
+                op = op.where(f"lock_time_sec >= {min_lock_time}", prefilter=True)
+            if table_filter:
+                # The chunker stores table names with literal `"` quote chars
+                # around each entry (SQLGlot qualified-name artifact). Wrap the
+                # user's value with the same quotes so the predicate matches.
+                safe_table = table_filter.replace("'", "''")
+                op = op.where(
+                    f"array_has(tables, '\"{safe_table}\"')",
+                    prefilter=True,
+                )
             return op
 
+        # When `table_filter` is set the candidate set is highly selective
+        # (typically <5% of rows) and lives across IVF partitions the default
+        # nprobes will not scan, silently returning zero results. Bypass the
+        # IVF index for exact flat search in that case — at the small-table
+        # scales this codebase targets the latency cost is negligible.
+        bypass_index = table_filter is not None
+
         def _build_vector() -> Any:
-            return (
-                self.table.search(query_vector).metric("cosine").nprobes(self.nprobes).limit(limit)
-            )
+            op = self.table.search(query_vector).metric("cosine").limit(limit)
+            if bypass_index:
+                op = op.bypass_vector_index()
+            else:
+                op = op.nprobes(self.nprobes)
+            return op
 
         def _build_hybrid() -> Any:
-            return (
-                self.table.search(query_type="hybrid")
-                .vector(query_vector)
-                .text(query)
-                .nprobes(self.nprobes)
-                .limit(limit)
+            op = (
+                self.table.search(query_type="hybrid").vector(query_vector).text(query).limit(limit)
             )
+            if bypass_index:
+                op = op.bypass_vector_index()
+            else:
+                op = op.nprobes(self.nprobes)
+            return op
 
         # First attempt: hybrid (builder + execute)
         try:

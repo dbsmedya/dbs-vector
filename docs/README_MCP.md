@@ -181,7 +181,16 @@ For the default `config.yaml` shipped with the project:
 | `query` | string | yes | Natural language or partial SQL |
 | `limit` | int | no | Max results (default 5, max 100) |
 | `source_filter` | string | no | Restrict to a database name |
-| `min_time` | float | no | Minimum execution time in ms |
+| `min_time` | float | no | Minimum cumulative execution time in ms |
+| `min_lock_time` | float | no | Minimum cumulative lock time in seconds |
+| `table_filter` | string | no | Restrict to queries that touch a specific table |
+
+When `table_filter` is set the search bypasses the IVF approximate index
+in favor of an exact flat scan, ensuring no candidate rows are missed
+from unscanned IVF partitions. Combined with `min_lock_time > 0` this
+answers focused investigation questions like "show me all queries that
+lock `dt_customer_performance_report` rows" — the filter narrows the
+universe; the embedding only ranks within it.
 
 ### `list_engines`
 

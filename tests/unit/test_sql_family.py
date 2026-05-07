@@ -49,6 +49,77 @@ def test_run_search_omits_min_time_when_unset():
     service.execute_query.assert_called_once_with("q", None, 2, extra_filters={})
 
 
+def test_run_search_passes_min_lock_time_filter():
+    fam = SqlFamily()
+    service = MagicMock()
+    service.execute_query.return_value = []
+
+    fam.run_search(service, query="q", limit=2, source_filter=None, min_lock_time=50.0)
+
+    service.execute_query.assert_called_once_with(
+        "q", None, 2, extra_filters={"min_lock_time": 50.0}
+    )
+
+
+def test_run_search_passes_table_filter():
+    fam = SqlFamily()
+    service = MagicMock()
+    service.execute_query.return_value = []
+
+    fam.run_search(
+        service,
+        query="q",
+        limit=2,
+        source_filter=None,
+        table_filter="dt_customer_performance_report",
+    )
+
+    service.execute_query.assert_called_once_with(
+        "q", None, 2, extra_filters={"table_filter": "dt_customer_performance_report"}
+    )
+
+
+def test_run_search_combines_all_three_filters():
+    fam = SqlFamily()
+    service = MagicMock()
+    service.execute_query.return_value = []
+
+    fam.run_search(
+        service,
+        query="q",
+        limit=2,
+        source_filter=None,
+        min_time=100.0,
+        min_lock_time=10.0,
+        table_filter="tx_process",
+    )
+
+    service.execute_query.assert_called_once_with(
+        "q",
+        None,
+        2,
+        extra_filters={"min_time": 100.0, "min_lock_time": 10.0, "table_filter": "tx_process"},
+    )
+
+
+def test_make_handler_signature_includes_new_filters():
+    """FastMCP introspects this signature for the tool schema."""
+    fam = SqlFamily()
+    handler = fam.make_handler("sql-test")
+    sig = inspect.signature(handler)
+    params = list(sig.parameters)
+    assert params == [
+        "query",
+        "limit",
+        "source_filter",
+        "min_time",
+        "min_lock_time",
+        "table_filter",
+    ]
+    assert sig.parameters["min_lock_time"].default is None
+    assert sig.parameters["table_filter"].default is None
+
+
 def test_format_results_includes_execution_time_calls_and_raw_query():
     fam = SqlFamily()
     out = fam.format_results([_make_sql_result()], query="q")
@@ -63,15 +134,6 @@ def test_format_results_empty_returns_no_results_message():
     fam = SqlFamily()
     out = fam.format_results([], query="zzz")
     assert out == "No results found for query: 'zzz'"
-
-
-def test_make_handler_signature_includes_min_time():
-    fam = SqlFamily()
-    handler = fam.make_handler("sql-test")
-    sig = inspect.signature(handler)
-    params = sig.parameters
-    assert list(params) == ["query", "limit", "source_filter", "min_time"]
-    assert params["min_time"].default is None
 
 
 @pytest.mark.asyncio

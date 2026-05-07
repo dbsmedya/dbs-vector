@@ -9,8 +9,11 @@ from dbs_vector.services.search import SearchService
 class SqlFamily:
     """SearchFamily implementation for SQL-log-style engines.
 
-    Adds a family-specific `min_time` filter (minimum execution time in
-    milliseconds) on top of the standard query/limit/source_filter args.
+    Adds three family-specific filters on top of query/limit/source_filter:
+      - `min_time`       — minimum cumulative execution_time_ms
+      - `min_lock_time`  — minimum cumulative lock_time_sec
+      - `table_filter`   — restrict to queries that touch a specific table
+                           (matches against the `tables` list column)
     """
 
     name: str = "sql"
@@ -24,9 +27,10 @@ class SqlFamily:
         **family_kwargs: Any,
     ) -> list[Any]:
         extra_filters: dict[str, Any] = {}
-        min_time = family_kwargs.get("min_time")
-        if min_time is not None:
-            extra_filters["min_time"] = min_time
+        for key in ("min_time", "min_lock_time", "table_filter"):
+            value = family_kwargs.get(key)
+            if value is not None:
+                extra_filters[key] = value
         return service.execute_query(query, source_filter, limit, extra_filters=extra_filters)
 
     def format_results(self, results: list[Any], query: str) -> str:
@@ -58,6 +62,8 @@ class SqlFamily:
             limit: int = 5,
             source_filter: str | None = None,
             min_time: float | None = None,
+            min_lock_time: float | None = None,
+            table_filter: str | None = None,
         ) -> str:
             from dbs_vector.mcp.state import _services  # lazy import
 
@@ -72,6 +78,8 @@ class SqlFamily:
                     limit,
                     source_filter,
                     min_time=min_time,
+                    min_lock_time=min_lock_time,
+                    table_filter=table_filter,
                 )
                 return family.format_results(results, query)
             except Exception as e:
