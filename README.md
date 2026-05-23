@@ -111,30 +111,61 @@ Each configured engine registers a tool named `search_<engine_name>` with dashes
 For setup instructions, see:
 👉 **[MCP Server Documentation](docs/README_MCP.md)**
 
-### Bundled Claude Skill: `slow-query-investigator`
+### Bundled Claude Skills
 
-`dbs-vector` ships a Claude Skill at `skills/slow-query-investigator/SKILL.md`
-covering two phases of slow-query work:
+`dbs-vector` ships two complementary Claude Skills under `skills/` that
+encode token-efficient workflows for slow-log triage. Both assume the
+`dbs-vector mcp` stdio server is connected; the slow-query skill's Phase
+2 additionally needs a MySQL MCP (e.g.
+[`askdba/mysql-mcp-server`](https://github.com/askdba/mysql-mcp-server)).
 
-**Phase 1 — Investigation (dbs-vector MCP only)**
-Routes natural-language questions like "show me all queries that lock
-`<table>` rows", "slowest queries on `<table>`", "where is our lock
-contention coming from?" to the right combination of `table_filter` /
-`min_lock_time` / `min_time` parameters on the SQL family MCP tools.
+#### `slow-query-triage` — find the most impacted single query
 
-**Phase 2 — Index recommendation (dbs-vector + database MCP)**
-Combines the slow-log corpus with live schema introspection from
-[`askdba/mysql-mcp-server`](https://github.com/askdba/mysql-mcp-server)
-(or a future PostgreSQL adapter) to recommend the **minimum sufficient
-set of indexes** that covers ~80% of call volume against a named table.
-The 10-step workflow fetches existing indexes, extracts WHERE / JOIN /
-ORDER BY signatures from the corpus, runs `EXPLAIN` on candidates,
-eliminates redundancy against existing indexes, and emits CREATE INDEX
-DDL with coverage % and write-amplification cost per recommendation.
+A two-phase workflow that picks the worst slow-log fingerprint in **one
+MCP call**, then validates its root cause with four MySQL calls. Designed
+to spend ~10–15× fewer tokens than broad-probing the corpus.
 
-Triggers like "what indexes should I add to `<table>`?", "missing
-indexes on `<table>`", "optimize queries on `<table>`" activate Phase 2
-when the database adapter MCP is connected.
+- **Phase 1 (1 MCP call):** `min_time=999999` pre-filters thousands of
+  fingerprints down to the heavy tail; the winner is picked by call
+  frequency (highest call count dominates — frequency × per-call cost,
+  not cumulative ms alone).
+- **Phase 2 (4 MySQL calls):** canonicalize the table name via
+  `search_schema`, then `list_indexes` + `show_create_table` +
+  `explain_query` to confirm a missing-composite-index diagnosis. The
+  textbook fix for `WHERE a=? ORDER BY b DESC LIMIT N` patterns is a
+  composite `(a, b)` index, but the skill also flags non-textbook cases
+  (`FORCE INDEX (PRIMARY)`, function-on-column predicates, PK-range
+  pagination) where the answer is a query rewrite rather than a new
+  index.
+
+Triggers: "find the worst slow query", "what's burning DB time", "top slow
+queries", "triage the slow log".
+
+#### `locking-query-triage` — survey the entire lock-contention universe
+
+A **single-call** workflow that returns the corpus's complete lock
+universe (typically 20–30 fingerprints) with `min_lock_time=0.001`, then
+aggregates lock-time by table and by service in memory — no extra MCP
+calls needed. Includes:
+
+- Cause-vs-victim attribution heuristics (multi-table `INSERT…SELECT`
+  causes vs single-call multi-second waits as victims).
+- ORM-fingerprint consolidation (Hibernate / ActiveRecord emit one
+  logical write as 4–6 near-duplicate fingerprints; the skill collapses
+  them before classifying).
+- Architecture-focused remediation patterns — hot-row decomposition,
+  transaction-scope shrinking, `SKIP LOCKED` queue patterns — because
+  most lock-contending queries are point updates that don't benefit from
+  a new index.
+
+Triggers: "find lock contention", "which queries lock the most rows",
+"who is blocking who", "which services cause lock waits".
+
+For the full decision frameworks, anti-patterns, and example report
+shapes, see
+[`skills/slow-query-triage/SKILL.md`](skills/slow-query-triage/SKILL.md)
+and
+[`skills/locking-query-triage/SKILL.md`](skills/locking-query-triage/SKILL.md).
 
 ## 🏗 Architecture & Roadmap
 
