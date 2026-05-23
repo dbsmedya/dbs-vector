@@ -16,4 +16,4 @@ wheels/
 lancedb_dbs_vector/
 
 # Config
-# config.yaml
+config.yaml
