@@ -228,6 +228,92 @@ def test_nullable_fields_none():
 
 
 # ---------------------------------------------------------------------------
+# Empty-SQL rejection (claude_todo.md #1)
+# ---------------------------------------------------------------------------
+
+
+def test_empty_text_rejected():
+    """Records whose normalized SQL is empty must be skipped to avoid
+    embedding noise and polluting similarity rankings."""
+    record = {**_RECORD, "id": "fp-empty", "text": ""}
+    chunker = ApiChunker(base_url=BASE_URL, api_key=API_KEY)
+    mock_resp = _mock_get_response([record], has_more=False)
+
+    with patch("httpx.Client") as MockClient:
+        ctx = MockClient.return_value.__enter__.return_value
+        ctx.get.return_value = mock_resp
+
+        chunks = list(chunker.process(_doc()))
+
+    assert chunks == []
+
+
+def test_whitespace_only_text_rejected():
+    """Whitespace-only text (spaces, tabs, newlines) counts as empty."""
+    record = {**_RECORD, "id": "fp-ws", "text": "   \t\n  "}
+    chunker = ApiChunker(base_url=BASE_URL, api_key=API_KEY)
+    mock_resp = _mock_get_response([record], has_more=False)
+
+    with patch("httpx.Client") as MockClient:
+        ctx = MockClient.return_value.__enter__.return_value
+        ctx.get.return_value = mock_resp
+
+        chunks = list(chunker.process(_doc()))
+
+    assert chunks == []
+
+
+def test_text_none_still_rejected():
+    """Preserve existing behaviour: text=None is rejected."""
+    record = {**_RECORD, "id": "fp-none"}
+    record["text"] = None
+    chunker = ApiChunker(base_url=BASE_URL, api_key=API_KEY)
+    mock_resp = _mock_get_response([record], has_more=False)
+
+    with patch("httpx.Client") as MockClient:
+        ctx = MockClient.return_value.__enter__.return_value
+        ctx.get.return_value = mock_resp
+
+        chunks = list(chunker.process(_doc()))
+
+    assert chunks == []
+
+
+def test_empty_source_with_valid_text_accepted():
+    """source='' is legitimate for upstreams that don't tag a database.
+    Must still be ingested as long as text is non-empty."""
+    record = {**_RECORD, "id": "fp-noSrc", "source": ""}
+    chunker = ApiChunker(base_url=BASE_URL, api_key=API_KEY)
+    mock_resp = _mock_get_response([record], has_more=False)
+
+    with patch("httpx.Client") as MockClient:
+        ctx = MockClient.return_value.__enter__.return_value
+        ctx.get.return_value = mock_resp
+
+        chunks = list(chunker.process(_doc()))
+
+    assert len(chunks) == 1
+    assert chunks[0].source == ""
+    assert chunks[0].text == "SELECT * FROM users"
+
+
+def test_blank_id_rejected():
+    """Records with blank or null id must be skipped (no fingerprint)."""
+    for bad_id in ("", "   ", None):
+        record = {**_RECORD, "id": bad_id}
+        chunker = ApiChunker(base_url=BASE_URL, api_key=API_KEY)
+        mock_resp = _mock_get_response([record], has_more=False)
+
+        with patch("httpx.Client") as MockClient:
+            ctx = MockClient.return_value.__enter__.return_value
+            ctx.get.return_value = mock_resp
+
+            chunks = list(chunker.process(_doc()))
+
+        assert chunks == [], f"id={bad_id!r} should be rejected"
+
+
+# ---------------------------------------------------------------------------
 # database param forwarding
 # ---------------------------------------------------------------------------
 

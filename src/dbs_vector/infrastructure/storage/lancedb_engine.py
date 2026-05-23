@@ -111,6 +111,12 @@ class LanceDBStore:
         min_lock_time = kwargs.get("min_lock_time")
         table_filter = kwargs.get("table_filter")
 
+        # When `table_filter` is set the candidate set is highly selective
+        # (typically <5% of rows) and lives across IVF partitions the default
+        # nprobes will not scan, silently returning zero results. Bypass the
+        # IVF index for exact flat search in that case.
+        bypass_index = table_filter is not None
+
         def _apply_filters(op: Any) -> Any:
             if source_filter:
                 safe_filter = source_filter.replace("'", "''")
@@ -120,54 +126,86 @@ class LanceDBStore:
             if min_lock_time is not None:
                 op = op.where(f"lock_time_sec >= {min_lock_time}", prefilter=True)
             if table_filter:
-                # The chunker stores table names with literal `"` quote chars
-                # around each entry (SQLGlot qualified-name artifact). Wrap the
-                # user's value with the same quotes so the predicate matches.
-                safe_table = table_filter.replace("'", "''")
+                from dbs_vector.core.models import _normalize_table_name
+
+                normalized = _normalize_table_name(table_filter)
+                safe_table = normalized.replace("'", "''")
                 op = op.where(
-                    f"array_has(tables, '\"{safe_table}\"')",
+                    f"array_has(tables, '{safe_table}')",
                     prefilter=True,
                 )
             return op
 
-        # When `table_filter` is set the candidate set is highly selective
-        # (typically <5% of rows) and lives across IVF partitions the default
-        # nprobes will not scan, silently returning zero results. Bypass the
-        # IVF index for exact flat search in that case — at the small-table
-        # scales this codebase targets the latency cost is negligible.
-        bypass_index = table_filter is not None
-
         def _build_vector() -> Any:
-            op = self.table.search(query_vector).metric("cosine").limit(limit)
+            # Filters must be applied before bypass_vector_index()/nprobes().
+            # Applying them after the index strategy can demote prefilter
+            # behavior and let unfiltered rows leak through LanceDB hybrid
+            # search when `table_filter` triggers bypass mode.
+            op = self.table.search(query_vector).metric("cosine")
+            op = _apply_filters(op)
             if bypass_index:
                 op = op.bypass_vector_index()
             else:
                 op = op.nprobes(self.nprobes)
-            return op
+            return op.limit(limit)
 
         def _build_hybrid() -> Any:
-            op = (
-                self.table.search(query_type="hybrid").vector(query_vector).text(query).limit(limit)
-            )
+            op = self.table.search(query_type="hybrid").vector(query_vector).text(query)
+            op = _apply_filters(op)
             if bypass_index:
                 op = op.bypass_vector_index()
             else:
                 op = op.nprobes(self.nprobes)
-            return op
+            return op.limit(limit)
 
         # First attempt: hybrid (builder + execute)
         try:
-            search_op = _apply_filters(_build_hybrid())
+            search_op = _build_hybrid()
             results_df = search_op.to_polars()
         except Exception as e:
             logger.warning(
                 "Hybrid search unavailable or failed ({}), falling back to pure vector", e
             )
-            search_op = _apply_filters(_build_vector())
+            search_op = _build_vector()
             results_df = search_op.to_polars()
 
+        # Hybrid search merges vector + FTS branches and can yield the same
+        # `id` from both. Dedupe after LanceDB applies `limit`; this may return
+        # fewer than `limit` rows, but avoids over-fetching latency for the
+        # production duplicate rate.
+        if "id" in results_df.columns:
+            results_df = results_df.unique(subset=["id"], keep="first", maintain_order=True)
+
         mapped_results: list[Any] = []
+        normalized_table = None
+        if table_filter:
+            from dbs_vector.core.models import _normalize_table_name
+
+            normalized_table = _normalize_table_name(table_filter)
+
         for row in results_df.iter_rows(named=True):
+            if source_filter and row.get("source") != source_filter:
+                continue
+            if min_time is not None:
+                execution_time_ms = row.get("execution_time_ms")
+                if (
+                    not isinstance(execution_time_ms, (int, float))
+                    or isinstance(execution_time_ms, bool)
+                    or execution_time_ms < min_time
+                ):
+                    continue
+            if min_lock_time is not None:
+                lock_time_sec = row.get("lock_time_sec")
+                if (
+                    not isinstance(lock_time_sec, (int, float))
+                    or isinstance(lock_time_sec, bool)
+                    or lock_time_sec < min_lock_time
+                ):
+                    continue
+            if normalized_table:
+                tables = row.get("tables")
+                if not isinstance(tables, list) or normalized_table not in tables:
+                    continue
             rel = row.get("_relevance_score")
             dist = row.get("_distance")
             score = float(rel) if isinstance(rel, float) else None
@@ -175,3 +213,36 @@ class LanceDBStore:
             mapped_results.append(self.mapper.from_polars_row(row, score=score, distance=distance))
 
         return mapped_results
+
+    def count_matching(
+        self,
+        source_filter: str | None = None,
+        **kwargs: Any,
+    ) -> int:
+        """Count rows matching the same prefilters used by search."""
+        self.table.checkout_latest()
+
+        min_time = kwargs.get("min_time")
+        min_lock_time = kwargs.get("min_lock_time")
+        table_filter = kwargs.get("table_filter")
+
+        predicates: list[str] = []
+        if source_filter:
+            safe = source_filter.replace("'", "''")
+            predicates.append(f"source = '{safe}'")
+        if min_time is not None:
+            predicates.append(f"execution_time_ms >= {min_time}")
+        if min_lock_time is not None:
+            predicates.append(f"lock_time_sec >= {min_lock_time}")
+        if table_filter:
+            from dbs_vector.core.models import _normalize_table_name
+
+            normalized = _normalize_table_name(table_filter)
+            safe = normalized.replace("'", "''")
+            predicates.append(f"array_has(tables, '{safe}')")
+
+        if not predicates:
+            return self.table.count_rows()
+
+        where_clause = " AND ".join(predicates)
+        return self.table.count_rows(filter=where_clause)

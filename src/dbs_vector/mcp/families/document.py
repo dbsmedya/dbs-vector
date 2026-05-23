@@ -22,7 +22,7 @@ class DocumentFamily:
     ) -> list[Any]:
         return service.execute_query(query, source_filter, limit, extra_filters={})
 
-    def format_results(self, results: list[Any], query: str) -> str:
+    def format_results(self, results: list[Any], query: str, total_matching: int = 0) -> str:
         if not results:
             return f"No results found for query: '{query}'"
 

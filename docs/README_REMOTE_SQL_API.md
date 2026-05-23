@@ -34,6 +34,28 @@ exactly as `DuckDBChunker` does.
 
 ---
 
+## Migration: table-name normalization (2026-05-22)
+
+The `tables` column was previously stored with raw SQLGlot artifacts
+(literal `"` chars, schema prefixes, mixed case). As of this change,
+`sql_chunk_from_record` normalizes every entry to lowercase, unquoted,
+last-`.`-segment form (e.g., `'"TryOTODyn.OrderShipment"'` ->
+`'ordershipment'`).
+
+**If you ingested before this change**, the `table_filter` parameter on
+`search_sql_api` will keep returning zero results until you re-ingest:
+
+```bash
+uv run dbs-vector ingest "https://your-api/api/v1" \
+    --type sql-api --rebuild --force
+```
+
+After the rebuild, `table_filter="OrderShipment"`,
+`table_filter="ordershipment"`, and `table_filter="TryOTODyn.OrderShipment"`
+all resolve to the same canonical filter.
+
+---
+
 ## Requirements
 
 The HTTP client (`httpx`) is an optional dependency grouped under the `api`

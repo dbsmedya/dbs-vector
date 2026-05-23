@@ -130,6 +130,25 @@ class TestExecuteQuery:
         assert call_args.kwargs.get("extra_filters") is None
 
 
+def test_count_matching_delegates_to_store():
+    embedder = MagicMock()
+    vector_store = MagicMock()
+    vector_store.count_matching.return_value = 42
+
+    service = SearchService(embedder=embedder, vector_store=vector_store)
+    result = service.count_matching(
+        source_filter="db",
+        extra_filters={"table_filter": "OrderShipment", "min_time": 100},
+    )
+
+    assert result == 42
+    vector_store.count_matching.assert_called_once_with(
+        source_filter="db",
+        table_filter="OrderShipment",
+        min_time=100,
+    )
+
+
 class TestPrintResults:
     """Tests for the print_results method."""
 

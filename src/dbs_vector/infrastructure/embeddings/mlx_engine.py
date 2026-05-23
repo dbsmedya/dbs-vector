@@ -107,6 +107,12 @@ class MLXEmbedder:
                     if hasattr(outputs, "text_embeds")
                     else outputs["text_embeds"]
                 )
+                # Cast bf16 → fp32 in MLX space first. NumPy 2.x cannot bridge MLX
+                # bf16 arrays via the buffer protocol (format 'B' / item-size 2 vs 1
+                # mismatch); models like granite-r2 return bf16 text_embeds natively.
+                # No-op for fp32 outputs (e.g., gemma-bf16 normalizes in fp32).
+                if isinstance(embeds_mlx, mx.array):
+                    embeds_mlx = embeds_mlx.astype(mx.float32)
                 # np.array(...) forces MLX lazy evaluation. Type-promotion errors can
                 # surface here rather than at the model() call.
                 vectors_np: NDArray[np.float32] = np.array(embeds_mlx).astype(np.float32)

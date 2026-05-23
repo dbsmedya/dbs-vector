@@ -84,6 +84,14 @@ class IVectorStore(Protocol):
         """Performs a hybrid search and returns mapped SearchResult models."""
         ...
 
+    def count_matching(
+        self,
+        source_filter: str | None = None,
+        **kwargs: Any,
+    ) -> int:
+        """Count rows that survive the same prefilter set used by `search`."""
+        ...
+
 
 class IChunker(Protocol):
     """Protocol defining how documents are split into logical boundaries."""

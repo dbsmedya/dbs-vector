@@ -32,8 +32,13 @@ class SearchFamily(Protocol):
         """Run the search and return the raw result list."""
         ...
 
-    def format_results(self, results: list[Any], query: str) -> str:
-        """Render results for an MCP tool's stdout."""
+    def format_results(self, results: list[Any], query: str, total_matching: int = 0) -> str:
+        """Render results for an MCP tool's stdout.
+
+        `total_matching` is the count of rows surviving non-semantic
+        prefilters, regardless of whether they ranked above the similarity or
+        FTS threshold. Families may surface it or ignore it.
+        """
         ...
 
     def make_handler(self, engine_name: str) -> Any:

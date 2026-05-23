@@ -57,11 +57,28 @@ def _coerce_latest_ts(value: Any) -> datetime:
     return datetime.now(UTC)
 
 
+def _normalize_table_name(name: str) -> str:
+    """Normalize a SQL identifier to a comparable form."""
+    cleaned = name.strip().replace('"', "").replace("`", "")
+    if "." in cleaned:
+        cleaned = cleaned.rsplit(".", 1)[-1]
+    return cleaned.lower()
+
+
 def sql_chunk_from_record(record: Mapping[str, Any]) -> SqlChunk:
     """Build a SqlChunk from a normalized record mapping."""
     text = str(record["text"])
     content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-    tables = record.get("tables") or []
+    raw_tables = record.get("tables") or []
+    seen: set[str] = set()
+    tables: list[str] = []
+    for table in raw_tables:
+        if table is None:
+            continue
+        normalized = _normalize_table_name(str(table))
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            tables.append(normalized)
 
     return SqlChunk(
         id=str(record["id"]),
@@ -71,7 +88,7 @@ def sql_chunk_from_record(record: Mapping[str, Any]) -> SqlChunk:
         execution_time_ms=float(record.get("execution_time_ms") or 0.0),
         calls=int(record.get("calls") or 1),
         content_hash=content_hash,
-        tables=list(tables),
+        tables=tables,
         latest_ts=_coerce_latest_ts(record.get("latest_ts")),
         user=str(record["user"]) if record.get("user") is not None else None,
         host=str(record["host"]) if record.get("host") is not None else None,

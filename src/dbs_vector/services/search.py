@@ -42,6 +42,17 @@ class SearchService:
         )
         return results
 
+    def count_matching(
+        self,
+        source_filter: str | None = None,
+        extra_filters: dict[str, Any] | None = None,
+    ) -> int:
+        """Count rows that would survive the same prefilters as execute_query."""
+        return self.vector_store.count_matching(
+            source_filter=source_filter,
+            **(extra_filters or {}),
+        )
+
     def print_results(self, results: list[Any]) -> None:
         """Formats and prints the parsed search results."""
         if not results:

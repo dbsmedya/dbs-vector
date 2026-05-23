@@ -128,11 +128,27 @@ class ApiChunker:
                 yield chunk
 
     def _to_sql_chunk_safe(self, record: dict) -> SqlChunk | None:
-        if record.get("id") is None or record.get("text") is None or record.get("source") is None:
-            logger.debug(
-                f"Skipping row missing required fields (id/text/source): {record.get('id')}"
+        rec_id = record.get("id")
+        text = record.get("text")
+        source = record.get("source")
+
+        if not isinstance(rec_id, str) or not rec_id.strip():
+            logger.debug(f"Skipping row with missing/blank id: id={rec_id!r}")
+            return None
+        if source is None:
+            logger.debug(f"Skipping row id={rec_id}: source is null")
+            return None
+        if not isinstance(text, str) or not text.strip():
+            logger.warning(
+                f"Skipping empty-SQL fingerprint id={rec_id} "
+                f"host={record.get('host')!r} user={record.get('user')!r} "
+                f"calls={record.get('calls')} "
+                f"exec_ms={record.get('execution_time_ms')} "
+                f"rows_examined={record.get('rows_examined')} "
+                f"tables={record.get('tables')}"
             )
             return None
+
         return self._to_sql_chunk(record)
 
     def _to_sql_chunk(self, record: dict) -> SqlChunk:

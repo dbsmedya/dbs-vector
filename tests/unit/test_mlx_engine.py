@@ -506,6 +506,33 @@ class TestAttentionMaskDtype:
         with pytest.raises(RuntimeError, match="attention_mask_dtype"):
             emb._execute_mlx(["x"])
 
+    def test_bfloat16_text_embeds_converted_without_buffer_error(self, mock_load):
+        """Regression: granite-r2 returns bf16 text_embeds; NumPy 2.x can't bridge
+        bf16 via the buffer protocol, so the embedder must cast to fp32 in MLX
+        space first. Without the cast this raises:
+        'Item size 2 for PEP 3118 buffer format string B does not match the
+        dtype B item size 1.'"""
+        import mlx.core as mx
+
+        _, mock_model, mock_tokenizer = mock_load
+        emb = MLXEmbedder(
+            model_name="granite",
+            max_token_length=128,
+            dimension=3,
+            attention_mask_dtype=None,
+        )
+        self._setup_tokenizer(mock_tokenizer, MagicMock())
+        mock_outputs = MagicMock()
+        mock_outputs.text_embeds = mx.array([[1.5, 2.5, 3.5]], dtype=mx.bfloat16)
+        mock_model.return_value = mock_outputs
+
+        result = emb._execute_mlx(["x"])
+
+        assert isinstance(result, np.ndarray)
+        assert result.dtype == np.float32
+        assert result.shape == (1, 3)
+        np.testing.assert_allclose(result, [[1.5, 2.5, 3.5]], rtol=1e-2)
+
     def test_unrelated_error_passes_through(self, mock_load):
         _, mock_model, mock_tokenizer = mock_load
         emb = MLXEmbedder(

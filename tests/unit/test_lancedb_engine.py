@@ -610,10 +610,9 @@ class TestSearch:
         )
 
     def test_search_table_filter_emits_array_has_and_bypasses_index(self, lancedb_store):
-        """table_filter wraps the value with double-quote chars (SQLGlot
-        qualified-name artifact) and bypasses the IVF index — selective
-        array predicates can otherwise land in unscanned partitions and
-        silently return zero results."""
+        """table_filter uses the normalized canonical value and bypasses the
+        IVF index — selective array predicates can otherwise land in unscanned
+        partitions and silently return zero results."""
         import polars as pl
 
         store, _, mock_table, _ = lancedb_store
@@ -634,8 +633,8 @@ class TestSearch:
         store.search(query="q", query_vector=query_vector, table_filter="tx_process")
 
         where_calls = [c.args[0] for c in mock_search.where.call_args_list]
-        assert any("array_has(tables, '\"tx_process\"')" in w for w in where_calls), (
-            f"table_filter not emitted with quoted value; got where calls: {where_calls}"
+        assert any("array_has(tables, 'tx_process')" in w for w in where_calls), (
+            f"table_filter not emitted with normalized value; got where calls: {where_calls}"
         )
         # When table_filter is set, the IVF index must be bypassed.
         mock_search.bypass_vector_index.assert_called()
@@ -689,3 +688,80 @@ class TestSearch:
         store.search(query="second", query_vector=query_vector)
 
         assert mock_table.checkout_latest.call_count == 2
+
+    def test_search_filters_applied_before_bypass_index(self, lancedb_store):
+        """Filters must be added before bypass_vector_index() when table_filter is set."""
+        import polars as pl
+
+        store, _, mock_table, _ = lancedb_store
+        query_vector = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        call_log: list[str] = []
+        mock_search = MagicMock()
+
+        def _log(method_name):
+            def _f(*args, **kwargs):
+                call_log.append(method_name)
+                return mock_search
+
+            return _f
+
+        mock_search.vector.side_effect = _log("vector")
+        mock_search.text.side_effect = _log("text")
+        mock_search.where.side_effect = _log("where")
+        mock_search.bypass_vector_index.side_effect = _log("bypass_vector_index")
+        mock_search.nprobes.side_effect = _log("nprobes")
+        mock_search.limit.side_effect = _log("limit")
+        mock_search.metric.side_effect = _log("metric")
+        mock_search.to_polars.return_value = pl.DataFrame(
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+        )
+        mock_table.search.return_value = mock_search
+
+        store.search(
+            query="q",
+            query_vector=query_vector,
+            min_lock_time=1.0,
+            table_filter="magentoorders",
+        )
+
+        last_where = max(i for i, method in enumerate(call_log) if method == "where")
+        bypass_idx = call_log.index("bypass_vector_index")
+        assert last_where < bypass_idx, (
+            f"Filter ordering bug: bypass_vector_index() called at index "
+            f"{bypass_idx}, final where() at index {last_where}. "
+            f"Call order: {call_log}"
+        )
+
+    def test_search_dedupes_results_by_id(self, lancedb_store):
+        """Hybrid search may return the same id from vector and FTS branches."""
+        import polars as pl
+
+        store, _, mock_table, _ = lancedb_store
+        query_vector = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        mock_search = MagicMock()
+        mock_search.vector.return_value = mock_search
+        mock_search.text.return_value = mock_search
+        mock_search.nprobes.return_value = mock_search
+        mock_search.limit.return_value = mock_search
+        mock_search.metric.return_value = mock_search
+        mock_search.bypass_vector_index.return_value = mock_search
+        mock_search.where.return_value = mock_search
+        mock_search.to_polars.return_value = pl.DataFrame(
+            {
+                "id": ["dup_0", "dup_0", "uniq_1"],
+                "text": ["a", "a", "b"],
+                "source": ["s", "s", "s"],
+                "content_hash": ["h", "h", "h2"],
+                "_relevance_score": [0.9, 0.8, 0.7],
+            }
+        )
+        mock_table.search.return_value = mock_search
+
+        store.mapper.from_polars_row = MagicMock(side_effect=lambda row, score, distance: row["id"])
+
+        results = store.search(query="q", query_vector=query_vector)
+
+        assert results == ["dup_0", "uniq_1"]
+        assert store.mapper.from_polars_row.call_count == 2
