@@ -354,3 +354,41 @@ the existing SQL/DuckDB/API chunker unit tests remain green unchanged.
 - `batch_size` retuning for `md` (separate, quality-neutral perf win).
 - Additional filters (e.g. `mermaid`, `base64_image`) — trivial to add via
   `register()`.
+
+---
+
+## Migration results (2026-06-06)
+
+Rebuilt both markdown engines against the real vault (168 `.md` files) with
+`--rebuild --force`. Token distributions measured with each engine's own
+tokenizer (chunk body, no passage prefix).
+
+### Before → After
+
+| Engine | n (before→after) | median tok | max tok | <16 tok (noise) | >chunk_max | >model_cap (truncated) |
+|---|---|---|---|---|---|---|
+| `md` (gemma, 512/1024) | 1176 → **701** | 47 → **137** | 11021 → **983** | 25.4% → **2.1%** | 30 → **0** | **10 → 0** |
+| `md-granite` (768/1536) | 1089 → **611** | 40 → **113** | 11020 → **1472** | 28.3% → **2.6%** | 15 → **0** | **10 → 0** |
+
+- **Truncation eliminated:** 10 oversized chunks per engine were silently
+  truncated at the 2048 model cap before (data loss); now 0 — oversized
+  content is split at natural boundaries, never cut.
+- **Noise crushed:** sub-16-token vectors dropped from ~26% to ~2%. The
+  residual ~2% are tiny *isolated* sections (a heading whose only body is
+  short, with no previous sibling to merge into) — they still carry the
+  heading-path prefix for context. See "known limitation" in
+  `docs/README_PROFILES.md`.
+- **Size invariant holds in production:** zero chunks exceed `chunk_max_tokens`
+  or the model cap. No truncation warnings during either rebuild.
+- Median chunk size roughly tripled → more substantive passages.
+
+### gemma 512/1024 vs granite 768/1536
+
+Ran representative DB/infra queries (btree index, proxysql user sync, mysql
+replication, vault raft cluster) through both engines. Results are **largely
+equivalent** — same top sources and comparable scores on most queries. Gemma
+was marginally more precise on "mysql replication setup" (granite's top hit
+`docker_compose.md` was a weaker match). No clear win for either budget, so
+the granite profile was **left at 768/1536** (not lowered to 512/1024). The
+two budgets remain available for ongoing A/B comparison via the `md` vs
+`md-granite` engines.
