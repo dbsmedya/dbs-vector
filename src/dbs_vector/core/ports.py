@@ -21,6 +21,10 @@ class IEmbedder(Protocol):
         """Converts a single query string into a flat float32 NumPy array."""
         ...
 
+    def count_tokens(self, text: str) -> int:
+        """Returns the number of tokens (incl. special tokens) for `text`."""
+        ...
+
 
 class IStoreMapper(Protocol):
     def __init__(self, vector_dimension: int, **kwargs: Any) -> None: ...

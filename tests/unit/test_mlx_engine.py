@@ -546,3 +546,19 @@ class TestAttentionMaskDtype:
 
         with pytest.raises(RuntimeError, match="disk full"):
             emb._execute_mlx(["x"])
+
+
+class TestCountTokens:
+    """Tests for the count_tokens method."""
+
+    def test_count_tokens_returns_input_id_length(self, mock_load):
+        _, _, mock_tokenizer = mock_load
+        mock_tokenizer._tokenizer.return_value = {"input_ids": [1, 2, 3, 4, 5]}
+
+        embedder = MLXEmbedder(
+            model_name="m", max_token_length=2048, dimension=768
+        )
+        assert embedder.count_tokens("hello world") == 5
+        # add_special_tokens must be requested so the count matches embedding time
+        _, kwargs = mock_tokenizer._tokenizer.call_args
+        assert kwargs.get("add_special_tokens") is True
