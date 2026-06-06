@@ -38,26 +38,33 @@ system:
 # -----------------------------------------------------------------------------
 # profiles:  hardware-sensitive tuning knobs
 # -----------------------------------------------------------------------------
-# Three knobs per profile (every engine references one profile by name):
-#   max_token_length  tokenizer cap; must be ≤ model contract max
-#                     (Gemma: 2048, Granite R2: 32768)
-#   chunk_max_chars   character budget per chunk; 0 = atomic (one record/chunk)
-#   batch_size        chunks per MLX forward pass (memory vs. throughput)
+# Five knobs per profile (every engine references one profile by name):
+#   max_token_length      tokenizer cap; must be ≤ model contract max
+#                         (Gemma: 2048, Granite R2: 32768)
+#   chunk_max_chars       character budget per chunk; 0 = atomic (one record/chunk)
+#                         NOTE: for document (markdown) engines this now only governs
+#                         the .txt fallback path; markdown chunks are sized by the
+#                         token budgets below.
+#   batch_size            chunks per MLX forward pass (memory vs. throughput)
+#   chunk_target_tokens   target tokens per markdown chunk; document engines REQUIRE
+#                         this > 0; SQL profiles omit it (or leave it at default 0)
+#   chunk_max_tokens      hard per-chunk token ceiling; must satisfy
+#                         chunk_target_tokens ≤ chunk_max_tokens ≤ max_token_length;
+#                         document engines REQUIRED > 0; SQL profiles omit it
 #
 # Pick a recipe below, copy it, or write your own — see workload recipes
 # and audit script in docs/README_PROFILES.md.
 # -----------------------------------------------------------------------------
 profiles:
   # Gemma defaults — short-context, instruction-tuned model.
-  gemma-md:           {max_token_length: 2048,  chunk_max_chars: 1000, batch_size: 64}
+  gemma-md:           {max_token_length: 2048,  chunk_max_chars: 1000, batch_size: 64, chunk_target_tokens: 512, chunk_max_tokens: 1024}
   gemma-sql-atomic:   {max_token_length: 2048,  chunk_max_chars: 0,    batch_size: 64}
 
   # Granite R2 long-form prose recipe (large chunks, modest batches).
-  granite-md-large:   {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8}
+  granite-md-large:   {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8, chunk_target_tokens: 1536, chunk_max_tokens: 3072}
 
   # Granite R2 fragmented techdoc recipe — finer chunks, throughput-optimized.
-  # max_token_length sized at ~4× the worst-case chunk tokens (3000/4 ≈ 750).
-  granite-md-medium:  {max_token_length: 4096,  chunk_max_chars: 3000, batch_size: 16}
+  granite-md-medium:  {max_token_length: 2048,  chunk_max_chars: 3000, batch_size: 16, chunk_target_tokens: 768, chunk_max_tokens: 1536}
 
   # Granite R2 SQL atomic — one record per chunk; raise batch_size for throughput.
   granite-sql-atomic: {max_token_length: 8192,  chunk_max_chars: 0,    batch_size: 32}
@@ -85,6 +92,9 @@ engines:
     table_name:     "knowledge_vault"     # LanceDB table; unique per (model × workflow)
     workflow:       "md_search"           # workflow label written into every chunk
     tuning_profile: "gemma-md"            # references profiles: block above
+    # Optional per-engine content exclusion (default: none). Built-ins:
+    # excalidraw (skips drawing files/blocks), compressed_json (drops blobs).
+    exclusion_filters: [excalidraw, compressed_json]
     # Gemma is task-instruction-tuned: prefixes project queries and passages
     # into a shared task-conditional subspace. REQUIRED for Gemma.
     passage_prefix: "title: none | text: "
@@ -99,6 +109,7 @@ engines:
     table_name:     "knowledge_vault_granite"   # MUST differ from gemma's table
     workflow:       "md_search_granite"
     tuning_profile: "granite-md-large"
+    exclusion_filters: [excalidraw, compressed_json]
     # Granite R2 is NOT instruction-tuned. Leave prefixes empty.
     # Rationale: docs/README_granite.md (model card ships empty prompt slots).
 
@@ -113,6 +124,7 @@ engines:
     table_name:     "knowledge_vault_granite_medium"   # MUST differ from baseline
     workflow:       "md_search_granite"
     tuning_profile: "granite-md-medium"
+    exclusion_filters: [excalidraw, compressed_json]
 
   # ----- SQL slow-query log, local DuckDB source -----------------------------
   sql:
