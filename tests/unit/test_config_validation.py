@@ -2,6 +2,7 @@
 import textwrap
 
 import pytest
+import yaml
 
 from dbs_vector.config import load_settings
 
@@ -12,12 +13,59 @@ def _write_yaml(tmp_path, content: str) -> str:
     return str(p)
 
 
+@pytest.fixture
+def write_config(tmp_path):
+    """Fixture returning a helper that writes a minimal valid document-engine
+    config YAML and returns the path string.
+
+    profile_overrides: dict merged into the default profile knobs.
+    engine_overrides: dict merged into the default engine fields.
+    """
+
+    def _helper(
+        profile_overrides: dict | None = None,
+        engine_overrides: dict | None = None,
+    ) -> str:
+        profile: dict = {
+            "max_token_length": 2048,
+            "chunk_max_chars": 1000,
+            "batch_size": 16,
+            "chunk_target_tokens": 512,
+            "chunk_max_tokens": 1024,
+        }
+        if profile_overrides:
+            profile.update(profile_overrides)
+
+        engine: dict = {
+            "description": "test engine",
+            "model": "gemma-bf16",
+            "mapper_type": "document",
+            "chunker_type": "document",
+            "table_name": "t",
+            "workflow": "w",
+            "tuning_profile": "test-profile",
+        }
+        if engine_overrides:
+            engine.update(engine_overrides)
+
+        data = {
+            "system": {"memory_budget_gb": 22.0},
+            "profiles": {"test-profile": profile},
+            "engines": {"md": engine},
+        }
+        p = tmp_path / "config.yaml"
+        p.write_text(yaml.dump(data))
+        return str(p)
+
+    return _helper
+
+
 GENERAL_PROFILES = """\
 profiles:
-  gemma-md:           {max_token_length: 2048,  chunk_max_chars: 1000, batch_size: 64}
-  gemma-too-big:      {max_token_length: 99999, chunk_max_chars: 1000, batch_size: 64}
-  granite-oom:        {max_token_length: 16384, chunk_max_chars: 1000, batch_size: 64}
-  granite-md-large:   {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8}
+  gemma-md:           {max_token_length: 2048,  chunk_max_chars: 1000, batch_size: 64, chunk_target_tokens: 512,  chunk_max_tokens: 1024}
+  gemma-too-big:      {max_token_length: 99999, chunk_max_chars: 1000, batch_size: 64, chunk_target_tokens: 512,  chunk_max_tokens: 1024}
+  granite-oom:        {max_token_length: 16384, chunk_max_chars: 1000, batch_size: 64, chunk_target_tokens: 512,  chunk_max_tokens: 1024}
+  granite-md-large:   {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8,  chunk_target_tokens: 1024, chunk_max_tokens: 2048}
 """
 
 
@@ -282,3 +330,33 @@ engines:
         path.write_text(config_yaml)
         with pytest.raises(ValueError, match="unknown family"):
             load_settings(str(path), validate=True)
+
+
+def test_document_engine_requires_nonzero_token_budgets(write_config):
+    cfg = write_config(profile_overrides={
+        "chunk_target_tokens": 0, "chunk_max_tokens": 1024,
+    })
+    with pytest.raises(ValueError, match="requires .* chunk_target_tokens"):
+        load_settings(cfg, validate=True)
+
+
+def test_chunk_max_tokens_below_target_is_rejected(write_config):
+    cfg = write_config(profile_overrides={
+        "chunk_target_tokens": 1024, "chunk_max_tokens": 512,
+    })
+    with pytest.raises(ValueError, match="chunk_max_tokens"):
+        load_settings(cfg, validate=True)
+
+
+def test_chunk_max_tokens_above_model_cap_is_rejected(write_config):
+    cfg = write_config(profile_overrides={
+        "max_token_length": 2048, "chunk_target_tokens": 512, "chunk_max_tokens": 4096,
+    })
+    with pytest.raises(ValueError, match="chunk_max_tokens"):
+        load_settings(cfg, validate=True)
+
+
+def test_unknown_exclusion_filter_is_rejected(write_config):
+    cfg = write_config(engine_overrides={"exclusion_filters": ["bogus"]})
+    with pytest.raises(ValueError, match="Unknown exclusion filter"):
+        load_settings(cfg, validate=True)

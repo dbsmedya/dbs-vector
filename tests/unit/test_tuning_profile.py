@@ -44,3 +44,17 @@ def test_extra_fields_rejected():
             batch_size=8,
             unknown_field="x",
         )
+
+
+def test_token_budget_fields_default_to_zero():
+    p = TuningProfile(max_token_length=2048, chunk_max_chars=0, batch_size=16)
+    assert p.chunk_target_tokens == 0
+    assert p.chunk_max_tokens == 0
+
+
+def test_token_budget_fields_accepted():
+    p = TuningProfile(
+        max_token_length=2048, chunk_max_chars=0, batch_size=16,
+        chunk_target_tokens=512, chunk_max_tokens=1024,
+    )
+    assert (p.chunk_target_tokens, p.chunk_max_tokens) == (512, 1024)

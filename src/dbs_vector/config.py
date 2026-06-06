@@ -17,6 +17,8 @@ class TuningProfile(BaseModel):
     max_token_length: int = Field(gt=0)
     chunk_max_chars: int = Field(ge=0)
     batch_size: int = Field(gt=0)
+    chunk_target_tokens: int = Field(default=0, ge=0)
+    chunk_max_tokens: int = Field(default=0, ge=0)
 
 
 class EngineConfig(BaseModel):
@@ -37,6 +39,9 @@ class EngineConfig(BaseModel):
     # using the same underlying model):
     passage_prefix: str = ""
     query_prefix: str = ""
+
+    # Per-engine content exclusion (default: exclude nothing):
+    exclusion_filters: list[str] = []
 
     # Chunker-specific (unchanged):
     duckdb_query: str | None = None
@@ -60,12 +65,12 @@ class EngineConfig(BaseModel):
 
     def chunker_kwargs(
         self,
-        chunk_max_chars: int,
         query_override: str | None = None,
         url_override: str | None = None,
     ) -> dict[str, object]:
-        """Resolve chunker init kwargs. `chunk_max_chars` is injected by the
-        caller from the resolved tuning profile (no longer a field on Engine)."""
+        """Resolve chunker init kwargs for non-document chunkers. The document
+        chunker is wired separately in bootstrap (token budgets / filters /
+        length_fn)."""
         if self.chunker_type == "duckdb":
             return {"query": query_override or self.duckdb_query}
         if self.chunker_type == "api":
@@ -82,8 +87,6 @@ class EngineConfig(BaseModel):
             if query_override:
                 kwargs["custom_query"] = query_override
             return kwargs
-        if chunk_max_chars > 0:
-            return {"max_chars": chunk_max_chars}
         return {}
 
 
@@ -213,6 +216,7 @@ def _validate_config(settings: Settings, config_file: str) -> None:
         estimate_peak_buffer_bytes,
         recommend_profile,
     )
+    from dbs_vector.infrastructure.chunking.filters import FilterRegistry
     from dbs_vector.infrastructure.hardware import resolve_memory_budget_gb
 
     if not settings.engines:
@@ -307,6 +311,34 @@ def _validate_config(settings: Settings, config_file: str) -> None:
                 profile.chunk_max_chars,
                 profile.max_token_length,
             )
+
+        # Rule 6: token budgets. Document engines REQUIRE explicit nonzero
+        # budgets (0 is reserved for non-document profiles, where these fields
+        # are unused). Coherence is then enforced.
+        if engine.chunker_type == "document":
+            if profile.chunk_target_tokens <= 0 or profile.chunk_max_tokens <= 0:
+                raise ValueError(
+                    f"Engine '{engine_name}' (document chunker) requires profile "
+                    f"'{engine.tuning_profile}' to set chunk_target_tokens > 0 and "
+                    f"chunk_max_tokens > 0 (got "
+                    f"{profile.chunk_target_tokens}/{profile.chunk_max_tokens})."
+                )
+            if profile.chunk_max_tokens < profile.chunk_target_tokens:
+                raise ValueError(
+                    f"Profile '{engine.tuning_profile}': chunk_max_tokens="
+                    f"{profile.chunk_max_tokens} < chunk_target_tokens="
+                    f"{profile.chunk_target_tokens}."
+                )
+            if profile.chunk_max_tokens > profile.max_token_length:
+                raise ValueError(
+                    f"Profile '{engine.tuning_profile}': chunk_max_tokens="
+                    f"{profile.chunk_max_tokens} exceeds max_token_length="
+                    f"{profile.max_token_length} (embedder truncation cap)."
+                )
+
+        # Rule 7: exclusion filters resolve (any engine that sets them)
+        if engine.exclusion_filters:
+            FilterRegistry.resolve(engine.exclusion_filters)  # raises on unknown
 
 
 def load_settings(config_file: str | None = None, validate: bool = False) -> Settings:

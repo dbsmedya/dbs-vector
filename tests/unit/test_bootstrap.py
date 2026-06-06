@@ -74,7 +74,9 @@ def test_resolves_via_model_registry(mock_settings):
     assert kwargs["attention_mask_dtype"] == "float16"
 
 
-def test_passes_chunk_max_chars_to_chunker_kwargs(mock_settings):
+def test_chunker_kwargs_called_without_chunk_max_chars(mock_settings):
+    """bootstrap no longer passes chunk_max_chars; document chunker is wired
+    separately via token budgets / filters in Task 6."""
     _, engine_config, _ = mock_settings
     with (
         patch("dbs_vector.services.bootstrap.MLXEmbedder"),
@@ -85,5 +87,5 @@ def test_passes_chunk_max_chars_to_chunker_kwargs(mock_settings):
         MockRegistry.get_chunker.return_value = MagicMock()
         build_dependencies("md")
     args, kwargs = engine_config.chunker_kwargs.call_args
-    # chunk_max_chars is the only positional or first keyword arg
-    assert kwargs.get("chunk_max_chars") == 500 or (args and args[0] == 500)
+    assert "chunk_max_chars" not in kwargs
+    assert not args  # no positional args

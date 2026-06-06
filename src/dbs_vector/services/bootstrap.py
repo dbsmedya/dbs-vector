@@ -57,7 +57,6 @@ def build_dependencies(
     mapper = MapperClass(vector_dimension=contract.vector_dimension)
     chunker = ChunkerClass(
         **engine.chunker_kwargs(
-            chunk_max_chars=profile.chunk_max_chars,
             query_override=query_override,
             url_override=url_override,
         )
