@@ -8,6 +8,7 @@ wheels/
 .DS_Store
 
 # Virtual environments
+.claude
 .venv
 .ayder
 .coverage
