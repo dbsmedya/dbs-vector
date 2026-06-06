@@ -2,6 +2,15 @@ from dbs_vector.core.models import Document
 from dbs_vector.infrastructure.chunking.document import DocumentChunker
 
 
+def _chunks(content, **kw):
+    # length_fn defaults to len (chars) -> deterministic, model-free.
+    ch = DocumentChunker(target_tokens=120, max_tokens=240, min_tokens=8, **kw)
+    return list(ch.process(Document(filepath="t.md", content=content, content_hash="h")))
+
+
+# ---- KEPT UNCHANGED --------------------------------------------------------
+
+
 def test_supported_extensions():
     """Test that DocumentChunker exposes supported extensions."""
     chunker = DocumentChunker()
@@ -22,49 +31,6 @@ def test_chunk_ids_are_unique_across_different_paths():
     assert chunks1[0].id == "docs/README.md_chunk_0"
     assert chunks2[0].id == "src/README.md_chunk_0"
     assert chunks1[0].id != chunks2[0].id
-
-
-def test_markdown_chunking_with_code_fences():
-    chunker = DocumentChunker(max_chars=200)
-    content = """# Title
-This is some introductory text that should be grouped together if small enough.
-
-```python
-def foo():
-    # This code block should be atomic
-    return 42
-```
-
-Final paragraph.
-"""
-    doc = Document(filepath="test.md", content=content, content_hash="hash1")
-    chunks = list(chunker.process(doc))
-
-    assert len(chunks) == 3
-    assert chunks[0].id == "test.md_chunk_0"
-    assert "# Title" in chunks[0].text
-    assert "introductory text" in chunks[0].text
-    assert chunks[1].id == "test.md_chunk_1"
-    assert "```python" in chunks[1].text
-    assert "return 42" in chunks[1].text
-    assert chunks[2].id == "test.md_chunk_2"
-    assert "Final paragraph" in chunks[2].text
-
-
-def test_markdown_chunking_large_prose_splitting():
-    # Small max_chars to force splitting of prose
-    chunker = DocumentChunker(max_chars=20)
-    content = """This is a very long paragraph that definitely exceeds twenty characters.
-
-And another one here."""
-
-    doc = Document(filepath="test.md", content=content, content_hash="hash2")
-    chunks = list(chunker.process(doc))
-
-    # Since each paragraph is > 20, they should be separate chunks
-    assert len(chunks) >= 2
-    assert "very long paragraph" in chunks[0].text
-    assert "another one" in chunks[1].text
 
 
 def test_text_file_fallback():
@@ -95,67 +61,6 @@ def test_text_file_splitting():
     assert "Paragraph 2" in chunks[1].text
 
 
-def test_empty_document_yields_no_chunks():
-    """Empty document should yield no chunks."""
-    chunker = DocumentChunker(max_chars=100)
-    doc = Document(filepath="empty.md", content="", content_hash="hash1")
-    chunks = list(chunker.process(doc))
-    assert len(chunks) == 0
-
-
-def test_whitespace_only_document_yields_no_chunks():
-    """Document with only whitespace should yield no chunks."""
-    chunker = DocumentChunker(max_chars=100)
-    doc = Document(filepath="whitespace.md", content="   \n\n  \t  \n", content_hash="hash2")
-    chunks = list(chunker.process(doc))
-    assert len(chunks) == 0
-
-
-def test_content_below_threshold_filtered():
-    """Content below 5-char threshold is filtered out from final chunks."""
-    chunker = DocumentChunker(max_chars=100)
-    # Mix of short and long content - short gets combined with long
-    content = "Hi\n\nHello world\n\nX"
-
-    doc = Document(filepath="short.md", content=content, content_hash="hash3")
-    chunks = list(chunker.process(doc))
-
-    # All paragraphs are combined into one chunk (under max_chars=100)
-    # Since combined text is > 5 chars, it's kept
-    assert len(chunks) == 1
-    assert "Hello world" in chunks[0].text
-
-
-def test_all_content_below_threshold_yields_no_chunks():
-    """When all content is below 5 chars, no chunks are yielded."""
-    chunker = DocumentChunker(max_chars=100)
-    content = "Hi\n\nBye"  # Each paragraph < 5 chars, combined = "Hi\n\nBye" (7 chars)
-    # Actually combined is 7 chars so it passes... let me try smaller
-    content = "X\n\nY"  # Combined = "X\n\nY" (4 chars) - should be filtered
-
-    doc = Document(filepath="tiny.md", content=content, content_hash="hash3")
-    chunks = list(chunker.process(doc))
-
-    assert len(chunks) == 0
-
-
-def test_pure_code_fence_markdown():
-    """Markdown with only code fence, no prose."""
-    chunker = DocumentChunker(max_chars=200)
-    content = """```python
-def hello():
-    return "world"
-```"""
-
-    doc = Document(filepath="code_only.md", content=content, content_hash="hash4")
-    chunks = list(chunker.process(doc))
-
-    assert len(chunks) == 1
-    assert "```python" in chunks[0].text
-    assert "def hello():" in chunks[0].text
-    assert chunks[0].id == "code_only.md_chunk_0"
-
-
 def test_txt_single_paragraph():
     """.txt file with single paragraph."""
     chunker = DocumentChunker(max_chars=500)
@@ -168,3 +73,104 @@ def test_txt_single_paragraph():
     assert chunks[0].text == "This is a single paragraph in a text file."
     assert chunks[0].id == "single.txt_chunk_0"
     assert chunks[0].source == "single.txt"
+
+
+# ---- ADAPTED (empty/whitespace/below-threshold) ----------------------------
+# Intent preserved: empty/whitespace .md → no chunks; <5-char filter still
+# tested on the .txt path where it remains in effect.
+
+
+def test_empty_document_yields_no_chunks():
+    """Empty .md document should yield no chunks."""
+    chunker = DocumentChunker(max_chars=100)
+    doc = Document(filepath="empty.md", content="", content_hash="hash1")
+    chunks = list(chunker.process(doc))
+    assert len(chunks) == 0
+
+
+def test_whitespace_only_document_yields_no_chunks():
+    """Whitespace-only .md document should yield no chunks."""
+    chunker = DocumentChunker(max_chars=100)
+    doc = Document(filepath="whitespace.md", content="   \n\n  \t  \n", content_hash="hash2")
+    chunks = list(chunker.process(doc))
+    assert len(chunks) == 0
+
+
+def test_content_below_threshold_filtered_txt():
+    """Content below 5-char threshold is filtered out from final .txt chunks.
+
+    Adapted from test_content_below_threshold_filtered: the <5-char gate lives
+    in _chunk_text so the intent is best exercised on the .txt path.
+    """
+    chunker = DocumentChunker(max_chars=100)
+    # Three paragraphs under max_chars=100 → packed into one chunk (8 chars+),
+    # which passes the >=5-char filter.
+    content = "Hi\n\nHello world\n\nX"
+    doc = Document(filepath="short.txt", content=content, content_hash="hash3")
+    chunks = list(chunker.process(doc))
+    assert len(chunks) == 1
+    assert "Hello world" in chunks[0].text
+
+
+def test_all_content_below_threshold_yields_no_chunks_txt():
+    """When all combined content is <5 chars on the .txt path, no chunks are yielded.
+
+    Adapted from test_all_content_below_threshold_yields_no_chunks to target
+    the .txt path where the >=5-char filter is enforced.
+    """
+    chunker = DocumentChunker(max_chars=100)
+    content = "X\n\nY"  # Combined = "X\n\nY" (4 chars) → filtered by >=5 rule
+    doc = Document(filepath="tiny.txt", content=content, content_hash="hash3")
+    chunks = list(chunker.process(doc))
+    assert len(chunks) == 0
+
+
+# ---- REPLACED (assert old greedy markdown behavior) -----------------------
+# New tests assert heading-aware, token-sized, metadata-carrying behavior.
+
+
+def test_heading_is_prepended_not_emitted_alone():
+    content = "# Top\n\n## Setup\n\nInstall the package and run it.\n"
+    chunks = _chunks(content)
+    assert len(chunks) == 1
+    c = chunks[0]
+    assert c.text.startswith("Top > Setup")
+    assert "Install the package" in c.text
+    assert c.parent_scope == "Top > Setup"
+    assert c.node_type == "section"
+    # invariant: final text (heading path included) never exceeds max_tokens
+    assert len(c.text) <= 240
+
+
+def test_bare_heading_with_no_body_produces_no_chunk():
+    content = "# Parent\n\n## Child\n\n### Grandchild\n\nReal content here.\n"
+    chunks = _chunks(content)
+    assert len(chunks) == 1
+    assert chunks[0].parent_scope == "Parent > Child > Grandchild"
+
+
+def test_code_fence_under_budget_stays_atomic():
+    content = "## Code\n\n```python\ndef f():\n    return 1\n```\n"
+    chunks = _chunks(content)
+    assert len(chunks) == 1
+    assert "```python" in chunks[0].text
+    assert chunks[0].node_type == "code"
+
+
+def test_metadata_line_range_is_one_based_inclusive():
+    # lines: 0="## A", 1="", 2="body...". The body paragraph's markdown-it map
+    # is [2, 3] (0-based, end-exclusive) -> 1-based inclusive "3-3".
+    content = "## A\n\nbody text that is long enough.\n"
+    c = _chunks(content)[0]
+    assert c.line_range == "3-3"
+    assert c.node_type == "section"
+
+
+def test_pure_code_fence_markdown():
+    """Markdown with only code fence, no prose."""
+    chunks = _chunks("```python\ndef hello():\n    return \"world\"\n```")
+    assert len(chunks) == 1
+    assert "```python" in chunks[0].text
+    assert "def hello():" in chunks[0].text
+    assert chunks[0].id == "t.md_chunk_0"
+    assert chunks[0].node_type == "code"
