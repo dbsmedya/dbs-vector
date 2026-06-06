@@ -333,25 +333,35 @@ engines:
 
 
 def test_document_engine_requires_nonzero_token_budgets(write_config):
-    cfg = write_config(profile_overrides={
-        "chunk_target_tokens": 0, "chunk_max_tokens": 1024,
-    })
+    cfg = write_config(
+        profile_overrides={
+            "chunk_target_tokens": 0,
+            "chunk_max_tokens": 1024,
+        }
+    )
     with pytest.raises(ValueError, match="requires .* chunk_target_tokens"):
         load_settings(cfg, validate=True)
 
 
 def test_chunk_max_tokens_below_target_is_rejected(write_config):
-    cfg = write_config(profile_overrides={
-        "chunk_target_tokens": 1024, "chunk_max_tokens": 512,
-    })
+    cfg = write_config(
+        profile_overrides={
+            "chunk_target_tokens": 1024,
+            "chunk_max_tokens": 512,
+        }
+    )
     with pytest.raises(ValueError, match="chunk_max_tokens"):
         load_settings(cfg, validate=True)
 
 
 def test_chunk_max_tokens_above_model_cap_is_rejected(write_config):
-    cfg = write_config(profile_overrides={
-        "max_token_length": 2048, "chunk_target_tokens": 512, "chunk_max_tokens": 4096,
-    })
+    cfg = write_config(
+        profile_overrides={
+            "max_token_length": 2048,
+            "chunk_target_tokens": 512,
+            "chunk_max_tokens": 4096,
+        }
+    )
     with pytest.raises(ValueError, match="chunk_max_tokens"):
         load_settings(cfg, validate=True)
 
@@ -363,9 +373,12 @@ def test_unknown_exclusion_filter_is_rejected(write_config):
 
 
 def test_document_engine_rejects_zero_max_tokens(write_config):
-    cfg = write_config(profile_overrides={
-        "chunk_target_tokens": 512, "chunk_max_tokens": 0,
-    })
+    cfg = write_config(
+        profile_overrides={
+            "chunk_target_tokens": 512,
+            "chunk_max_tokens": 0,
+        }
+    )
     with pytest.raises(ValueError, match="requires .* chunk_target_tokens"):
         load_settings(cfg, validate=True)
 
