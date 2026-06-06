@@ -3,7 +3,9 @@ import os
 import pytest
 
 from dbs_vector.config import settings
+from dbs_vector.core.models import Document
 from dbs_vector.infrastructure.chunking.document import DocumentChunker
+from dbs_vector.infrastructure.chunking.filters import FilterRegistry
 from dbs_vector.infrastructure.embeddings.mlx_engine import MLXEmbedder
 from dbs_vector.infrastructure.storage.lancedb_engine import LanceDBStore
 from dbs_vector.services.ingestion import IngestionService
@@ -78,3 +80,31 @@ def test_ingestion_and_search_integration(tmp_path):
     assert first_result.chunk.id is not None
     assert first_result.chunk.content_hash is not None
     assert isinstance(first_result.is_fts_match, bool)
+
+
+def test_section_chunking_no_noise_no_truncation(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "doc.md").write_text(
+        "# Guide\n\n## Setup\n\nInstall and configure the service properly.\n\n"
+        "## Big\n\n```python\n" + "\n".join(f"a{i}=1" for i in range(300)) + "\n```\n"
+    )
+    (vault / "draw.excalidraw.md").write_text("# d\n\n```compressed-json\nBLOB\n```\n")
+
+    chunker = DocumentChunker(
+        target_tokens=120, max_tokens=240,
+        filters=FilterRegistry.resolve(["excalidraw", "compressed_json"]),
+    )
+    chunks = [
+        c
+        for f in vault.glob("*.md")
+        for c in chunker.process(
+            Document(filepath=str(f), content=f.read_text(), content_hash="h")
+        )
+    ]
+
+    assert chunks, "expected chunks"
+    assert all(c.source.endswith("doc.md") for c in chunks)  # excalidraw skipped
+    assert all(len(c.text.strip()) >= 16 for c in chunks)    # no sub-16-char noise
+    assert all("BLOB" not in c.text for c in chunks)          # compressed-json dropped
+    assert all(c.parent_scope for c in chunks)                # heading context present
