@@ -92,20 +92,19 @@ def test_section_chunking_no_noise_no_truncation(tmp_path):
     (vault / "draw.excalidraw.md").write_text("# d\n\n```compressed-json\nBLOB\n```\n")
 
     chunker = DocumentChunker(
-        target_tokens=120, max_tokens=240,
+        target_tokens=120,
+        max_tokens=240,
         filters=FilterRegistry.resolve(["excalidraw", "compressed_json"]),
     )
     chunks = [
         c
         for f in vault.glob("*.md")
-        for c in chunker.process(
-            Document(filepath=str(f), content=f.read_text(), content_hash="h")
-        )
+        for c in chunker.process(Document(filepath=str(f), content=f.read_text(), content_hash="h"))
     ]
 
     assert chunks, "expected chunks"
     assert all(c.source.endswith("doc.md") for c in chunks)  # excalidraw skipped
-    assert all(len(c.text.strip()) >= 16 for c in chunks)    # no sub-16-char noise
-    assert all("BLOB" not in c.text for c in chunks)          # compressed-json dropped
-    assert all(c.parent_scope for c in chunks)                # heading context present
+    assert all(len(c.text.strip()) >= 16 for c in chunks)  # no sub-16-char noise
+    assert all("BLOB" not in c.text for c in chunks)  # compressed-json dropped
+    assert all(c.parent_scope for c in chunks)  # heading context present
     assert all(len(c.text) <= 240 for c in chunks)  # size invariant: no chunk exceeds max_tokens
