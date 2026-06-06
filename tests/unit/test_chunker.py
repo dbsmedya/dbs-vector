@@ -246,15 +246,17 @@ def test_single_huge_line_is_char_windowed():
 
 def test_excalidraw_file_yields_no_chunks():
     ch = DocumentChunker(filters=FilterRegistry.resolve(["excalidraw"]))
-    out = list(ch.process(Document(
-        filepath="d.excalidraw.md", content="# x\n\nbody\n", content_hash="h")))
+    out = list(
+        ch.process(Document(filepath="d.excalidraw.md", content="# x\n\nbody\n", content_hash="h"))
+    )
     assert out == []
 
 
 def test_compressed_json_block_is_dropped():
     content = "## Drawing\n\nIntro line that is long enough to keep.\n\n```compressed-json\nN4KAblob\n```\n"
     ch = DocumentChunker(
-        target_tokens=120, max_tokens=240,
+        target_tokens=120,
+        max_tokens=240,
         filters=FilterRegistry.resolve(["compressed_json"]),
     )
     chunks = list(ch.process(Document(filepath="t.md", content=content, content_hash="h")))

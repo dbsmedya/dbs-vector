@@ -99,8 +99,8 @@ def test_document_chunker_receives_token_budgets_and_length_fn(mock_settings):
         deps = build_dependencies("md")
 
     ch = deps.chunker
-    assert ch.target_tokens == 512   # profile.chunk_target_tokens
-    assert ch.max_tokens == 1024      # profile.chunk_max_tokens
+    assert ch.target_tokens == 512  # profile.chunk_target_tokens
+    assert ch.max_tokens == 1024  # profile.chunk_max_tokens
     # length_fn is the embedder's count_tokens (not the default `len`)
     assert ch._len is mock_embedder_instance.count_tokens
 
