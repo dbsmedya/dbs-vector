@@ -4,7 +4,10 @@ from dbs_vector.infrastructure.chunking.document import DocumentChunker
 
 def _chunks(content, **kw):
     # length_fn defaults to len (chars) -> deterministic, model-free.
-    ch = DocumentChunker(target_tokens=120, max_tokens=240, min_tokens=8, **kw)
+    kw.setdefault("target_tokens", 120)
+    kw.setdefault("max_tokens", 240)
+    kw.setdefault("min_tokens", 8)
+    ch = DocumentChunker(**kw)
     return list(ch.process(Document(filepath="t.md", content=content, content_hash="h")))
 
 
@@ -168,9 +171,27 @@ def test_metadata_line_range_is_one_based_inclusive():
 
 def test_pure_code_fence_markdown():
     """Markdown with only code fence, no prose."""
-    chunks = _chunks("```python\ndef hello():\n    return \"world\"\n```")
+    chunks = _chunks('```python\ndef hello():\n    return "world"\n```')
     assert len(chunks) == 1
     assert "```python" in chunks[0].text
     assert "def hello():" in chunks[0].text
     assert chunks[0].id == "t.md_chunk_0"
     assert chunks[0].node_type == "code"
+
+
+def test_sibling_sections_produce_separate_chunks():
+    content = "## A\n\nFirst section body goes here.\n\n## B\n\nSecond section body goes here.\n"
+    chunks = _chunks(content)
+    scopes = {c.parent_scope for c in chunks}
+    assert scopes == {"A", "B"}
+    assert len(chunks) == 2
+
+
+def test_tiny_trailing_block_merges_into_previous():
+    # target_tokens=40 forces the long paragraph and the tiny 'Hi.' into
+    # separate packed units; 'Hi.' (< min_tokens=8) then folds back into the
+    # previous unit -> a single chunk that still contains 'Hi.'.
+    content = "## S\n\nThis is a sufficiently long first paragraph here.\n\nHi.\n"
+    chunks = _chunks(content, target_tokens=40)
+    assert len(chunks) == 1
+    assert "Hi." in chunks[0].text

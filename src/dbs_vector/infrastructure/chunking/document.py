@@ -1,7 +1,6 @@
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Any
 
 import markdown_it
 
@@ -31,6 +30,14 @@ class _Spec:
     line_range: str
 
 
+@dataclass
+class _PackedUnit:
+    text: str
+    node_type: str
+    start: int
+    end: int
+
+
 class DocumentChunker:
     """Heading-aware, token-sized markdown chunker. Falls back to naive
     paragraph splitting for .txt files."""
@@ -45,10 +52,14 @@ class DocumentChunker:
         length_fn: Callable[[str], int] = len,
         filters: list[IContentFilter] | None = None,
     ) -> None:
-        self.max_chars = max_chars
+        self.max_chars = max_chars  # only used by the .txt fallback path
         self.target_tokens = target_tokens
         self.max_tokens = max_tokens
         self.min_tokens = min_tokens
+        if target_tokens > max_tokens:
+            raise ValueError(
+                f"target_tokens ({target_tokens}) must not exceed max_tokens ({max_tokens})"
+            )
         self._len = length_fn
         self._filters = list(filters) if filters else []
         self._md = markdown_it.MarkdownIt("commonmark").enable("table")
@@ -159,42 +170,48 @@ class DocumentChunker:
                     units.append((piece, b.node_type, b.start_line, b.end_line))
 
         # 2) greedy pack to eff_target
-        packed: list[list[Any]] = []
+        packed: list[_PackedUnit] = []
         for text, ntype, start, end in units:
             if packed:
                 cur = packed[-1]
-                cand = str(cur[0]) + "\n\n" + str(text)
+                cand = cur.text + "\n\n" + text
                 if self._len(cand) <= eff_target:
-                    cur[0] = cand
-                    cur[3] = end
-                    if cur[1] != ntype:
-                        cur[1] = "section"
+                    cur.text = cand
+                    cur.end = end
+                    if cur.node_type != ntype:
+                        cur.node_type = "section"
                     continue
-            packed.append([text, ntype, start, end])
+            packed.append(_PackedUnit(text, ntype, start, end))
 
-        # 3) tiny-merge: a chunk below min_tokens folds into previous (same section)
-        merged: list[list[Any]] = []
+        # 3) tiny-merge: a chunk below min_tokens folds into the previous one
+        #    (same section) — but ONLY if the merged result still fits eff_max,
+        #    so the merge never forces a later char-window re-split (which would
+        #    defeat the merge by fragmenting the combined content).
+        merged: list[_PackedUnit] = []
         for item in packed:
-            if merged and self._len(str(item[0])) < self.min_tokens:
+            if merged and self._len(item.text) < self.min_tokens:
                 p = merged[-1]
-                p[0] = str(p[0]) + "\n\n" + str(item[0])
-                p[1] = "section"
-                p[3] = item[3]
-            else:
-                merged.append(item)
+                cand = p.text + "\n\n" + item.text
+                if self._len(cand) <= eff_max:
+                    p.text = cand
+                    p.node_type = "section"
+                    p.end = item.end
+                    continue
+            merged.append(item)
 
         # 4) compose final text (prefix once per chunk); 1-based inclusive line
         #    range; safety-net char-window guarantees len(text) <= max_tokens
-        #    even if overhead accounting under-reserved (e.g. 3-digit part count).
+        #    even if overhead accounting under-reserved (e.g. 3-digit part count)
+        #    or a tiny-merge edge case slips through.
         out: list[_Spec] = []
-        for text, ntype, start, end in merged:
-            rng = f"{int(start) + 1}-{end}"  # markdown-it map is 0-based, end-exclusive
-            body = prefix + str(text) if prefix else str(text)
+        for u in merged:
+            rng = f"{u.start + 1}-{u.end}"  # markdown-it map is 0-based, end-exclusive
+            body = prefix + u.text if prefix else u.text
             if self._len(body) <= self.max_tokens:
-                out.append(_Spec(body, str(ntype), path or None, rng))
+                out.append(_Spec(body, u.node_type, path or None, rng))
             else:
                 for window in self._char_window(body, self.max_tokens):
-                    out.append(_Spec(window, str(ntype), path or None, rng))
+                    out.append(_Spec(window, u.node_type, path or None, rng))
         return out
 
     # ---- oversized-block splitting -------------------------------------
@@ -210,7 +227,8 @@ class DocumentChunker:
 
     def _split_code(self, b: _Block, target: int, max_: int) -> list[str]:
         lines = b.text.split("\n")
-        if len(lines) >= 2 and lines[0].lstrip().startswith("```"):
+        first = lines[0].lstrip()
+        if len(lines) >= 2 and (first.startswith("```") or first.startswith("~~~")):
             inner = lines[1:-1]
         else:
             inner = lines
