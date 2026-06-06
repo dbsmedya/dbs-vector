@@ -97,6 +97,16 @@ class IVectorStore(Protocol):
         ...
 
 
+class IContentFilter(Protocol):
+    """Decides whether to skip a whole file or drop a single block."""
+
+    name: str
+
+    def should_skip_file(self, filepath: str, content: str) -> bool: ...
+
+    def should_drop_block(self, text: str, info_string: str | None) -> bool: ...
+
+
 class IChunker(Protocol):
     """Protocol defining how documents are split into logical boundaries."""
 
