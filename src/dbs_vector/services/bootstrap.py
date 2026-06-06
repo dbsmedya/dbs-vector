@@ -57,6 +57,7 @@ def build_dependencies(
     mapper = MapperClass(vector_dimension=contract.vector_dimension)
 
     if engine.chunker_type == "document":
+        # deferred import: avoids a circular import (config.py uses the same pattern)
         from dbs_vector.infrastructure.chunking.filters import FilterRegistry
 
         # Token budgets are passed straight through: validation (config Rule for

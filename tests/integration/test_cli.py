@@ -24,7 +24,13 @@ def mock_settings():
     and `dbs_vector.services.bootstrap.settings` (used by the DI factory).
     """
     profiles = {
-        "test-md-profile": TuningProfile(max_token_length=512, chunk_max_chars=1000, batch_size=64),
+        "test-md-profile": TuningProfile(
+            max_token_length=512,
+            chunk_max_chars=1000,
+            chunk_target_tokens=512,
+            chunk_max_tokens=1024,
+            batch_size=64,
+        ),
         "test-sql-profile": TuningProfile(max_token_length=256, chunk_max_chars=0, batch_size=64),
     }
     engines = {
@@ -423,12 +429,10 @@ class TestBuildDependencies:
         mock_get_chunker, _ = mock_chunker
         mock_chunker_class = mock_get_chunker.return_value
         call_kwargs = mock_chunker_class.call_args.kwargs
-        # Token budgets come from the profile (test-md-profile sets
-        # chunk_target_tokens and chunk_max_tokens to their defaults of 0 since
-        # TuningProfile is constructed without them; max_chars uses `or 1000` fallback).
-        assert "max_chars" in call_kwargs
-        assert "target_tokens" in call_kwargs
-        assert "max_tokens" in call_kwargs
+        # Token budgets flow from the profile (test-md-profile has non-zero values).
+        assert call_kwargs["max_chars"] == 1000
+        assert call_kwargs["target_tokens"] == 512
+        assert call_kwargs["max_tokens"] == 1024
         assert "length_fn" in call_kwargs
         assert "filters" in call_kwargs
         # length_fn must be the embedder's count_tokens, not built-in len
