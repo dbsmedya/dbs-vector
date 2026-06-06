@@ -119,3 +119,70 @@ def test_chunker_kwargs_not_called_for_document_engine(mock_settings):
         build_dependencies("md")
     # chunker_kwargs must NOT be called for document engines
     engine_config.chunker_kwargs.assert_not_called()
+
+
+@pytest.fixture
+def mock_settings_with_sql(mock_settings):
+    """Extend mock_settings to add a non-document (sql/duckdb) engine."""
+    s, _, profile = mock_settings
+
+    sql_engine_config = MagicMock()
+    sql_engine_config.model = "gemma-bf16"
+    sql_engine_config.mapper_type = "sql"
+    sql_engine_config.chunker_type = "duckdb"
+    sql_engine_config.table_name = "sql_t"
+    sql_engine_config.workflow = "default"
+    sql_engine_config.tuning_profile = "test-profile"
+    sql_engine_config.passage_prefix = "P:"
+    sql_engine_config.query_prefix = "Q:"
+    sql_engine_config.exclusion_filters = []
+    # chunker_kwargs returns a harmless stub dict (no document-only keys)
+    sql_engine_config.chunker_kwargs.return_value = {"query": "SELECT 1"}
+
+    s.engines["sql-duckdb"] = sql_engine_config
+    return s, sql_engine_config, profile
+
+
+def test_non_document_engine_chunker_gets_no_document_kwargs(mock_settings_with_sql):
+    """Hard guard: SQL/duckdb engines must NOT receive document-chunking kwargs.
+
+    The non-document branch in build_dependencies calls:
+        ChunkerClass(**engine.chunker_kwargs(...))
+    which must never include target_tokens, max_tokens, length_fn, or filters.
+    This proves the token-budget/filter wiring added in Task 6 is strictly
+    document-engine-only.
+    """
+    _, sql_engine_config, _ = mock_settings_with_sql
+
+    MockChunkerClass = MagicMock()
+    mock_chunker_instance = MagicMock(spec=[])  # spec=[] → no attributes at all
+
+    MockChunkerClass.return_value = mock_chunker_instance
+
+    with (
+        patch("dbs_vector.services.bootstrap.MLXEmbedder"),
+        patch("dbs_vector.services.bootstrap.LanceDBStore"),
+        patch("dbs_vector.services.bootstrap.ComponentRegistry") as MockRegistry,
+    ):
+        MockRegistry.get_mapper.return_value = MagicMock()
+        MockRegistry.get_chunker.return_value = MockChunkerClass
+
+        deps = build_dependencies("sql-duckdb")
+
+    # The chunker constructor must have been called exactly once
+    MockChunkerClass.assert_called_once()
+    call_kwargs = MockChunkerClass.call_args.kwargs
+
+    # Core guarantee: none of the four document-only keys appear in the call
+    document_only_keys = {"target_tokens", "max_tokens", "length_fn", "filters"}
+    leaked = document_only_keys & set(call_kwargs)
+    assert not leaked, (
+        f"Non-document chunker received document-only kwargs: {leaked}. "
+        "SQL chunking must not be affected by token-budget/filter wiring."
+    )
+
+    # The returned chunker instance is what build_dependencies stored
+    assert deps.chunker is mock_chunker_instance
+
+    # chunker_kwargs WAS called (the non-document path uses it)
+    sql_engine_config.chunker_kwargs.assert_called_once()
