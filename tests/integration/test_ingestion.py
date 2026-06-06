@@ -108,3 +108,4 @@ def test_section_chunking_no_noise_no_truncation(tmp_path):
     assert all(len(c.text.strip()) >= 16 for c in chunks)    # no sub-16-char noise
     assert all("BLOB" not in c.text for c in chunks)          # compressed-json dropped
     assert all(c.parent_scope for c in chunks)                # heading context present
+    assert all(len(c.text) <= 240 for c in chunks)  # size invariant: no chunk exceeds max_tokens

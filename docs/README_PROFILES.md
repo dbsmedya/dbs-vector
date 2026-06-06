@@ -83,6 +83,16 @@ For SQL and other non-document profiles, omit `chunk_target_tokens` and
 `chunk_max_tokens` (or leave them at their default of `0`). They are inert
 for any engine whose `chunker_type` is not `"document"`.
 
+> **NOTE — `passage_prefix` headroom:** The chunker sizes each chunk by
+> `chunk_max_tokens` measured on the chunk body alone (via `count_tokens`).
+> At embed time the engine's `passage_prefix` is prepended before the model's
+> `max_token_length` truncation applies. For engines with a non-empty
+> `passage_prefix` (e.g. Gemma), set `chunk_max_tokens` comfortably below
+> `max_token_length` to leave headroom for the prefix. The shipped Gemma
+> profile already does this: `chunk_max_tokens: 1024` vs `max_token_length:
+> 2048`. Granite engines use an empty prefix, so no prefix headroom is needed
+> beyond the normal `chunk_max_tokens ≤ max_token_length` rule.
+
 Concrete example matching the `config.yaml.example` values:
 
 ```yaml
@@ -118,17 +128,21 @@ Default is an empty list (nothing excluded).
 
 | Filter name | What it drops |
 |---|---|
-| `excalidraw` | `.excalidraw.md` files; files with `excalidraw-plugin` frontmatter; fenced blocks whose info-string is `excalidraw`. |
+| `excalidraw` | Whole files whose path ends `.excalidraw.md` OR whose first 500 characters contain `excalidraw-plugin`; fenced `json` blocks whose body contains `"type": "excalidraw"`. |
 | `compressed_json` | Fenced blocks whose info-string is `compressed-json`. |
 
 **Adding a custom filter:**
 
-1. Implement and register the filter in
-   `src/dbs_vector/infrastructure/chunking/filters.py` via
-   `FilterRegistry.register(name, filter_fn)`.
+A custom filter is a class implementing the `IContentFilter` protocol: a `name: str` attribute, a `should_skip_file(self, filepath, content) -> bool` method, and a `should_drop_block(self, text, info_string) -> bool` method.
+
+1. Implement the filter class and register an instance via
+   `FilterRegistry.register(flt)` — it takes a single filter object
+   whose `.name` attribute is used as the registry key.
 2. Add the `name` string to `exclusion_filters` in the engine block.
 
 No changes to services, CLI, or MCP code are needed.
+
+> **Known limitation — tiny heading-only sections:** The chunker folds an under-`min_tokens` block into the previous sibling within the same heading section. A heading section whose only content is smaller than `min_tokens` (no previous sibling to merge into) still emits one small chunk, but it carries the full heading-path prefix for context.
 
 The validator checks every engine/profile pairing at config load. It rejects profiles that exceed the model context cap or the Metal memory budget and prints safer suggested values.
 
