@@ -1,5 +1,6 @@
 from dbs_vector.core.models import Document
 from dbs_vector.infrastructure.chunking.document import DocumentChunker
+from dbs_vector.infrastructure.chunking.filters import FilterRegistry
 
 
 def _chunks(content, **kw):
@@ -195,3 +196,67 @@ def test_tiny_trailing_block_merges_into_previous():
     chunks = _chunks(content, target_tokens=40)
     assert len(chunks) == 1
     assert "Hi." in chunks[0].text
+
+
+# ---- oversized splitting + filter behavior ---------------------------------
+
+
+def test_oversized_code_fence_splits_by_lines_never_truncates():
+    code = "\n".join(f"line_{i} = {i}" for i in range(400))  # ~ large
+    content = f"## Big\n\n```python\n{code}\n```\n"
+    chunks = _chunks(content, target_tokens=120, max_tokens=240)
+    assert len(chunks) > 1
+    for c in chunks:
+        assert len(c.text) <= 240  # final text incl. heading path + fences fits max
+        assert "```python" in c.text
+    # reassembled code retains all lines
+    joined = "\n".join(c.text for c in chunks)
+    assert "line_0 = 0" in joined and "line_399 = 399" in joined
+
+
+def test_oversized_list_splits_at_item_boundaries():
+    items = "\n".join(f"- item number {i} with some words" for i in range(80))
+    content = f"## L\n\n{items}\n"
+    chunks = _chunks(content, target_tokens=100, max_tokens=200)
+    assert len(chunks) > 1
+    # no chunk starts mid-item (every body line under heading begins with '- ')
+    for c in chunks:
+        body = c.text.split("\n\n", 1)[-1]
+        first = body.splitlines()[0]
+        assert first.startswith("- ")
+
+
+def test_oversized_table_repeats_header_each_part():
+    rows = "\n".join(f"| r{i} | v{i} |" for i in range(60))
+    content = f"## T\n\n| a | b |\n|---|---|\n{rows}\n"
+    chunks = _chunks(content, target_tokens=100, max_tokens=200)
+    assert len(chunks) > 1
+    for c in chunks:
+        assert "| a | b |" in c.text  # header repeated
+
+
+def test_single_huge_line_is_char_windowed():
+    blob = "x" * 5000  # one line, no internal boundary
+    content = f"## Blob\n\n```text\n{blob}\n```\n"
+    chunks = _chunks(content, target_tokens=200, max_tokens=400)
+    assert len(chunks) > 1
+    for c in chunks:
+        assert len(c.text) <= 400  # char-window guarantees the invariant
+
+
+def test_excalidraw_file_yields_no_chunks():
+    ch = DocumentChunker(filters=FilterRegistry.resolve(["excalidraw"]))
+    out = list(ch.process(Document(
+        filepath="d.excalidraw.md", content="# x\n\nbody\n", content_hash="h")))
+    assert out == []
+
+
+def test_compressed_json_block_is_dropped():
+    content = "## Drawing\n\nIntro line that is long enough to keep.\n\n```compressed-json\nN4KAblob\n```\n"
+    ch = DocumentChunker(
+        target_tokens=120, max_tokens=240,
+        filters=FilterRegistry.resolve(["compressed_json"]),
+    )
+    chunks = list(ch.process(Document(filepath="t.md", content=content, content_hash="h")))
+    assert all("compressed-json" not in c.text and "N4KAblob" not in c.text for c in chunks)
+    assert any("Intro line" in c.text for c in chunks)
