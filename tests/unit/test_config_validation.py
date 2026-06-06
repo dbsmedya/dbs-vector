@@ -360,3 +360,19 @@ def test_unknown_exclusion_filter_is_rejected(write_config):
     cfg = write_config(engine_overrides={"exclusion_filters": ["bogus"]})
     with pytest.raises(ValueError, match="Unknown exclusion filter"):
         load_settings(cfg, validate=True)
+
+
+def test_document_engine_rejects_zero_max_tokens(write_config):
+    cfg = write_config(profile_overrides={
+        "chunk_target_tokens": 512, "chunk_max_tokens": 0,
+    })
+    with pytest.raises(ValueError, match="requires .* chunk_target_tokens"):
+        load_settings(cfg, validate=True)
+
+
+def test_non_document_engine_exempt_from_token_budget_rule(write_config):
+    cfg = write_config(
+        profile_overrides={"chunk_target_tokens": 0, "chunk_max_tokens": 0},
+        engine_overrides={"chunker_type": "duckdb", "mapper_type": "sql"},
+    )
+    load_settings(cfg, validate=True)  # must not raise

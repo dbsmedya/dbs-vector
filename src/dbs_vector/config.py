@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class TuningProfile(BaseModel):
-    """Three numeric knobs validated against the engine's model contract and
+    """Numeric knobs validated against the engine's model contract and
     available memory at load time."""
 
     model_config = ConfigDict(extra="forbid")
@@ -204,6 +204,9 @@ def _validate_config(settings: Settings, config_file: str) -> None:
       5. (warn) chunk_max_chars routinely exceeds max_token_length × 4.
       6. Engine name matches ^[a-z0-9][a-z0-9_-]*$ (MCP tool naming).
       7. resolved_family is a known FamilyKeyRegistry key.
+      8. Document engines require chunk_target_tokens > 0 and chunk_max_tokens > 0;
+         chunk_max_tokens ≥ chunk_target_tokens; chunk_max_tokens ≤ max_token_length.
+      9. exclusion_filters (if set) must resolve to known FilterRegistry entries.
 
     Memory budget is resolved lazily (only when rule 4 actually runs) so a
     config with an unknown model/profile fails on rule 1/2 BEFORE we attempt
@@ -312,7 +315,7 @@ def _validate_config(settings: Settings, config_file: str) -> None:
                 profile.max_token_length,
             )
 
-        # Rule 6: token budgets. Document engines REQUIRE explicit nonzero
+        # Rule 8: token budgets. Document engines REQUIRE explicit nonzero
         # budgets (0 is reserved for non-document profiles, where these fields
         # are unused). Coherence is then enforced.
         if engine.chunker_type == "document":
@@ -325,18 +328,18 @@ def _validate_config(settings: Settings, config_file: str) -> None:
                 )
             if profile.chunk_max_tokens < profile.chunk_target_tokens:
                 raise ValueError(
-                    f"Profile '{engine.tuning_profile}': chunk_max_tokens="
+                    f"Engine '{engine_name}' profile '{engine.tuning_profile}': chunk_max_tokens="
                     f"{profile.chunk_max_tokens} < chunk_target_tokens="
                     f"{profile.chunk_target_tokens}."
                 )
             if profile.chunk_max_tokens > profile.max_token_length:
                 raise ValueError(
-                    f"Profile '{engine.tuning_profile}': chunk_max_tokens="
+                    f"Engine '{engine_name}' profile '{engine.tuning_profile}': chunk_max_tokens="
                     f"{profile.chunk_max_tokens} exceeds max_token_length="
                     f"{profile.max_token_length} (embedder truncation cap)."
                 )
 
-        # Rule 7: exclusion filters resolve (any engine that sets them)
+        # Rule 9: exclusion filters resolve (any engine that sets them)
         if engine.exclusion_filters:
             FilterRegistry.resolve(engine.exclusion_filters)  # raises on unknown
 
