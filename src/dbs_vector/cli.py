@@ -181,6 +181,13 @@ def search(
     min_time: Annotated[
         float | None, typer.Option("--min-time", help="(SQL Only) Minimum execution time in ms.")
     ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Emit full results (score, source, full text, metadata) as JSON to stdout.",
+        ),
+    ] = False,
 ) -> None:
     """Searches the vector store using hybrid retrieval (Vector + Full-Text)."""
     if engine_name not in settings.engines:
@@ -199,7 +206,10 @@ def search(
     results = service.execute_query(
         query, source_filter=filter_source, limit=limit, extra_filters=extra_filters
     )
-    service.print_results(results)
+    if json_output:
+        typer.echo(service.results_to_json(results))
+    else:
+        service.print_results(results)
 
 
 @app.command()

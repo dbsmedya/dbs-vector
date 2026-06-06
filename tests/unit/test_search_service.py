@@ -1,5 +1,6 @@
 """Unit tests for the SearchService."""
 
+import json
 from datetime import datetime
 from unittest.mock import MagicMock
 
@@ -290,3 +291,80 @@ class TestPrintResults:
         assert caplog.text.count("Source:") == 2
         assert "hash_a" in caplog.text
         assert "hash_b" in caplog.text
+
+
+class TestResultsToJson:
+    """Tests for the results_to_json method (full-fidelity JSON dump)."""
+
+    def test_empty_results_is_empty_array(self, search_service):
+        assert json.loads(search_service.results_to_json([])) == []
+
+    def test_document_result_includes_score_source_full_text_and_metadata(self, search_service):
+        results = [
+            SearchResult(
+                chunk=Chunk(
+                    id="doc_chunk_0",
+                    text="This is the full document content that should be present verbatim.",
+                    source="docs/readme.md",
+                    content_hash="abc123",
+                    node_type="paragraph",
+                    parent_scope="# Section",
+                    line_range="10-20",
+                ),
+                score=0.95,
+                distance=0.42,
+                is_fts_match=False,
+            )
+        ]
+
+        payload = json.loads(search_service.results_to_json(results))
+
+        assert len(payload) == 1
+        item = payload[0]
+        assert item["score"] == 0.95
+        assert item["distance"] == 0.42
+        assert item["is_fts_match"] is False
+        # Full text is present verbatim (not truncated like print_results).
+        assert item["chunk"]["text"] == (
+            "This is the full document content that should be present verbatim."
+        )
+        assert item["chunk"]["source"] == "docs/readme.md"
+        assert item["chunk"]["content_hash"] == "abc123"
+        # Metadata fields survive the round-trip.
+        assert item["chunk"]["node_type"] == "paragraph"
+        assert item["chunk"]["parent_scope"] == "# Section"
+        assert item["chunk"]["line_range"] == "10-20"
+
+    def test_sql_result_includes_raw_query_and_sql_metadata(self, search_service):
+        from dbs_vector.core.models import SqlChunk, SqlSearchResult
+
+        results = [
+            SqlSearchResult(
+                chunk=SqlChunk(
+                    id="sql_chunk_0",
+                    text="SELECT * FROM users WHERE id = ?",
+                    raw_query="SELECT * FROM users WHERE id = 1",
+                    source="production_db",
+                    execution_time_ms=150.5,
+                    calls=42,
+                    content_hash="sql_hash_123",
+                    tables=["users"],
+                    latest_ts=datetime(2026, 1, 1, 12, 0, 0),
+                ),
+                score=0.88,
+                distance=None,
+                is_fts_match=False,
+            )
+        ]
+
+        payload = json.loads(search_service.results_to_json(results))
+
+        item = payload[0]
+        assert item["score"] == 0.88
+        assert item["chunk"]["raw_query"] == "SELECT * FROM users WHERE id = 1"
+        assert item["chunk"]["source"] == "production_db"
+        assert item["chunk"]["execution_time_ms"] == 150.5
+        assert item["chunk"]["calls"] == 42
+        assert item["chunk"]["tables"] == ["users"]
+        # datetime serializes to an ISO-8601 string in JSON mode.
+        assert item["chunk"]["latest_ts"].startswith("2026-01-01T12:00:00")

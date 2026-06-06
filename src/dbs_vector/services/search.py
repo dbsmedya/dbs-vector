@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 from loguru import logger
@@ -52,6 +53,15 @@ class SearchService:
             source_filter=source_filter,
             **(extra_filters or {}),
         )
+
+    def results_to_json(self, results: list[Any]) -> str:
+        """Serialize search results to a JSON array string with full fidelity.
+
+        Unlike print_results, nothing is truncated: every result carries its
+        score, distance, source, full text, and all chunk metadata.
+        """
+        payload = [res.model_dump(mode="json") for res in results]
+        return json.dumps(payload, indent=2, ensure_ascii=False)
 
     def print_results(self, results: list[Any]) -> None:
         """Formats and prints the parsed search results."""

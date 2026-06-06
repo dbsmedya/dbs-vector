@@ -79,9 +79,26 @@ Execute queries against your chosen engine.
 # Semantic hybrid search across markdown
 uv run dbs-vector search "What is MLX?"
 
+# Limit results and restrict to a single source file/database
+uv run dbs-vector search "What is MLX?" --limit 10 --source docs/architecture.md
+
 # Find similar slow queries (SQL clustering)
 uv run dbs-vector search "SELECT * FROM users" --type sql --min-time 1000
+
+# Emit full results (score, source, full text, metadata) as JSON to stdout.
+# Logs go to stderr, so stdout stays clean JSON and pipes safely into jq.
+uv run dbs-vector search "SELECT * FROM users" --type sql --json | jq '.[].chunk.source'
 ```
+
+Search options:
+
+| Option | Alias | Description |
+| --- | --- | --- |
+| `--type` | `-t` | Engine to search (`md`, `sql`, `md-granite`, …). Default: `md`. |
+| `--source` | `-s` | Restrict results to a single file or database. |
+| `--limit` | `-l` | Maximum number of results. Default: `5`. |
+| `--min-time` | | (SQL only) Minimum execution time in ms. |
+| `--json` | | Dump full results as a JSON array to stdout instead of the human-readable summary. Nothing is truncated. |
 
 > **Indexes are built automatically at the end of every `ingest` run.** Two indexes are created:
 > - **IVF_PQ** vector index (only when the table has > 256 rows)
