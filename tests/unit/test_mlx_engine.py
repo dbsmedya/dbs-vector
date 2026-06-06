@@ -555,9 +555,7 @@ class TestCountTokens:
         _, _, mock_tokenizer = mock_load
         mock_tokenizer._tokenizer.return_value = {"input_ids": [1, 2, 3, 4, 5]}
 
-        embedder = MLXEmbedder(
-            model_name="m", max_token_length=2048, dimension=768
-        )
+        embedder = MLXEmbedder(model_name="m", max_token_length=2048, dimension=768)
         assert embedder.count_tokens("hello world") == 5
         # add_special_tokens must be requested so the count matches embedding time
         _, kwargs = mock_tokenizer._tokenizer.call_args
