@@ -18,11 +18,14 @@ def mock_settings():
     engine_config.tuning_profile = "test-profile"
     engine_config.passage_prefix = "P:"
     engine_config.query_prefix = "Q:"
+    engine_config.exclusion_filters = []
     engine_config.chunker_kwargs.return_value = {"max_chars": 500}
 
     profile = MagicMock()
     profile.max_token_length = 2048
     profile.chunk_max_chars = 500
+    profile.chunk_target_tokens = 512
+    profile.chunk_max_tokens = 1024
     profile.batch_size = 64
 
     with patch("dbs_vector.services.bootstrap.settings") as s:
@@ -74,9 +77,37 @@ def test_resolves_via_model_registry(mock_settings):
     assert kwargs["attention_mask_dtype"] == "float16"
 
 
-def test_chunker_kwargs_called_without_chunk_max_chars(mock_settings):
-    """bootstrap no longer passes chunk_max_chars; document chunker is wired
-    separately via token budgets / filters in Task 6."""
+def test_document_chunker_receives_token_budgets_and_length_fn(mock_settings):
+    """Document chunker is built with profile token budgets and embedder.count_tokens."""
+    _, engine_config, profile = mock_settings
+    mock_embedder_instance = MagicMock()
+    mock_embedder_instance.count_tokens = MagicMock(return_value=42)
+
+    with (
+        patch("dbs_vector.services.bootstrap.MLXEmbedder") as MockEmbedder,
+        patch("dbs_vector.services.bootstrap.LanceDBStore"),
+        patch("dbs_vector.services.bootstrap.ComponentRegistry") as MockRegistry,
+    ):
+        MockEmbedder.return_value = mock_embedder_instance
+        MockRegistry.get_mapper.return_value = MagicMock()
+
+        # Use the real DocumentChunker so we can inspect its attributes
+        from dbs_vector.infrastructure.chunking.document import DocumentChunker
+
+        MockRegistry.get_chunker.return_value = DocumentChunker
+
+        deps = build_dependencies("md")
+
+    ch = deps.chunker
+    assert ch.target_tokens == 512   # profile.chunk_target_tokens
+    assert ch.max_tokens == 1024      # profile.chunk_max_tokens
+    # length_fn is the embedder's count_tokens (not the default `len`)
+    assert ch._len is mock_embedder_instance.count_tokens
+
+
+def test_chunker_kwargs_not_called_for_document_engine(mock_settings):
+    """bootstrap no longer calls chunker_kwargs for document engines; the
+    document chunker is wired explicitly via token budgets / filters in Task 6."""
     _, engine_config, _ = mock_settings
     with (
         patch("dbs_vector.services.bootstrap.MLXEmbedder"),
@@ -86,6 +117,5 @@ def test_chunker_kwargs_called_without_chunk_max_chars(mock_settings):
         MockRegistry.get_mapper.return_value = MagicMock()
         MockRegistry.get_chunker.return_value = MagicMock()
         build_dependencies("md")
-    args, kwargs = engine_config.chunker_kwargs.call_args
-    assert "chunk_max_chars" not in kwargs
-    assert not args  # no positional args
+    # chunker_kwargs must NOT be called for document engines
+    engine_config.chunker_kwargs.assert_not_called()

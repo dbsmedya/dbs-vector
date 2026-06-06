@@ -55,12 +55,29 @@ def build_dependencies(
     ChunkerClass = ComponentRegistry.get_chunker(engine.chunker_type)
 
     mapper = MapperClass(vector_dimension=contract.vector_dimension)
-    chunker = ChunkerClass(
-        **engine.chunker_kwargs(
-            query_override=query_override,
-            url_override=url_override,
+
+    if engine.chunker_type == "document":
+        from dbs_vector.infrastructure.chunking.filters import FilterRegistry
+
+        # Token budgets are passed straight through: validation (config Rule for
+        # document engines) guarantees both are > 0, so NO `or <default>` here —
+        # a 0 would be a validation bug, not a silent fallback. `max_chars`
+        # keeps its `or 1000` because it only feeds the rarely-used .txt path
+        # and md profiles legitimately set chunk_max_chars: 0.
+        chunker = ChunkerClass(
+            max_chars=profile.chunk_max_chars or 1000,
+            target_tokens=profile.chunk_target_tokens,
+            max_tokens=profile.chunk_max_tokens,
+            length_fn=embedder.count_tokens,
+            filters=FilterRegistry.resolve(engine.exclusion_filters),
         )
-    )
+    else:
+        chunker = ChunkerClass(
+            **engine.chunker_kwargs(
+                query_override=query_override,
+                url_override=url_override,
+            )
+        )
 
     store = LanceDBStore(
         db_path=settings.db_path,

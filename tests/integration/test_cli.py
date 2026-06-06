@@ -411,22 +411,33 @@ class TestBuildDependencies:
         with pytest.raises(ValueError, match="Unknown engine: 'unknown'"):
             _build_dependencies("unknown")
 
-    def test_build_dependencies_chunker_with_max_chars(
+    def test_build_dependencies_document_chunker_wired_with_token_budgets(
         self, mock_settings, mock_embedder, mock_store, mock_chunker, mock_mapper
     ):
-        """Test chunker gets max_chars when > 0."""
+        """Test document chunker is built with token budgets, length_fn, and filters
+        (not via chunker_kwargs) — the explicit wiring path from Task 6."""
         from dbs_vector.cli import _build_dependencies
 
         _build_dependencies("md")
 
         mock_get_chunker, _ = mock_chunker
         mock_chunker_class = mock_get_chunker.return_value
-        mock_chunker_class.assert_called_once_with(max_chars=1000)
+        call_kwargs = mock_chunker_class.call_args.kwargs
+        # Token budgets come from the profile (test-md-profile sets
+        # chunk_target_tokens and chunk_max_tokens to their defaults of 0 since
+        # TuningProfile is constructed without them; max_chars uses `or 1000` fallback).
+        assert "max_chars" in call_kwargs
+        assert "target_tokens" in call_kwargs
+        assert "max_tokens" in call_kwargs
+        assert "length_fn" in call_kwargs
+        assert "filters" in call_kwargs
+        # length_fn must be the embedder's count_tokens, not built-in len
+        assert call_kwargs["length_fn"] is mock_embedder.return_value.count_tokens
 
     def test_build_dependencies_chunker_without_max_chars(
         self, mock_settings, mock_embedder, mock_store, mock_chunker, mock_mapper
     ):
-        """Test chunker gets no max_chars when = 0 (SQL)."""
+        """Test SQL chunker is built via chunker_kwargs (no explicit token-budget wiring)."""
         from dbs_vector.cli import _build_dependencies
 
         _build_dependencies("sql")
