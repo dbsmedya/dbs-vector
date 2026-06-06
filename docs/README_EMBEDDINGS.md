@@ -4,13 +4,15 @@ This document covers the embedding-model layer in `dbs-vector`: which models are
 
 ## Tuning Profiles
 
-Each engine references a `tuning_profile:` key in `config.yaml`. A profile is three numeric knobs that control runtime memory and chunking behaviour for that engine:
+Each engine references a `tuning_profile:` key in `config.yaml`. A profile is a set of numeric knobs that control runtime memory and chunking behaviour for that engine:
 
 | Field | What it controls |
 |---|---|
-| `max_token_length` | Hard truncation limit sent to the tokenizer (must be ≤ the model's `model_max_token_length` in `ModelRegistry`). |
-| `chunk_max_chars` | Target character budget per chunk for prose accumulation (`0` = atomic / no splitting, used for SQL). |
+| `max_token_length` | Truncation safety net: the embedder's hard token cap (must be ≤ the model's `model_max_token_length` in `ModelRegistry`). |
+| `chunk_max_chars` | Character budget for the `.txt` fallback path (`0` = atomic / no splitting, used for SQL). Not used for markdown chunks. |
 | `batch_size` | Number of chunks per MLX forward pass. Tuned to fit the model's embedding matrix in Metal memory budget. |
+| `chunk_target_tokens` | Target tokens per markdown chunk. **Required > 0 for document engines** (`chunker_type: "document"`). Omit for SQL profiles (inert). |
+| `chunk_max_tokens` | Hard per-chunk token ceiling for markdown. **Required > 0 for document engines.** Must satisfy `chunk_target_tokens ≤ chunk_max_tokens ≤ max_token_length`. |
 
 Profiles are validated at load time against the engine's model contract and the available Metal memory budget (auto-detected from `mlx.core.metal.device_info()`; override with `system.memory_budget_gb`).
 
@@ -18,7 +20,7 @@ Example from `config.yaml`:
 
 ```yaml
 profiles:
-  gemma-md: {max_token_length: 2048, chunk_max_chars: 1000, batch_size: 64}
+  gemma-md: {max_token_length: 2048, chunk_max_chars: 1000, batch_size: 64, chunk_target_tokens: 512, chunk_max_tokens: 1024}
 
 engines:
   md:

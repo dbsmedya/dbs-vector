@@ -9,7 +9,7 @@ This guide explains the profile-based configuration used by `dbs-vector`: what t
 | Layer | Where | Purpose |
 |---|---|---|
 | System settings | `system:` | Global runtime settings such as LanceDB path, search probes, and optional memory budget override. |
-| Tuning profiles | `profiles:` | Hardware-sensitive knobs: `max_token_length`, `chunk_max_chars`, and `batch_size`. |
+| Tuning profiles | `profiles:` | Hardware-sensitive knobs: `max_token_length`, `chunk_max_chars`, `batch_size`, and (for document engines) `chunk_target_tokens` / `chunk_max_tokens`. |
 | Engines | `engines:` | Data pipeline wiring: model key, chunker, mapper, table, workflow, prefixes, and profile selection. |
 
 Model contract details do **not** live in `config.yaml`. The Hugging Face model path, vector dimension, model context cap, and attention-mask dtype are hardcoded in `src/dbs_vector/core/model_registry.py`.
@@ -44,9 +44,9 @@ A profile controls how large each embedding batch can get:
 
 ```yaml
 profiles:
-  gemma-md:           {max_token_length: 2048,  chunk_max_chars: 1000, batch_size: 64}
+  gemma-md:           {max_token_length: 2048,  chunk_max_chars: 1000, batch_size: 64, chunk_target_tokens: 512,  chunk_max_tokens: 1024}
   gemma-sql-atomic:   {max_token_length: 2048,  chunk_max_chars: 0,    batch_size: 64}
-  granite-md-large:   {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8}
+  granite-md-large:   {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8,  chunk_target_tokens: 1536, chunk_max_tokens: 3072}
   granite-sql-atomic: {max_token_length: 8192,  chunk_max_chars: 0,    batch_size: 32}
 ```
 
@@ -54,9 +54,81 @@ Profile fields:
 
 | Field | Meaning | Practical guidance |
 |---|---|---|
-| `max_token_length` | Token limit passed to the model tokenizer. | Must be less than or equal to the model contract cap. Gemma cap is 2048. Granite R2 cap is 32768. |
-| `chunk_max_chars` | Character target for document chunk accumulation. | Use a positive value for document engines. Use `0` for atomic SQL/API records. |
+| `max_token_length` | Truncation safety net: the embedder's token cap. `chunk_max_tokens` must not exceed this value. | Must be ≤ the model contract cap (Gemma: 2048, Granite R2: 32768). Enforced at config load. |
+| `chunk_max_chars` | Character budget for `.txt` fallback chunking only. | Positive value for document engines using `.txt` input. `0` for SQL/API atomic records. Markdown chunks are sized by the token budgets below, not this field. |
 | `batch_size` | Number of chunks embedded per MLX forward pass. | Lower this first when memory validation fails or you hit runtime memory pressure. |
+| `chunk_target_tokens` | Target tokens per markdown chunk (document engines). | **Required > 0 for document engines** (`chunker_type: "document"`). Omit or leave `0` for SQL/non-document profiles — it is unused and inert there. |
+| `chunk_max_tokens` | Hard per-chunk token ceiling (document engines). | **Required > 0 for document engines.** Must satisfy `chunk_target_tokens ≤ chunk_max_tokens ≤ max_token_length`. Enforced at config load. |
+
+### Token Budget Knobs (document engines)
+
+The `DocumentChunker` is heading-aware and token-sized. When an engine sets
+`chunker_type: "document"`, the chunker accumulates markdown sections until
+`chunk_target_tokens` is reached, then seals the chunk. No single chunk is
+allowed to exceed `chunk_max_tokens`. The coherence invariant is enforced at
+config load:
+
+```
+0 < chunk_target_tokens <= chunk_max_tokens <= max_token_length
+```
+
+`max_token_length` is now a **truncation safety net** — the embedder's hard
+cap — not a chunking target. Its relationship to the chunk size budget is
+enforced, not just advisory.
+
+`chunk_max_chars` governs only the `.txt` fallback path. For `.md` input,
+`chunk_max_chars` is ignored; the token budgets drive all chunking decisions.
+
+For SQL and other non-document profiles, omit `chunk_target_tokens` and
+`chunk_max_tokens` (or leave them at their default of `0`). They are inert
+for any engine whose `chunker_type` is not `"document"`.
+
+Concrete example matching the `config.yaml.example` values:
+
+```yaml
+profiles:
+  gemma-md: {max_token_length: 2048, chunk_max_chars: 1000, batch_size: 64, chunk_target_tokens: 512, chunk_max_tokens: 1024}
+
+engines:
+  md:
+    model: "gemma-bf16"
+    mapper_type: "document"
+    chunker_type: "document"
+    table_name: "knowledge_vault"
+    workflow: "md_search"
+    tuning_profile: "gemma-md"
+    exclusion_filters: [excalidraw, compressed_json]
+    passage_prefix: "title: none | text: "
+    query_prefix: "task: search result | query: "
+```
+
+### Exclusion Filters (per-engine)
+
+Engines may declare a list of named content filters via the `exclusion_filters`
+field. Filters are applied at ingest time before chunking; filtered content is
+silently dropped and never written to the vector store.
+
+`exclusion_filters` is a per-engine field (not per-profile). Different engines
+can filter differently — e.g., a general-purpose prose engine can exclude
+drawing files while a code search engine does not.
+
+Default is an empty list (nothing excluded).
+
+**Built-in filters:**
+
+| Filter name | What it drops |
+|---|---|
+| `excalidraw` | `.excalidraw.md` files; files with `excalidraw-plugin` frontmatter; fenced blocks whose info-string is `excalidraw`. |
+| `compressed_json` | Fenced blocks whose info-string is `compressed-json`. |
+
+**Adding a custom filter:**
+
+1. Implement and register the filter in
+   `src/dbs_vector/infrastructure/chunking/filters.py` via
+   `FilterRegistry.register(name, filter_fn)`.
+2. Add the `name` string to `exclusion_filters` in the engine block.
+
+No changes to services, CLI, or MCP code are needed.
 
 The validator checks every engine/profile pairing at config load. It rejects profiles that exceed the model context cap or the Metal memory budget and prints safer suggested values.
 
@@ -115,7 +187,7 @@ For Markdown/document engines:
 
 ```yaml
 profiles:
-  my-granite-docs: {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8}
+  my-granite-docs: {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8, chunk_target_tokens: 1536, chunk_max_tokens: 3072}
 
 engines:
   md-granite:
@@ -126,6 +198,7 @@ engines:
     table_name: "knowledge_vault_granite"
     workflow: "md_search_granite"
     tuning_profile: "my-granite-docs"
+    exclusion_filters: [excalidraw, compressed_json]
 ```
 
 For SQL/DuckDB engines:
@@ -149,16 +222,17 @@ Rules of thumb:
 
 - If validation says the profile would exceed memory, reduce `batch_size` first.
 - If `batch_size: 1` still does not fit, reduce `max_token_length`.
-- If truncation warnings appear during ingestion, either raise `max_token_length` or lower `chunk_max_chars`.
+- If truncation warnings appear during ingestion, either raise `max_token_length` or lower `chunk_max_tokens`.
 - For SQL engines, keep `chunk_max_chars: 0`; each SQL record should remain atomic.
-- For document engines, keep `chunk_max_chars` well below the token window. The default Granite document profile uses 6000 chars for a 16384-token window to leave tokenizer slack.
+- For document engines, set `chunk_target_tokens` and `chunk_max_tokens` (both required > 0). `chunk_max_chars` is only used for the `.txt` fallback path and can be left as a rough reference value (e.g. 6000 chars for a 16384-token window).
+- Ensure the coherence invariant holds: `chunk_target_tokens ≤ chunk_max_tokens ≤ max_token_length`.
 
 ## Memory Math and Throughput Tuning
 
-The three profile knobs are not independent. Understanding how they
-interact at the validator and at runtime lets you choose between
-**conservative** (safe on tight memory budgets) and
-**throughput-optimized** profiles for the same chunk size.
+The core profile knobs (`max_token_length`, `batch_size`, `chunk_target_tokens`,
+`chunk_max_tokens`) are not independent. Understanding how they interact at the
+validator and at runtime lets you choose between **conservative** (safe on tight
+memory budgets) and **throughput-optimized** profiles for the same chunk size.
 
 ### What the validator computes
 
@@ -203,33 +277,33 @@ fill `max_token_length`. But it also means **lowering
 ### The throughput optimization
 
 If your chunks are bounded well below `max_token_length` (e.g.,
-`chunk_max_chars: 3000` produces chunks of at most ~1000 tokens, well
+`chunk_max_tokens: 1024` caps markdown chunks at ~1000 tokens, well
 under 16384), you have two equivalent-cost profiles:
 
 ```yaml
 # Conservative: matches granite-md-large's memory budget. Slow ingest.
-granite-md-medium-safe:    {max_token_length: 16384, chunk_max_chars: 3000, batch_size: 8}
+granite-md-medium-safe:    {max_token_length: 16384, chunk_max_chars: 3000, batch_size: 8,  chunk_target_tokens: 768, chunk_max_tokens: 1024}
 
 # Throughput-optimized: same real memory, ~2× faster ingest.
-granite-md-medium-fast:    {max_token_length: 4096,  chunk_max_chars: 3000, batch_size: 16}
+granite-md-medium-fast:    {max_token_length: 4096,  chunk_max_chars: 3000, batch_size: 16, chunk_target_tokens: 768, chunk_max_tokens: 1024}
 ```
 
-Rule of thumb for picking `max_token_length`: **roughly 4× the typical
-token count of your largest chunk**. Tokens-per-character varies by
-language and code density, but 1 token ≈ 4 chars is a reasonable
-default for English/code-heavy content.
+Rule of thumb for picking `max_token_length`: **roughly 4× the value of
+`chunk_max_tokens`**. Tokens-per-character varies by language and code
+density, but 1 token ≈ 4 chars is a reasonable default for
+English/code-heavy content.
 
-| `chunk_max_chars` | Approx tokens | `max_token_length` (4× headroom) |
-|---:|---:|---:|
-| 800 | ~200 | 1024 |
-| 1500 | ~375 | 2048 |
-| 3000 | ~750 | 4096 |
-| 6000 | ~1500 | 8192 |
-| 10000 | ~2500 | 16384 |
+| `chunk_max_tokens` | `max_token_length` (4× headroom) |
+|---:|---:|
+| 256 | 1024 |
+| 512 | 2048 |
+| 768 | 4096 |
+| 1536 | 8192 |
+| 3072 | 16384 |
 
-A `max_token_length` larger than 4× your chunks costs you batch_size
-headroom without buying anything; smaller than 1× your chunks fires
-truncation warnings during ingestion.
+A `max_token_length` larger than 4× `chunk_max_tokens` costs you batch_size
+headroom without buying anything; smaller than `chunk_max_tokens` is rejected
+by the validator (`chunk_max_tokens ≤ max_token_length` enforced at load).
 
 ### When to keep the pessimistic profile
 
@@ -238,7 +312,7 @@ Use a higher `max_token_length` than the rule of thumb suggests when:
 - You're ingesting a heterogeneous corpus and want headroom for
   unusually long chunks.
 - You're sharing one profile across multiple engines that have
-  different `chunk_max_chars` (the profile must accommodate the
+  different `chunk_max_tokens` (the profile must accommodate the
   largest).
 - You're explicitly mirroring an existing profile's memory footprint
   for predictable behavior across a fleet.
@@ -261,9 +335,9 @@ shines here.
 
 ```yaml
 profiles:
-  prose-granite-large:      {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8}
-  # Throughput-optimized variant (chunks rarely exceed 1500 tokens):
-  prose-granite-large-fast: {max_token_length: 8192,  chunk_max_chars: 6000, batch_size: 16}
+  prose-granite-large:      {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8,  chunk_target_tokens: 1536, chunk_max_tokens: 3072}
+  # Throughput-optimized variant (chunks capped at 3072 tokens, 4× headroom at 16384):
+  prose-granite-large-fast: {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 16, chunk_target_tokens: 1536, chunk_max_tokens: 3072}
 ```
 
 Use `model: "granite-r2"`, `mapper_type: "document"`,
@@ -278,9 +352,9 @@ the `.ayder` corpus benchmark in [README_granite.md](README_granite.md).
 
 ```yaml
 profiles:
-  techdoc-granite:      {max_token_length: 16384, chunk_max_chars: 3000, batch_size: 8}
-  # Throughput-optimized — chunks ≤ ~1000 tokens, 4× headroom:
-  techdoc-granite-fast: {max_token_length: 4096,  chunk_max_chars: 3000, batch_size: 16}
+  techdoc-granite:      {max_token_length: 4096, chunk_max_chars: 3000, batch_size: 8,  chunk_target_tokens: 512, chunk_max_tokens: 1024}
+  # Throughput-optimized — chunks capped at 1024 tokens, 4× headroom:
+  techdoc-granite-fast: {max_token_length: 4096, chunk_max_chars: 3000, batch_size: 16, chunk_target_tokens: 512, chunk_max_tokens: 1024}
 ```
 
 Best baseline for the `.ayder` corpus; usually outperforms
@@ -293,8 +367,8 @@ Each chunk is one short item. Tiny `max_token_length` lets you push
 
 ```yaml
 profiles:
-  shortform-granite:      {max_token_length: 2048, chunk_max_chars: 1500, batch_size: 32}
-  shortform-gemma:        {max_token_length: 2048, chunk_max_chars: 1500, batch_size: 64}
+  shortform-granite: {max_token_length: 2048, chunk_max_chars: 1500, batch_size: 32, chunk_target_tokens: 256, chunk_max_tokens: 512}
+  shortform-gemma:   {max_token_length: 2048, chunk_max_chars: 1500, batch_size: 64, chunk_target_tokens: 256, chunk_max_tokens: 512}
 ```
 
 Gemma is usually the better fit for English-only ticket-style content
@@ -308,9 +382,9 @@ R2 supports code in 9 languages.
 
 ```yaml
 profiles:
-  code-granite:      {max_token_length: 8192, chunk_max_chars: 2500, batch_size: 16}
+  code-granite:      {max_token_length: 8192, chunk_max_chars: 2500, batch_size: 16, chunk_target_tokens: 768, chunk_max_tokens: 1536}
   # Even more aggressive for small functions:
-  code-granite-fast: {max_token_length: 4096, chunk_max_chars: 2500, batch_size: 32}
+  code-granite-fast: {max_token_length: 4096, chunk_max_chars: 2500, batch_size: 32, chunk_target_tokens: 512, chunk_max_tokens: 1024}
 ```
 
 If you tag chunks with their language at ingest (see
@@ -321,6 +395,8 @@ and `query_prefix` symmetrically (e.g., `"Python: "`).
 
 Each SQL log row is a single record. `chunk_max_chars: 0` disables
 character-based chunking; the chunker emits one chunk per query.
+SQL profiles omit `chunk_target_tokens` / `chunk_max_tokens` (they are
+inert for non-document chunkers).
 
 ```yaml
 profiles:
@@ -339,8 +415,8 @@ Both Granite and Gemma engines must coexist on a smaller machine.
 
 ```yaml
 profiles:
-  granite-md-tight: {max_token_length: 4096, chunk_max_chars: 2000, batch_size: 4}
-  gemma-md-tight:   {max_token_length: 2048, chunk_max_chars: 800,  batch_size: 16}
+  granite-md-tight: {max_token_length: 4096, chunk_max_chars: 2000, batch_size: 4,  chunk_target_tokens: 512, chunk_max_tokens: 1024}
+  gemma-md-tight:   {max_token_length: 2048, chunk_max_chars: 800,  batch_size: 16, chunk_target_tokens: 256, chunk_max_tokens: 512}
 ```
 
 If the validator still rejects after these, set
@@ -357,7 +433,7 @@ pipelines.
 
 ```yaml
 profiles:
-  granite-md-long: {max_token_length: 32768, chunk_max_chars: 10000, batch_size: 1}
+  granite-md-long: {max_token_length: 32768, chunk_max_chars: 10000, batch_size: 1, chunk_target_tokens: 4096, chunk_max_tokens: 8192}
 ```
 
 Use `batch_size: 1` — anything larger will not fit Metal's max buffer
@@ -401,13 +477,14 @@ s = load_settings('config.yaml', validate=True)
 print(f'{\"Profile\":<25} {\"batch×ctx\":>10} {\"Val MB\":>8} {\"Run MB\":>8}  Headroom  Tag')
 for name, p in s.profiles.items():
     val_mb = p.batch_size * p.max_token_length * 768 * 2 * 3 / 1024 / 1024
-    chunk_tok = max(1, p.chunk_max_chars // 4) if p.chunk_max_chars > 0 else p.max_token_length
-    actual_tok = min(chunk_tok, p.max_token_length)
+    # For document profiles use chunk_max_tokens (the hard per-chunk ceiling).
+    # For SQL/atomic profiles (chunk_max_tokens == 0) fall back to max_token_length.
+    actual_tok = p.chunk_max_tokens if p.chunk_max_tokens > 0 else p.max_token_length
     run_mb = p.batch_size * actual_tok * 768 * 2 * 3 / 1024 / 1024
     ratio = p.max_token_length / max(1, actual_tok)
     if ratio > 12:
         tag = 'over-provisioned max_token_length'
-    elif ratio < 1.5 and p.chunk_max_chars > 0:
+    elif ratio < 1.5 and p.chunk_max_tokens > 0:
         tag = 'tight — expect truncation warnings'
     elif 4 <= ratio <= 12:
         tag = 'well-tuned'
@@ -435,14 +512,13 @@ peak_bytes ≈ batch_size × max_token_length × hidden_dim × dtype_bytes × ov
 **Runtime estimate formula:**
 
 ```
-peak_bytes ≈ batch_size × min(max_token_length, chunk_max_chars / 4) × hidden_dim × dtype_bytes × overhead
-            (real case — padding=True caps the batch at the longest actual chunk)
+peak_bytes ≈ batch_size × chunk_max_tokens × hidden_dim × dtype_bytes × overhead
+            (real case — padding=True caps the batch at the longest actual chunk;
+             for SQL/atomic profiles chunk_max_tokens == 0 so max_token_length is used instead)
 ```
 
-The 4-chars-per-token approximation is a reasonable default for
-English plus code. For Asian-language-heavy or unicode-emoji corpora
-use 2 chars/token. The 3× overhead matches the calibration constant
-in `_validate_config` (`docs/superpowers/specs/2026-05-06-tuning-profiles-design.md`).
+The 3× overhead matches the calibration constant in `_validate_config`
+(`docs/superpowers/specs/2026-05-06-tuning-profiles-design.md`).
 
 ### Decision rubric
 
@@ -452,10 +528,10 @@ in `_validate_config` (`docs/superpowers/specs/2026-05-06-tuning-profiles-design
 |---:|---|---|
 | `> 12×` | Over-provisioned. Validator reserves an order of magnitude more memory than runtime uses. | Lower `max_token_length` toward 4–8× the actual chunk-token count, or raise `batch_size` until the validator approves the same total. |
 | `4×–12×` | Well-tuned. Comfortable safety margin for outlier chunks (long code blocks, tables) without wasting validator headroom. | Ship as-is. The project's default profiles all live here. |
-| `1.5×–4×` | Minimal headroom. Truncation may fire on outlier chunks. | Monitor truncation warnings in ingest logs; if they cluster on specific files, either raise `max_token_length` or lower `chunk_max_chars`. |
-| `< 1.5×` | Too tight. Truncation almost certainly firing. | Raise `max_token_length` (within the model contract cap) or lower `chunk_max_chars`. |
+| `1.5×–4×` | Minimal headroom. Truncation may fire on outlier chunks. | Monitor truncation warnings in ingest logs; if they cluster on specific files, either raise `max_token_length` or lower `chunk_max_tokens`. |
+| `< 1.5×` | Too tight. Truncation almost certainly firing. | Raise `max_token_length` (within the model contract cap) or lower `chunk_max_tokens`. Note: `chunk_max_tokens ≤ max_token_length` is enforced at config load. |
 
-For SQL-atomic profiles (`chunk_max_chars: 0`), the script falls back
+For SQL-atomic profiles (`chunk_max_tokens: 0`), the script falls back
 to using `max_token_length` itself as the chunk-token estimate, so the
 ratio is always `1.0×`. Atomic SQL chunks are bounded by the source
 data, not by the chunker — review truncation warnings in ingest logs
@@ -466,11 +542,10 @@ to catch oversized queries.
 When auditing a proposed profile change, flag any of:
 
 1. **Headroom > 12×** without a justification (heterogeneous corpus,
-   shared profile across engines with different `chunk_max_chars`,
-   fleet uniformity, deliberate slack for non-English content where
-   the 4-chars/token assumption underestimates token count). The
-   default fix is to either lower `max_token_length` or raise
-   `batch_size`.
+   shared profile across engines with different `chunk_max_tokens`,
+   fleet uniformity, deliberate slack for outlier markdown nodes). The
+   default fix is to either lower `max_token_length` toward 4× `chunk_max_tokens`
+   or raise `batch_size`.
 2. **Validator MB > 1.5 GB** on profiles intended for laptops. Cap
    the laptop-targeted profile at ~1 GB to leave room for other
    engines and the OS.
@@ -486,27 +561,28 @@ When auditing a proposed profile change, flag any of:
 
 ### Worked example
 
-Suppose someone proposes `granite-md-medium: {16384, 3000, 16}`.
+Suppose someone proposes
+`granite-md-medium: {max_token_length: 16384, chunk_max_chars: 3000, batch_size: 16, chunk_target_tokens: 768, chunk_max_tokens: 1024}`.
 Running the audit:
 
 ```
 Profile                   batch×ctx   Val MB   Run MB  Headroom  Tag
-granite-md-medium           262,144     1152      264     22.0×  over-provisioned max_token_length
+granite-md-medium           262,144     1152      142     16.0×  over-provisioned max_token_length
 ```
 
-Diagnosis: 22× headroom trips the over-provisioned threshold. The
-validator reserves 1152 MB but runtime uses ~264 MB. Two corrective
-patches — both align with the
+Diagnosis: 16× headroom trips the over-provisioned threshold. The
+validator reserves 1152 MB but runtime is bounded by `chunk_max_tokens: 1024`.
+Two corrective patches — both align with the
 [Memory Math](#memory-math-and-throughput-tuning) recommendations:
 
 ```yaml
 # Option A: throughput-optimized (recommended on most machines)
-granite-md-medium: {max_token_length: 4096, chunk_max_chars: 3000, batch_size: 16}
-# headroom 5.5× → tag "well-tuned", validator 288 MB, runtime ~264 MB
+granite-md-medium: {max_token_length: 4096, chunk_max_chars: 3000, batch_size: 16, chunk_target_tokens: 768, chunk_max_tokens: 1024}
+# headroom 4× → tag "well-tuned", validator 288 MB, runtime ~142 MB
 
 # Option B: memory parity with granite-md-large (use for fleet uniformity)
-granite-md-medium: {max_token_length: 16384, chunk_max_chars: 3000, batch_size: 8}
-# headroom 22× — also flagged, but matches granite-md-large's 576 MB validator footprint exactly
+granite-md-medium: {max_token_length: 16384, chunk_max_chars: 3000, batch_size: 8,  chunk_target_tokens: 768, chunk_max_tokens: 1024}
+# headroom 16× — also flagged, but matches granite-md-large's 576 MB validator footprint exactly
 ```
 
 Choose A unless there's a specific reason to mirror `granite-md-large`'s
@@ -514,9 +590,9 @@ memory budget. Document the choice inline in `config.yaml`:
 
 ```yaml
 profiles:
-  # 4× headroom: chunks ≤ 750 tokens, max_token_length=4096 leaves slack
+  # 4× headroom: chunk_max_tokens=1024, max_token_length=4096 leaves slack
   # for outliers without paying validator overhead.
-  granite-md-medium: {max_token_length: 4096, chunk_max_chars: 3000, batch_size: 16}
+  granite-md-medium: {max_token_length: 4096, chunk_max_chars: 3000, batch_size: 16, chunk_target_tokens: 768, chunk_max_tokens: 1024}
 ```
 
 ### When to add a new profile vs. tune an existing one
@@ -595,8 +671,8 @@ by side and compare results without code changes.
 
 ```yaml
 profiles:
-  granite-md-large:        {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8}
-  granite-md-experimental: {max_token_length: 8192,  chunk_max_chars: 3000, batch_size: 16}
+  granite-md-large:        {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8,  chunk_target_tokens: 1536, chunk_max_tokens: 3072}
+  granite-md-experimental: {max_token_length: 4096,  chunk_max_chars: 3000, batch_size: 16, chunk_target_tokens: 512,  chunk_max_tokens: 1024}
 ```
 
 ### Step 2: Define a new engine that references the variant profile

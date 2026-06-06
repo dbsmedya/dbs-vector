@@ -105,14 +105,21 @@ Three layers for engine config:
    `compute_dtype_bytes` per model. Adding a model is a `register()` call.
    Built-ins: `gemma-bf16`, `granite-r2`.
 
-2. **`profiles:` block in `config.yaml`** — three numeric knobs per profile:
-   `max_token_length`, `chunk_max_chars`, `batch_size`. Validated against
-   the engine's model + Metal memory budget at load time.
+2. **`profiles:` block in `config.yaml`** — five numeric knobs per profile:
+   `max_token_length` (truncation safety net), `chunk_max_chars` (`.txt`
+   fallback only), `batch_size`, and for document engines:
+   `chunk_target_tokens` / `chunk_max_tokens` (both **required > 0** for
+   `chunker_type: "document"`; unused/inert for SQL profiles). Coherence
+   enforced at load: `chunk_target_tokens ≤ chunk_max_tokens ≤ max_token_length`.
+   Validated against the engine's model + Metal memory budget at load time.
 
 3. **`engines:` block in `config.yaml`** — references `model:` (registry key)
    and `tuning_profile:` (profile name). Holds pipeline shape (mapper,
    chunker, table, workflow) and prefixes (which vary per engine for the
-   same underlying model).
+   same underlying model). Optional `exclusion_filters` list (default `[]`)
+   names per-engine content filters; built-ins are `excalidraw` and
+   `compressed_json`. Register custom filters via `FilterRegistry.register`
+   in `src/dbs_vector/infrastructure/chunking/filters.py`.
 
 Memory budget auto-detected from `mlx.core.metal.device_info()`; override
 via `system.memory_budget_gb`.
