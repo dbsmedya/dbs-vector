@@ -22,7 +22,7 @@
 - `src/dbs_vector/core/ports.py` — add `IContentFilter` protocol; add `count_tokens` to `IEmbedder`.
 - `src/dbs_vector/infrastructure/embeddings/mlx_engine.py` — add `MLXEmbedder.count_tokens`.
 - `src/dbs_vector/infrastructure/chunking/document.py` — rewrite markdown path (section-based, token-sized, filter-aware); keep `.txt` path.
-- `src/dbs_vector/config.py` — `TuningProfile` gains `chunk_target_tokens`/`chunk_max_tokens`; `EngineConfig` gains `exclusion_filters`; drop `chunk_max_chars` arg from `chunker_kwargs`; add validation; extend allowed profile keys.
+- `src/dbs_vector/config.py` — `TuningProfile` gains `chunk_target_tokens`/`chunk_max_tokens`; `EngineConfig` gains `exclusion_filters`; drop `chunk_max_chars` arg from `chunker_kwargs`; add validation (document engines require nonzero token budgets). No profile allow-list change — `extra="forbid"` + field additions suffice.
 - `src/dbs_vector/services/bootstrap.py` — build document chunker with `length_fn`/`filters`/token budgets (gated on `chunker_type == "document"`).
 - `config.yaml` — md/md-granite profiles + engines.
 - `tests/unit/test_chunker.py` — replace markdown-specific tests with new-behavior tests; keep `.txt` + id tests.
@@ -32,8 +32,9 @@
 
 **Invariants the implementation MUST preserve (SQL untouched — spec §6a):**
 - `chunker_kwargs` keeps `duckdb`/`api` early-return branches; token/filter injection lives only in the `document` branch of `bootstrap.py`.
-- New profile/engine fields are optional with inert defaults (`0` / `[]`).
+- New fields default to inert values (`chunk_target_tokens`/`chunk_max_tokens` = `0`, `exclusion_filters` = `[]`) so **non-document** engines (SQL) are unaffected. **Document engines REQUIRE both token budgets > 0** — validation rejects `0` for them; `0` is never a silent "use defaults" for document engines (see Task 3 Rule 6, Task 6 wiring).
 - `MLXEmbedder.embed_batch` is unchanged.
+- The size invariant is on the final `Chunk.text` (heading prefix + re-fence labels included): every emitted chunk measures `≤ max_tokens` via `length_fn`.
 
 ---
 
@@ -282,9 +283,21 @@ def test_token_budget_fields_accepted():
 
 Add to `tests/unit/test_config_validation.py` (follow the file's existing helper for building a settings/engine; mirror the pattern already used there for invalid-profile cases):
 
+All four cases below assume a **document** engine (the gating only applies to
+`chunker_type == "document"`). `write_config` must produce a document engine
+(it is the default `md` shape) whose profile is overridden as shown.
+
 ```python
+def test_document_engine_requires_nonzero_token_budgets(write_config):
+    # Partial config (target=0) on a document engine is invalid.
+    cfg = write_config(profile_overrides={
+        "chunk_target_tokens": 0, "chunk_max_tokens": 1024,
+    })
+    with pytest.raises(ValueError, match="requires .* chunk_target_tokens"):
+        load_settings(cfg, validate=True)
+
+
 def test_chunk_max_tokens_below_target_is_rejected(write_config):
-    # write_config: existing helper that writes a config.yaml and returns its path.
     cfg = write_config(profile_overrides={
         "chunk_target_tokens": 1024, "chunk_max_tokens": 512,
     })
@@ -306,7 +319,7 @@ def test_unknown_exclusion_filter_is_rejected(write_config):
         load_settings(cfg, validate=True)
 ```
 
-> If `tests/unit/test_config_validation.py` has no `write_config` fixture, instead copy the nearest existing test in that file that builds an in-memory config dict and feeds it to the validator, and adapt the three assertions above to that style. Do not invent a fixture that does not exist — reuse the file's established pattern.
+> If `tests/unit/test_config_validation.py` has no `write_config` fixture, instead copy the nearest existing test in that file that builds an in-memory config dict and feeds it to the validator, and adapt the assertions above to that style. The existing config fixtures already use a document (`md`) engine, so the gating applies without extra setup. Do not invent a fixture that does not exist — reuse the file's established pattern.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -334,9 +347,9 @@ In `EngineConfig` (after `query_prefix`):
     exclusion_filters: list[str] = []
 ```
 
-- [ ] **Step 5: Extend allowed profile keys**
+- [ ] **Step 5: (no allow-list change needed)**
 
-Find the allowed-profile-key collection near `config.py:120-129` (the set listing `"max_token_length"`, `"chunk_max_chars"`, `"batch_size"`). Add `"chunk_target_tokens"` and `"chunk_max_tokens"` so the loader accepts them.
+There is **no** profile allow-list to update. Profiles parse as `TuningProfile` with `model_config = ConfigDict(extra="forbid")` (`config.py:15`), so adding the fields in Step 3 is sufficient — matching YAML keys are accepted, unknown ones rejected. The set at `config.py:119-126` is `_LEGACY_ENGINE_FIELDS`, a migration *denylist* for old per-engine fields (it includes `chunk_max_chars` because that used to be per-engine). **Do not touch it** — adding `chunk_target_tokens`/`chunk_max_tokens` there would wrongly flag valid profiles as legacy.
 
 - [ ] **Step 6: Drop `chunk_max_chars` arg from `chunker_kwargs`**
 
@@ -375,8 +388,17 @@ Replace the signature/body of `EngineConfig.chunker_kwargs` (`config.py:61-86`) 
 In the per-engine validation loop, after the existing Rule 5 (`config.py:301-309`), add — importing `FilterRegistry` at the top of the file:
 
 ```python
-        # Rule 6: token-budget coherence (only when token chunking is enabled)
-        if profile.chunk_target_tokens > 0 or profile.chunk_max_tokens > 0:
+        # Rule 6: token budgets. Document engines REQUIRE explicit nonzero
+        # budgets (0 is reserved for non-document profiles, where these fields
+        # are unused). Coherence is then enforced.
+        if engine.chunker_type == "document":
+            if profile.chunk_target_tokens <= 0 or profile.chunk_max_tokens <= 0:
+                raise ValueError(
+                    f"Engine '{engine_name}' (document chunker) requires profile "
+                    f"'{engine.tuning_profile}' to set chunk_target_tokens > 0 and "
+                    f"chunk_max_tokens > 0 (got "
+                    f"{profile.chunk_target_tokens}/{profile.chunk_max_tokens})."
+                )
             if profile.chunk_max_tokens < profile.chunk_target_tokens:
                 raise ValueError(
                     f"Profile '{engine.tuning_profile}': chunk_max_tokens="
@@ -390,10 +412,12 @@ In the per-engine validation loop, after the existing Rule 5 (`config.py:301-309
                     f"{profile.max_token_length} (embedder truncation cap)."
                 )
 
-        # Rule 7: exclusion filters resolve
+        # Rule 7: exclusion filters resolve (any engine that sets them)
         if engine.exclusion_filters:
             FilterRegistry.resolve(engine.exclusion_filters)  # raises on unknown
 ```
+
+Non-document engines never reach the token checks, so their `0/0` budgets stay inert (preserves the SQL guarantee). A partial document config such as `chunk_target_tokens=0, chunk_max_tokens=1024` is **invalid** (caught by the "requires both > 0" check).
 
 Add near the other imports at the top of `config.py`:
 
@@ -446,7 +470,9 @@ def test_heading_is_prepended_not_emitted_alone():
     assert c.text.startswith("Top > Setup")
     assert "Install the package" in c.text
     assert c.parent_scope == "Top > Setup"
-    assert c.node_type in {"section", "prose"}
+    assert c.node_type == "section"
+    # invariant: final text (heading path included) never exceeds max_tokens
+    assert len(c.text) <= 240
 
 
 def test_bare_heading_with_no_body_produces_no_chunk():
@@ -465,10 +491,13 @@ def test_code_fence_under_budget_stays_atomic():
     assert chunks[0].node_type == "code"
 
 
-def test_metadata_line_range_populated():
+def test_metadata_line_range_is_one_based_inclusive():
+    # lines: 0="## A", 1="", 2="body...". The body paragraph's markdown-it map
+    # is [2, 3] (0-based, end-exclusive) -> 1-based inclusive "3-3".
     content = "## A\n\nbody text that is long enough.\n"
     c = _chunks(content)[0]
-    assert c.line_range and "-" in c.line_range
+    assert c.line_range == "3-3"
+    assert c.node_type == "section"
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -483,7 +512,7 @@ Replace the entire contents of `src/dbs_vector/infrastructure/chunking/document.
 ```python
 import re
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import markdown_it
 
@@ -497,7 +526,7 @@ _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 
 @dataclass
 class _Block:
-    node_type: str  # "heading" | "prose" | "code" | "list" | "table"
+    node_type: str  # "heading" | "section" | "code" | "list" | "table"
     text: str
     start_line: int
     end_line: int
@@ -590,7 +619,8 @@ class DocumentChunker:
             elif t.type == "table_open":
                 blocks.append(_Block("table", text, start, end))
             else:
-                blocks.append(_Block("prose", text, start, end))
+                # paragraphs, blockquotes, thematic breaks, etc. -> "section"
+                blocks.append(_Block("section", text, start, end))
         return blocks
 
     def _build_specs(self, blocks: list[_Block]) -> list[_Spec]:
@@ -621,22 +651,31 @@ class DocumentChunker:
         return specs
 
     def _emit_section(self, path: str, blocks: list[_Block]) -> list[_Spec]:
-        # 1) expand oversized blocks into <= max_tokens units
+        # The size invariant is on the FINAL Chunk.text (heading path + any
+        # re-fence labels included). Reserve the per-chunk prefix cost up front
+        # so packing/splitting target the *rendered* size, and apply a
+        # char-window safety net at the end as an absolute guarantee.
+        prefix = f"{path}\n\n" if path else ""
+        plen = self._len(prefix)
+        eff_target = max(1, self.target_tokens - plen)
+        eff_max = max(1, self.max_tokens - plen)
+
+        # 1) expand oversized blocks into <= eff_max units (body-only sizing)
         units: list[tuple[str, str, int, int]] = []  # text, node_type, start, end
         for b in blocks:
-            if self._len(b.text) <= self.max_tokens:
+            if self._len(b.text) <= eff_max:
                 units.append((b.text, b.node_type, b.start_line, b.end_line))
             else:
-                for piece in self._split_block(b):
+                for piece in self._split_block(b, eff_target, eff_max):
                     units.append((piece, b.node_type, b.start_line, b.end_line))
 
-        # 2) greedy pack to target_tokens
+        # 2) greedy pack to eff_target
         packed: list[list] = []  # [text, node_type, start, end]
         for text, ntype, start, end in units:
             if packed:
                 cur = packed[-1]
                 cand = cur[0] + "\n\n" + text
-                if self._len(cand) <= self.target_tokens:
+                if self._len(cand) <= eff_target:
                     cur[0] = cand
                     cur[3] = end
                     if cur[1] != ntype:
@@ -655,42 +694,57 @@ class DocumentChunker:
             else:
                 merged.append(item)
 
-        # 4) prepend heading path + build specs
+        # 4) compose final text (prefix once per chunk); 1-based inclusive line
+        #    range; safety-net char-window guarantees len(text) <= max_tokens
+        #    even if overhead accounting under-reserved (e.g. 3-digit part count).
         out: list[_Spec] = []
         for text, ntype, start, end in merged:
-            body = f"{path}\n\n{text}" if path else text
-            out.append(_Spec(body, ntype, path or None, f"{start}-{end}"))
+            rng = f"{start + 1}-{end}"  # markdown-it map is 0-based, end-exclusive
+            body = prefix + text if prefix else text
+            if self._len(body) <= self.max_tokens:
+                out.append(_Spec(body, ntype, path or None, rng))
+            else:
+                for window in self._char_window(body, self.max_tokens):
+                    out.append(_Spec(window, ntype, path or None, rng))
         return out
 
     # ---- oversized-block splitting -------------------------------------
 
-    def _split_block(self, b: _Block) -> list[str]:
+    def _split_block(self, b: _Block, target: int, max_: int) -> list[str]:
         if b.node_type == "code":
-            return self._split_code(b)
+            return self._split_code(b, target, max_)
         if b.node_type == "table":
-            return self._split_table(b)
+            return self._split_table(b, target, max_)
         if b.node_type == "list":
-            return self._pack_atoms(self._list_items(b.text), "\n")
-        return self._pack_atoms(_SENTENCE.split(b.text), " ")
+            return self._pack_atoms(self._list_items(b.text), "\n", target, max_)
+        return self._pack_atoms(_SENTENCE.split(b.text), " ", target, max_)
 
-    def _split_code(self, b: _Block) -> list[str]:
+    def _split_code(self, b: _Block, target: int, max_: int) -> list[str]:
         lines = b.text.split("\n")
         if len(lines) >= 2 and lines[0].lstrip().startswith("```"):
             inner = lines[1:-1]
         else:
             inner = lines
-        parts = self._pack_atoms(inner, "\n")
+        # Reserve the fence + part-marker overhead so each WRAPPED piece fits.
+        overhead = self._len(f"(code, part 99/99)\n```{b.info}\n\n```")
+        bt = max(1, target - overhead)
+        bm = max(1, max_ - overhead)
+        parts = self._pack_atoms(inner, "\n", bt, bm)
         m = len(parts)
         if m <= 1:
             return [f"```{b.info}\n{parts[0] if parts else ''}\n```"]
         return [f"(code, part {k}/{m})\n```{b.info}\n{p}\n```" for k, p in enumerate(parts, 1)]
 
-    def _split_table(self, b: _Block) -> list[str]:
+    def _split_table(self, b: _Block, target: int, max_: int) -> list[str]:
         rows = [ln for ln in b.text.split("\n") if ln.strip()]
         if len(rows) <= 2:
             return [b.text]
         header = "\n".join(rows[:2])
-        groups = self._pack_atoms(rows[2:], "\n")
+        # Reserve the repeated header so each part fits.
+        hlen = self._len(header + "\n")
+        bt = max(1, target - hlen)
+        bm = max(1, max_ - hlen)
+        groups = self._pack_atoms(rows[2:], "\n", bt, bm)
         return [f"{header}\n{g}" for g in groups]
 
     def _list_items(self, text: str) -> list[str]:
@@ -710,14 +764,14 @@ class DocumentChunker:
             items.append("\n".join(cur))
         return items
 
-    def _pack_atoms(self, atoms: list[str], joiner: str) -> list[str]:
+    def _pack_atoms(self, atoms: list[str], joiner: str, target: int, max_: int) -> list[str]:
         out: list[str] = []
         cur = ""
         for a in atoms:
-            pieces = [a] if self._len(a) <= self.max_tokens else self._hard_window(a)
+            pieces = [a] if self._len(a) <= max_ else self._char_window(a, max_)
             for p in pieces:
                 cand = p if not cur else cur + joiner + p
-                if cur and self._len(cand) > self.target_tokens:
+                if cur and self._len(cand) > target:
                     out.append(cur)
                     cur = p
                 else:
@@ -726,17 +780,22 @@ class DocumentChunker:
             out.append(cur)
         return out
 
-    def _hard_window(self, text: str) -> list[str]:
-        """Split a single oversized atom by characters so each window is
-        <= max_tokens. Last-resort guarantee against truncation."""
+    def _char_window(self, text: str, max_: int) -> list[str]:
+        """Adaptive CHARACTER window whose size is measured by the injected
+        tokenizer (`length_fn`): grow on character indices until adding more
+        would exceed `max_` tokens, then flush. This is NOT a true token
+        encode/decode split (it slices characters, not token ids), but it
+        guarantees every window measures <= max_ tokens — the truncation
+        safety net for atoms with no internal boundary (e.g. a one-line
+        compressed-json blob)."""
         windows: list[str] = []
         i, n = 0, len(text)
-        step = max(1, self.max_tokens)
+        step = max(1, max_)
         while i < n:
             j = min(n, i + step)
-            while j < n and self._len(text[i:j]) <= self.max_tokens:
+            while j < n and self._len(text[i:j]) <= max_:
                 j = min(n, j + step)
-            while j > i + 1 and self._len(text[i:j]) > self.max_tokens:
+            while j > i + 1 and self._len(text[i:j]) > max_:
                 j -= max(1, (j - i) // 4)
             j = max(i + 1, j)
             windows.append(text[i:j])
@@ -767,7 +826,7 @@ class DocumentChunker:
             )
 ```
 
-> Note: `_Block`/`_Spec` use `field` import only if defaults need it; the `field` import is harmless if unused, but remove it if Ruff flags F401. Keep `from dataclasses import dataclass` regardless.
+> Note: emitted `node_type` is always one of `{section, code, table, list}` (the internal `"heading"` block type is consumed when building the heading path and never produces a chunk). The final `Chunk.text` — heading path prefix and any `(code, part k/m)` / re-fence labels included — is guaranteed `≤ max_tokens` by the effective-budget reservation plus the `_char_window` safety net in `_emit_section`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -802,7 +861,7 @@ def test_oversized_code_fence_splits_by_lines_never_truncates():
     chunks = _chunks(content, target_tokens=120, max_tokens=240)
     assert len(chunks) > 1
     for c in chunks:
-        assert len(c.text) <= 240 + 64  # heading path overhead tolerance
+        assert len(c.text) <= 240  # final text incl. heading path + fences fits max
         assert "```python" in c.text
     # reassembled code retains all lines
     joined = "\n".join(c.text for c in chunks)
@@ -830,13 +889,13 @@ def test_oversized_table_repeats_header_each_part():
         assert "| a | b |" in c.text  # header repeated
 
 
-def test_single_huge_line_is_hard_windowed():
-    blob = "x" * 5000  # one line, no spaces
+def test_single_huge_line_is_char_windowed():
+    blob = "x" * 5000  # one line, no internal boundary
     content = f"## Blob\n\n```text\n{blob}\n```\n"
     chunks = _chunks(content, target_tokens=200, max_tokens=400)
     assert len(chunks) > 1
     for c in chunks:
-        assert len(c.text) <= 400 + 64
+        assert len(c.text) <= 400  # char-window guarantees the invariant
 
 
 def test_excalidraw_file_yields_no_chunks():
@@ -860,7 +919,7 @@ def test_compressed_json_block_is_dropped():
 - [ ] **Step 2: Run the tests**
 
 Run: `uv run pytest tests/unit/test_chunker.py -v`
-Expected: PASS. If a size assertion fails because the char `length_fn` overhead from the heading path is larger than the tolerance, raise the `+ 64` tolerance to account for the literal heading path length in that test (the heading paths there are short, so 64 is safe).
+Expected: PASS. The `len(c.text) <= max_tokens` assertions are exact (no tolerance): the effective-budget reservation accounts for the heading prefix and fence/marker overhead, and the `_char_window` safety net in `_emit_section` guarantees the bound even when overhead is under-reserved. If an assertion ever fails, the bug is a missing reservation — fix `_emit_section`/`_split_*`, do not loosen the assertion.
 
 - [ ] **Step 3: Commit**
 
@@ -913,10 +972,15 @@ In `src/dbs_vector/services/bootstrap.py`, replace the chunker construction bloc
     if engine.chunker_type == "document":
         from dbs_vector.infrastructure.chunking.filters import FilterRegistry
 
+        # Token budgets are passed straight through: validation (Task 3 Rule 6)
+        # guarantees document engines set both > 0, so NO `or <default>` here —
+        # a 0 would be a validation bug, not a silent fallback. `max_chars`
+        # keeps its `or 1000` because it only feeds the rarely-used .txt path
+        # and md profiles legitimately set chunk_max_chars: 0.
         chunker = ChunkerClass(
             max_chars=profile.chunk_max_chars or 1000,
-            target_tokens=profile.chunk_target_tokens or 512,
-            max_tokens=profile.chunk_max_tokens or 1024,
+            target_tokens=profile.chunk_target_tokens,
+            max_tokens=profile.chunk_max_tokens,
             length_fn=embedder.count_tokens,
             filters=FilterRegistry.resolve(engine.exclusion_filters),
         )
@@ -1037,7 +1101,7 @@ Expected: format clean, lint clean, typecheck clean, all tests PASS.
 
 - [ ] **Step 2: Fix any lint/type issues inline**
 
-Common: remove unused `field` import in `document.py`; ensure `Callable` import; `IContentFilter` import not flagged. Re-run `uv run poe check` until green.
+Common: ensure `Callable`/`Iterator` imports are used; confirm the `IContentFilter` import in `document.py` isn't flagged unused (it annotates the `filters` param); resolve any config↔filters import cycle by moving the `FilterRegistry` import into the validation function body. Re-run `uv run poe check` until green.
 
 - [ ] **Step 3: Commit any fixes**
 
@@ -1150,7 +1214,7 @@ git commit -m "docs(spec): record section-chunking migration + comparison result
 - [ ] **Step 1: Document the new knobs + filters**
 
 In `docs/README_PROFILES.md`, add a subsection describing:
-- `chunk_target_tokens` / `chunk_max_tokens` (per-profile, document engines only; `0` = char-based `.txt` fallback only).
+- `chunk_target_tokens` / `chunk_max_tokens` (per-profile). **Required (> 0) for document engines**; coherence `0 < target ≤ max ≤ max_token_length` is enforced at load time. For non-document (SQL) profiles they are unused and stay `0`. (The `.txt` fallback path is sized by `chunk_max_chars`, not these.)
 - `exclusion_filters` (per-engine list; built-ins `excalidraw`, `compressed_json`; default empty; add a filter via `FilterRegistry.register` + the name in config).
 - That `max_token_length` is now a truncation safety net and `chunk_max_tokens ≤ max_token_length` is enforced.
 

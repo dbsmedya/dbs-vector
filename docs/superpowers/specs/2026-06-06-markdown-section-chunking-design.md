@@ -53,7 +53,7 @@ real blocks (tables, code, lists) are never split at sensible boundaries.
   passage suitable for returning as "the section that answers the query."
 - Eliminate bare-heading / sub-16-token noise vectors.
 - Never truncate: any oversized block is split at natural boundaries, with
-  a hard token-window fallback as a last resort.
+  an adaptive char-window (sized by the tokenizer) as a last resort.
 - Make content exclusion **opt-in and configurable per engine** via a
   pluggable filter module (default: exclude nothing).
 - Size chunks by **tokens** using the same tokenizer that embeds them.
@@ -91,9 +91,13 @@ Algorithm:
    - **list** (`bullet_list`/`ordered_list`) → by items, never mid-item.
    - **table** → by rows, repeating the header row in each part.
    - **paragraph** → by sentence, then newline.
-   - **hard-window fallback**: if a single line/item/sentence *still*
-     exceeds `max_tokens` (e.g. a one-line `compressed-json` blob that was
-     not excluded), window it by tokens. Guarantees no truncation ever.
+   - **adaptive char-window fallback**: if a single line/item/sentence
+     *still* exceeds `max_tokens` (e.g. a one-line `compressed-json` blob
+     that was not excluded), window it on character indices, sizing each
+     window by the injected tokenizer (`length_fn`) so it measures
+     `≤ max_tokens`. This is not a true token encode/decode split (it slices
+     characters, not token ids), but it guarantees the size bound — no
+     truncation ever.
 5. **Tiny-merge**: a sub-chunk whose body is `< min_tokens` (constant 32)
    merges into the previous sibling sub-chunk in the same section; a
    heading-only section merges into its first content chunk. No
@@ -107,8 +111,20 @@ null) `Chunk` fields are populated — **no schema change**, the
 `DocumentMapper` already declares them (`mappers.py:25-27,46-48,76-78`):
 
 - `parent_scope` = heading path (e.g. `Btree Index > Implementation`)
-- `node_type` ∈ {`section`, `code`, `table`, `list`}
-- `line_range` = `"<start>-<end>"` from markdown-it `token.map`
+- `node_type` ∈ {`section`, `code`, `table`, `list`} — paragraphs/blockquotes
+  map to `section`; `"prose"` is **not** an emitted value, and headings never
+  produce a chunk (they only contribute to the heading path).
+- `line_range` = **1-based, inclusive** source range, formatted
+  `"{start+1}-{end}"` from the block's markdown-it `token.map` (which is
+  0-based with an exclusive end). Pieces of a split block share their source
+  block's range — per-piece sub-ranges are intentionally not tracked
+  (re-fencing/markers make exact sub-line attribution lossy; the range is
+  provenance to the source block).
+
+The size invariant applies to the **final** `Chunk.text` — heading-path
+prefix and any `(code, part k/m)` / re-fence labels included. Packing and
+splitting reserve the prefix/fence overhead against the budget, and a final
+char-window pass guarantees every emitted chunk measures `≤ max_tokens`.
 
 `content_hash` stays file-level (whole-file SHA-256), so file-level
 deduplication and incremental re-runs are unchanged.
@@ -168,7 +184,7 @@ chunker, bootstrap, services, or CLI.
 `TuningProfile` (`config.py:11`) gains two optional fields:
 
 ```python
-chunk_target_tokens: int = Field(default=0, ge=0)   # 0 => not token-chunked (SQL atomic)
+chunk_target_tokens: int = Field(default=0, ge=0)   # 0 only valid for non-document profiles
 chunk_max_tokens:    int = Field(default=0, ge=0)
 ```
 
@@ -178,13 +194,24 @@ chunk_max_tokens:    int = Field(default=0, ge=0)
 exclusion_filters: list[str] = []   # per-engine; default: exclude nothing
 ```
 
+**0-semantics:** the default `0` keeps these inert for non-document (SQL)
+profiles that omit them. **Document engines must set both `> 0`** — `0` is a
+validation error, never a silent "use code defaults" fallback. Bootstrap
+therefore passes the profile values straight through (no `or <default>`).
+
 Validation additions (alongside existing checks ~`config.py:199-308`):
-- If `chunk_target_tokens > 0`: require `chunk_max_tokens >= chunk_target_tokens`
-  and `chunk_max_tokens <= max_token_length`.
+- For **document** engines: require `chunk_target_tokens > 0` and
+  `chunk_max_tokens > 0`, then `chunk_max_tokens >= chunk_target_tokens` and
+  `chunk_max_tokens <= max_token_length`. (A partial config such as
+  `target=0, max=1024` on a document engine is rejected.)
+- Non-document engines never reach the token checks (`0/0` stays inert).
 - `exclusion_filters` names must all resolve in `FilterRegistry` (else
   load-time `ValueError` listing known names).
-- Add `chunk_target_tokens` / `chunk_max_tokens` to the allowed profile-key
-  set (`config.py` ~122-125) so the `extra="forbid"` schema accepts them.
+- **No profile allow-list change** — `TuningProfile` uses
+  `model_config = ConfigDict(extra="forbid")`, so adding the two fields is
+  enough. The set at `config.py:119-126` is `_LEGACY_ENGINE_FIELDS` (a
+  migration *denylist* for old per-engine fields), NOT a profile allow-list;
+  do not add the new keys there.
 
 `config.yaml` for the two md engines/profiles:
 
@@ -254,8 +281,8 @@ resolution are injected there:
 - oversized code fence → line-split, each part re-fenced + `(part N/M)`
 - oversized list → item-split (never mid-item)
 - oversized table → row-split with repeated header
-- single over-`max_tokens` line → hard-window fallback (invariant: **no
-  chunk exceeds `max_tokens`**)
+- single over-`max_tokens` line → adaptive char-window fallback (invariant:
+  **no final `Chunk.text`, heading prefix included, exceeds `max_tokens`**)
 - tiny-merge: sub-`min_tokens` body merges into previous sibling
 - `parent_scope` / `node_type` / `line_range` populated
 
@@ -293,9 +320,10 @@ changes here. Every shared file is inert for them, and the implementation
   optional, default `0`; SQL profiles omit them. `chunk_max_chars` is
   retained for SQL atomic profiles.
 - New `EngineConfig.exclusion_filters` defaults to `[]`; SQL engines omit it.
-- New validation rules are gated (`chunk_target_tokens > 0`,
-  `exclusion_filters` non-empty) exactly like the existing
-  `chunk_max_chars > 0` rule (`config.py:301`), so SQL profiles skip them.
+- New token-budget validation is gated on `engine.chunker_type == "document"`,
+  and the `exclusion_filters` check on the list being non-empty — so SQL
+  engines (non-document, empty filters) skip both, same spirit as the existing
+  `chunk_max_chars > 0` gate (`config.py:301`).
 - `bootstrap.py` injects `length_fn`/`filters`/token budgets **only for the
   document chunker** (gate on `engine.chunker_type == "document"`).
 - `MLXEmbedder.count_tokens` is additive; `embed_batch` is unchanged, so SQL
@@ -312,10 +340,13 @@ the existing SQL/DuckDB/API chunker unit tests remain green unchanged.
   the `length_fn` default (`len`) and injection only in `bootstrap.py`;
   tests run without a model.
 - **markdown-it token edge cases** (nested lists, loose lists, HTML blocks,
-  front-matter). Mitigated by fixture-driven unit tests and the hard-window
-  fallback guaranteeing the size invariant regardless of parse quirks.
-- **Heading-path prefix slightly inflates token counts.** Budgeted: the
-  prefix counts toward `length_fn`, so packing accounts for it.
+  front-matter). Mitigated by fixture-driven unit tests and the adaptive
+  char-window fallback guaranteeing the size invariant regardless of parse
+  quirks.
+- **Heading-path prefix and re-fence labels inflate token counts.** Budgeted:
+  `_emit_section` reserves the prefix (and `_split_code`/`_split_table`
+  reserve the fence/header overhead) against the effective budget, and a final
+  char-window pass enforces `≤ max_tokens` on the composed text.
 
 ## 8. Out of scope (future)
 
