@@ -3,6 +3,7 @@
 import hashlib
 from unittest.mock import MagicMock
 
+from dbs_vector.core.models import Chunk
 from dbs_vector.services.ingestion import IngestionService
 
 
@@ -91,3 +92,34 @@ def test_ingestion_service_uses_self_batch_size_in_batched():
     )
     batches = list(svc._batched(iter(range(10)), svc.batch_size))
     assert [len(b) for b in batches] == [3, 3, 3, 1]
+
+
+def test_intra_run_dedup_stores_duplicate_hash_once(tmp_path):
+    """Two files whose chunks share one content_hash in ONE run → stored once."""
+    (tmp_path / "a.md").write_text("# A\n\nbody a")   # different contents ⇒
+    (tmp_path / "b.md").write_text("# B\n\nbody b")   # different file hashes
+
+    dup_hash = "deadbeefdeadbeef"
+    chunker = MagicMock()
+    chunker.supported_extensions = [".md"]
+    chunker.process.side_effect = lambda doc: iter(
+        [Chunk(id=f"{doc.filepath}_chunk_0", text="same body",
+               source=doc.filepath, content_hash=dup_hash)]
+    )
+
+    embedder = MagicMock()
+    embedder.embed_batch.return_value = [[0.1, 0.2, 0.3]]
+    store = MagicMock()
+    store.get_existing_hashes.return_value = set()
+
+    # 1 chunk/batch → each file is its own batch, exercising the CROSS-batch dedup path
+    # (a larger batch would dedupe within one batch and pass for the wrong reason)
+    svc = IngestionService(chunker, embedder, store, batch_size=1)
+    svc.ingest_directory(str(tmp_path))
+
+    stored = [
+        c.content_hash
+        for call in store.ingest_chunks.call_args_list
+        for c in call.kwargs["chunks"]
+    ]
+    assert stored.count(dup_hash) == 1

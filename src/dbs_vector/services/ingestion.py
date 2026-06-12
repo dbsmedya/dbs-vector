@@ -121,6 +121,11 @@ class IngestionService:
             self.vector_store.ingest_chunks(
                 chunks=new_chunks, vectors=vectors, workflow=self.workflow
             )
+            # Fold this batch's hashes into the live set so a duplicate that
+            # appears LATER in the same run (identical file, or same normalized
+            # SQL from two sources) is skipped — get_existing_hashes() is a
+            # one-time snapshot and never sees in-run inserts.
+            existing_hashes.update(c.content_hash for c in new_chunks)
             total_chunks += len(new_chunks)
             skipped_chunks += len(batch) - len(new_chunks)
             logger.info("Streamed {} new chunks (total: {})", len(new_chunks), total_chunks)
