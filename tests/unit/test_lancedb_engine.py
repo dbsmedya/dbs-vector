@@ -821,3 +821,48 @@ class TestSearch:
 
         store.create_indices()  # FTS rebuilt → cache reset
         assert store._hybrid_ok is None
+
+    def test_hybrid_cache_resets_when_table_version_advances(self, lancedb_store):
+        """A version advance seen via checkout_latest() (e.g. ANOTHER process
+        ingesting and creating the FTS index) must allow a hybrid retry —
+        otherwise a long-lived MCP server stays vector-only until restart."""
+        import polars as pl
+
+        store, _, mock_table, _ = lancedb_store
+        qv = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        mock_search = MagicMock()
+        mock_search.vector.return_value = mock_search
+        mock_search.text.return_value = mock_search
+        mock_search.metric.return_value = mock_search
+        mock_search.nprobes.return_value = mock_search
+        mock_search.limit.return_value = mock_search
+        mock_search.to_polars.return_value = pl.DataFrame(
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+        )
+
+        fts_exists = {"v": False}
+
+        def search_side_effect(*args, **kwargs):
+            if kwargs.get("query_type") == "hybrid" and not fts_exists["v"]:
+                raise ValueError("fts index not found")
+            return mock_search
+
+        mock_table.search.side_effect = search_side_effect
+
+        mock_table.version = 1
+        store.search("q", qv, limit=3)  # hybrid fails → cached False
+        store.search("q", qv, limit=3)  # same version → cache hit, no retry
+
+        # Another process ingests and builds the FTS index → version advances.
+        mock_table.version = 2
+        fts_exists["v"] = True
+        store.search("q", qv, limit=3)  # version change → cache reset → retry
+
+        hybrid_attempts = [
+            c for c in mock_table.search.call_args_list if c.kwargs.get("query_type") == "hybrid"
+        ]
+        assert len(hybrid_attempts) == 2, (
+            f"Expected hybrid retried after version bump, calls: {mock_table.search.call_args_list}"
+        )
+        assert store._hybrid_ok is True

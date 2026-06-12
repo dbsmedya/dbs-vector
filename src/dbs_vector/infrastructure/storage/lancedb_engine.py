@@ -30,6 +30,9 @@ class LanceDBStore:
         self.schema = mapper.schema
 
         self._hybrid_ok: bool | None = None  # None=untried, True=works, False=skip
+        # Last table version seen by search(); when checkout_latest() advances
+        # it (possibly via a commit from ANOTHER process), _hybrid_ok resets.
+        self._table_version: int | None = None
 
         self.db = lancedb.connect(db_path)
         # Use exist_ok to open existing tables rather than overwriting on app start
@@ -114,6 +117,15 @@ class LanceDBStore:
         # long-lived SearchService would never see new rows.
         self.table.checkout_latest()
 
+        # A version advance can also mean a new/replaced FTS index (index
+        # creation commits a version in Lance) — including one built by that
+        # other ingest process. Reset the hybrid cache so a failure observed
+        # before the index existed cannot stick for this process's lifetime.
+        version = self.table.version
+        if version != self._table_version:
+            self._table_version = version
+            self._hybrid_ok = None
+
         min_time = kwargs.get("min_time")
         min_lock_time = kwargs.get("min_lock_time")
         table_filter = kwargs.get("table_filter")
@@ -176,15 +188,17 @@ class LanceDBStore:
                 search_op = _build_hybrid()
                 results_df = search_op.to_polars()
                 self._hybrid_ok = True
-            except (ValueError, RuntimeError, FileNotFoundError) as e:
-                # Narrowed from bare Exception so a genuinely bad filter / OOM
-                # surfaces instead of silently degrading to vector-only.
-                # ValueError/RuntimeError cover query-build errors;
-                # FileNotFoundError covers LanceDB 0.30.2's FTS-absent case
-                # (lancedb/query.py:1570-1573 raises FileNotFoundError when the
-                # FTS index directory does not exist). Catching all of OSError
-                # would silently swallow unrelated disk/IO errors (PermissionError,
-                # ConnectionError, etc.) and degrade them to vector-only.
+            except (ValueError, RuntimeError, ImportError, OSError) as e:
+                # Narrowed from bare Exception so a programming error doesn't
+                # silently degrade to vector-only. Verified against LanceDB
+                # 0.30.2: FTS-absent raises RuntimeError ("Cannot perform full
+                # text search unless an INVERTED index has been created");
+                # ImportError covers a legacy tantivy index dir when the
+                # tantivy wheel fails to import (lancedb/query.py:1556-1561);
+                # OSError (incl. FileNotFoundError) covers corrupt/missing
+                # index files mapped from LanceError(IO). Degrading the HYBRID
+                # leg on IO errors is safe: if the dataset itself is broken,
+                # the vector fallback raises too and THAT exception propagates.
                 self._hybrid_ok = False
                 logger.warning(
                     "Hybrid search unavailable or failed ({}), falling back to pure vector", e
