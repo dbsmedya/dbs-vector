@@ -4,20 +4,13 @@ Reads the populated dbs_vector.config.settings singleton. Tests monkey-patch
 this module's `settings` import for isolation.
 """
 
-import re
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from dbs_vector.config import settings
+from dbs_vector.core.naming import ENGINE_NAME_PATTERN, normalize_tool_name
 from dbs_vector.mcp.families.registry import FamilyRegistry
-
-_ENGINE_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-
-
-def _normalize_tool_name(engine_name: str) -> str:
-    """Convert engine name to a valid MCP tool name. Dashes → underscores."""
-    return f"search_{engine_name.replace('-', '_')}"
 
 
 def register_search_tools(mcp: FastMCP) -> None:
@@ -34,7 +27,7 @@ def register_search_tools(mcp: FastMCP) -> None:
         for the lifetime of a FastMCP instance.
 
     Pre-flight failures (raise before any tool is registered):
-      - Engine name not matching _ENGINE_NAME_PATTERN.
+      - Engine name not matching ENGINE_NAME_PATTERN.
       - Two distinct engines normalize to the same MCP tool name.
       - Engine references a family not in FamilyRegistry.
 
@@ -51,12 +44,12 @@ def register_search_tools(mcp: FastMCP) -> None:
     seen: dict[str, str] = {}
     resolved: list[tuple[str, str, str]] = []
     for engine_name, engine in settings.engines.items():
-        if not _ENGINE_NAME_PATTERN.match(engine_name):
+        if not ENGINE_NAME_PATTERN.match(engine_name):
             raise ValueError(
-                f"Engine name '{engine_name}' must match {_ENGINE_NAME_PATTERN.pattern}. "
+                f"Engine name '{engine_name}' must match {ENGINE_NAME_PATTERN.pattern}. "
                 f"Allowed: lowercase, digits, dash, underscore (must start with letter or digit)."
             )
-        tool_name = _normalize_tool_name(engine_name)
+        tool_name = normalize_tool_name(engine_name)
         if tool_name in seen:
             raise ValueError(
                 f"MCP tool name collision: engines '{seen[tool_name]}' and "

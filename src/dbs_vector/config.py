@@ -1,11 +1,12 @@
 import os
-import re
 from pathlib import Path
 
 import yaml
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from dbs_vector.core.naming import ENGINE_NAME_PATTERN
 
 
 class TuningProfile(BaseModel):
@@ -116,8 +117,6 @@ class Settings(BaseSettings):
 
     # REMOVED: batch_size (now per-profile)
 
-
-_ENGINE_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 _LEGACY_ENGINE_FIELDS = {
     "model_name",
@@ -231,10 +230,10 @@ def _validate_config(settings: Settings, config_file: str) -> None:
     for engine_name, engine in settings.engines.items():
         # Rule 6: legal engine name (presentation layer requires this for
         # MCP tool naming and predictable URLs).
-        if not _ENGINE_NAME_PATTERN.match(engine_name):
+        if not ENGINE_NAME_PATTERN.match(engine_name):
             raise ValueError(
                 f"Engine name '{engine_name}' must match "
-                f"{_ENGINE_NAME_PATTERN.pattern}. Allowed: lowercase letters, "
+                f"{ENGINE_NAME_PATTERN.pattern}. Allowed: lowercase letters, "
                 f"digits, dash, underscore (must start with letter or digit). "
                 f"Edit {config_file}."
             )

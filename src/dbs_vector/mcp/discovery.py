@@ -14,6 +14,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from dbs_vector.config import settings
+from dbs_vector.core.naming import normalize_tool_name
 
 # Sentinel tracked in the same _dbs_vector_registrations dict that
 # register_search_tools uses, so idempotency state is shared.
@@ -51,7 +52,7 @@ async def _list_engines() -> str:
                     "chunk_max_chars": profile.chunk_max_chars,
                     "batch_size": profile.batch_size,
                 },
-                "mcp_tool": f"search_{name.replace('-', '_')}",
+                "mcp_tool": normalize_tool_name(name),
                 "loaded": name in _services,
             }
         )
