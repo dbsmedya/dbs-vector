@@ -8,9 +8,8 @@ from dbs_vector.core.models import Document, SqlChunk, sql_chunk_from_record
 class DuckDBChunker:
     """Reads pre-processed SQL slow queries from DuckDB files."""
 
-    def __init__(self, query: str | None = None, batch_id: str | None = None) -> None:
+    def __init__(self, query: str | None = None) -> None:
         self._query = query
-        self._batch_id = batch_id
 
         self._default_query = """
             SELECT 
@@ -54,15 +53,6 @@ class DuckDBChunker:
             conn = duckdb.connect(document.filepath, read_only=True)
 
             query = self._query if self._query else self._default_query
-
-            # Simple handling of batch_id. If batch_id is set and default query is used,
-            # we need to append it. PRD says: "If provided, appends WHERE batch_id = ? filter to the default query. Ignored if query is set."
-            if not self._query and self._batch_id:
-                # The default query uses a WHERE clause, so we add AND batch_id = ?
-                query = query.replace(
-                    "WHERE ts > current_date - INTERVAL '15 days'",
-                    f"WHERE ts > current_date - INTERVAL '15 days' AND batch_id = '{self._batch_id}'",
-                )
 
             try:
                 result = conn.execute(query).fetchall()
