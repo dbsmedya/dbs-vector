@@ -4,14 +4,11 @@ import asyncio
 from datetime import datetime
 from typing import Any
 
+from dbs_vector.mcp.families.base import render_with_budget
 from dbs_vector.services.search import SearchService
 
 _RAW_QUERY_DISPLAY_LIMIT = 2_000
 _RESPONSE_BUDGET_BYTES = 1_000_000
-
-
-def _byte_len(value: str) -> int:
-    return len(value.encode("utf-8"))
 
 
 def _truncate_raw_query(raw_query: str) -> str:
@@ -119,22 +116,8 @@ class SqlFamily:
                 f"that matched your filters for '{query}' "
                 f"(ranked by similarity):\n"
             )
-        output = [header]
-
-        def _append_elision_footer(omitted: int) -> None:
-            footer = f"[{omitted} of {len(results)} results elided due to MCP response size cap]"
-            while (
-                len(output) > 1 and _byte_len("\n".join([*output, footer])) > _RESPONSE_BUDGET_BYTES
-            ):
-                output.pop()
-                omitted += 1
-                footer = (
-                    f"[{omitted} of {len(results)} results elided due to MCP response size cap]"
-                )
-            if _byte_len("\n".join([*output, footer])) <= _RESPONSE_BUDGET_BYTES:
-                output.append(footer)
-
-        for idx, res in enumerate(results):
+        blocks: list[str] = []
+        for res in results:
             if res.distance is not None:
                 dist_str = f"{res.distance:.4f}"
             elif res.score is not None:
@@ -161,14 +144,9 @@ class SqlFamily:
             ]
             if include_raw:
                 block_parts.append(f"Raw SQL:\n{_truncate_raw_query(chunk.raw_query or '')}")
-            block = "\n".join(block_parts) + "\n"
+            blocks.append("\n".join(block_parts) + "\n")
 
-            candidate = "\n".join([*output, block])
-            if _byte_len(candidate) > _RESPONSE_BUDGET_BYTES:
-                _append_elision_footer(len(results) - idx)
-                break
-            output.append(block)
-        return "\n".join(output)
+        return render_with_budget(header, blocks, _RESPONSE_BUDGET_BYTES)
 
     def make_handler(self, engine_name: str) -> Any:
         family = self  # closure capture
