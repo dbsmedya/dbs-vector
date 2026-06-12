@@ -530,6 +530,45 @@ async def test_make_handler_runs_search_and_formats(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_handler_handles_50_concurrent_search_count_pairs(monkeypatch):
+    """Stress guard: the handler must fan out search+count correctly under
+    50 concurrent invocations on the same (shared) service handle. Pins the
+    invariant across the sequential-in-one-thread refactor — no exceptions,
+    50 string results, both service methods called exactly 50 times."""
+    import asyncio
+    import threading
+
+    import dbs_vector.mcp.state as state_mod
+
+    calls = {"search": 0, "count": 0}
+    lock = threading.Lock()
+
+    def fake_search(query, source_filter, limit, *, extra_filters):
+        with lock:
+            calls["search"] += 1
+        return []  # empty results → formatter "no results" branch
+
+    def fake_count(source_filter, extra_filters):
+        with lock:
+            calls["count"] += 1
+        return 0
+
+    service = MagicMock()
+    service.execute_query.side_effect = fake_search
+    service.count_matching.side_effect = fake_count
+    monkeypatch.setattr(state_mod, "_services", {"sql_stress": service})
+
+    fam = SqlFamily()
+    handler = fam.make_handler("sql_stress")
+    outs = await asyncio.gather(*[handler(query="q", limit=3) for _ in range(50)])
+
+    assert len(outs) == 50
+    assert calls["search"] == 50
+    assert calls["count"] == 50
+    assert all(isinstance(o, str) for o in outs)
+
+
+@pytest.mark.asyncio
 async def test_make_handler_handles_exception(monkeypatch):
     import dbs_vector.mcp.state as state_mod
 

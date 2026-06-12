@@ -166,16 +166,6 @@ class SqlFamily:
             if service is None:
                 return f"Error: search service '{engine_name}' is not initialized."
             try:
-                results = await asyncio.to_thread(
-                    family.run_search,
-                    service,
-                    query,
-                    limit,
-                    source_filter,
-                    min_time=min_time,
-                    min_lock_time=min_lock_time,
-                    table_filter=table_filter,
-                )
                 extra_filters: dict[str, Any] = {}
                 for key, value in (
                     ("min_time", min_time),
@@ -184,11 +174,33 @@ class SqlFamily:
                 ):
                     if value is not None:
                         extra_filters[key] = value
-                total = await asyncio.to_thread(
-                    service.count_matching,
-                    source_filter,
-                    extra_filters,
-                )
+
+                # Search and count are independent, but both ultimately call
+                # `self.table.checkout_latest()` on the SAME LanceDB Table handle,
+                # which is a documented in-place mutation of the handle's version
+                # pointer. `asyncio.to_thread` dispatches each call to a separate
+                # ThreadPoolExecutor worker thread, so
+                # `asyncio.gather(asyncio.to_thread(run_search...), asyncio.to_thread(count...))`
+                # would run them on TWO concurrent threads — both mutating the same
+                # handle simultaneously. lancedb 0.30.2 provides no guarantee that
+                # concurrent checkout_latest+read sequences on one shared handle are
+                # safe. Do NOT gather them. Running both sequentially inside ONE
+                # `to_thread` closure frees the event loop without ever placing two
+                # concurrent reads on the same handle.
+                def _search_then_count() -> tuple[list[Any], int]:
+                    r = family.run_search(
+                        service,
+                        query,
+                        limit,
+                        source_filter,
+                        min_time=min_time,
+                        min_lock_time=min_lock_time,
+                        table_filter=table_filter,
+                    )
+                    t = service.count_matching(source_filter, extra_filters)
+                    return r, t
+
+                results, total = await asyncio.to_thread(_search_then_count)
                 return family.format_results(
                     results, query, total_matching=total, include_raw=include_raw
                 )
