@@ -81,17 +81,34 @@ def test_ingestion_service_accepts_batch_size_kwarg():
     assert svc.batch_size == 8
 
 
-def test_ingestion_service_uses_self_batch_size_in_batched():
-    """_batched yields batches sized by self.batch_size."""
-    svc = IngestionService(
-        chunker=MagicMock(),
-        embedder=MagicMock(),
-        vector_store=MagicMock(),
-        workflow="w",
-        batch_size=3,
+def test_ingestion_batches_by_self_batch_size(tmp_path):
+    """Chunks are streamed to the store in batches sized by self.batch_size."""
+    (tmp_path / "doc.md").write_text("# Doc\n\nbody")
+
+    chunker = MagicMock()
+    chunker.supported_extensions = [".md"]
+    chunker.process.side_effect = lambda doc: iter(
+        [
+            Chunk(
+                id=f"{doc.filepath}_chunk_{i}",
+                text=f"chunk {i}",
+                source=doc.filepath,
+                content_hash=f"hash{i}",  # distinct ⇒ none deduped
+            )
+            for i in range(10)
+        ]
     )
-    batches = list(svc._batched(iter(range(10)), svc.batch_size))
-    assert [len(b) for b in batches] == [3, 3, 3, 1]
+
+    embedder = MagicMock()
+    embedder.embed_batch.side_effect = lambda texts: [[0.1, 0.2, 0.3] for _ in texts]
+    store = MagicMock()
+    store.get_existing_hashes.return_value = set()
+
+    svc = IngestionService(chunker, embedder, store, batch_size=3)
+    svc.ingest_directory(str(tmp_path))
+
+    batch_sizes = [len(call.kwargs["chunks"]) for call in store.ingest_chunks.call_args_list]
+    assert batch_sizes == [3, 3, 3, 1]
 
 
 def test_intra_run_dedup_stores_duplicate_hash_once(tmp_path):

@@ -2,7 +2,7 @@ import glob
 import hashlib
 import os
 from collections.abc import Iterator
-from itertools import islice
+from itertools import batched
 from pathlib import Path
 from typing import Any
 
@@ -28,12 +28,6 @@ class IngestionService:
         self.vector_store = vector_store
         self.workflow = workflow
         self.batch_size = batch_size
-
-    def _batched(self, iterable: Iterator[Any], n: int) -> Iterator[list[Any]]:
-        """Yields successive n-sized chunks from an iterable (Python 3.12+ backport)."""
-        it = iter(iterable)
-        while batch := list(islice(it, n)):
-            yield batch
 
     def ingest_directory(self, target_path: str, rebuild: bool = False) -> None:
         """Reads documents, chunks them, and streams them to the Vector Store."""
@@ -104,10 +98,7 @@ class IngestionService:
 
         total_chunks = 0
         skipped_chunks = 0
-        for batch in self._batched(_chunk_generator(), self.batch_size):
-            if not batch:
-                continue
-
+        for batch in batched(_chunk_generator(), self.batch_size):
             # Filter out chunks whose content hash is already present in the store
             new_chunks = [c for c in batch if c.content_hash not in existing_hashes]
 
