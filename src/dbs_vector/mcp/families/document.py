@@ -3,7 +3,10 @@
 import asyncio
 from typing import Any
 
+from dbs_vector.mcp.families.base import render_with_budget
 from dbs_vector.services.search import SearchService
+
+_RESPONSE_BUDGET_BYTES = 1_000_000
 
 
 class DocumentFamily:
@@ -26,7 +29,8 @@ class DocumentFamily:
         if not results:
             return f"No results found for query: '{query}'"
 
-        output = [f"Found {len(results)} results for '{query}':\n"]
+        header = f"Found {len(results)} results for '{query}':\n"
+        blocks: list[str] = []
         for res in results:
             if res.distance is not None:
                 dist_str = f"{res.distance:.4f}"
@@ -35,12 +39,12 @@ class DocumentFamily:
             else:
                 dist_str = "N/A (FTS)"
             chunk = res.chunk
-            output.append(
+            blocks.append(
                 f"--- Result (Score: {dist_str}) ---\n"
                 f"Source: {chunk.source}\n"
                 f"Content:\n{chunk.text}\n"
             )
-        return "\n".join(output)
+        return render_with_budget(header, blocks, _RESPONSE_BUDGET_BYTES)
 
     def make_handler(self, engine_name: str) -> Any:
         family = self  # closure capture

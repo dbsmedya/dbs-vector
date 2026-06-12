@@ -1,12 +1,21 @@
 """Tests for DocumentFamily run_search / format_results / make_handler."""
 
 import inspect
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from dbs_vector.core.models import Chunk, SearchResult
 from dbs_vector.mcp.families.document import DocumentFamily
+
+
+def _fake_doc_result(source: str, text: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        distance=None,
+        score=0.9,
+        chunk=SimpleNamespace(source=source, text=text),
+    )
 
 
 def test_run_search_calls_service_with_kwargs():
@@ -117,3 +126,22 @@ async def test_make_handler_runs_search_and_formats(monkeypatch):
     service.execute_query.assert_called_once_with("q", None, 1, extra_filters={})
     assert "Found 1 results for 'q'" in out
     assert "Source: f.md" in out
+
+
+def test_document_family_caps_oversized_response():
+    family = DocumentFamily()
+    big_text = "z" * 600_000
+    results = [_fake_doc_result(source=f"f{i}.md", text=big_text) for i in range(3)]
+    out = family.format_results(results, query="q")
+    assert len(out.encode("utf-8")) <= 1_000_000
+    assert "results elided due to MCP response size cap" in out
+
+
+def test_document_family_under_budget_unchanged():
+    family = DocumentFamily()
+    results = [_fake_doc_result(source="a.md", text="hello world")]
+    out = family.format_results(results, query="q")
+    assert out.startswith("Found 1 results for 'q':")
+    assert "Source: a.md" in out
+    assert "hello world" in out
+    assert "elided" not in out
