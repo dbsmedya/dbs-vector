@@ -4,11 +4,10 @@ import asyncio
 from datetime import datetime
 from typing import Any
 
-from dbs_vector.mcp.families.base import render_with_budget
+from dbs_vector.mcp.families.base import RESPONSE_BUDGET_BYTES, render_with_budget
 from dbs_vector.services.search import SearchService
 
 _RAW_QUERY_DISPLAY_LIMIT = 2_000
-_RESPONSE_BUDGET_BYTES = 1_000_000
 
 
 def _truncate_raw_query(raw_query: str) -> str:
@@ -116,8 +115,7 @@ class SqlFamily:
                 f"that matched your filters for '{query}' "
                 f"(ranked by similarity):\n"
             )
-        blocks: list[str] = []
-        for res in results:
+        def _block(res: Any) -> str:
             if res.distance is not None:
                 dist_str = f"{res.distance:.4f}"
             elif res.score is not None:
@@ -144,9 +142,16 @@ class SqlFamily:
             ]
             if include_raw:
                 block_parts.append(f"Raw SQL:\n{_truncate_raw_query(chunk.raw_query or '')}")
-            blocks.append("\n".join(block_parts) + "\n")
+            return "\n".join(block_parts) + "\n"
 
-        return render_with_budget(header, blocks, _RESPONSE_BUDGET_BYTES)
+        # Lazy generator + explicit total: blocks past the byte cap are never
+        # formatted (with include_raw a block can be ~4 KB of string work).
+        return render_with_budget(
+            header,
+            (_block(res) for res in results),
+            RESPONSE_BUDGET_BYTES,
+            total=len(results),
+        )
 
     def make_handler(self, engine_name: str) -> Any:
         family = self  # closure capture

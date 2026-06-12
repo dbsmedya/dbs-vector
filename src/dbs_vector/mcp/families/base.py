@@ -1,15 +1,25 @@
 """SearchFamily Protocol: contract that each search family implements."""
 
+from collections.abc import Iterable
 from typing import Any, Protocol
 
 from dbs_vector.services.search import SearchService
+
+# MCP response-size cap shared by every family formatter. A transport-level
+# property, not a per-family choice — defined once, beside the helper.
+RESPONSE_BUDGET_BYTES = 1_000_000
 
 
 def _byte_len(value: str) -> int:
     return len(value.encode("utf-8"))
 
 
-def render_with_budget(header: str, blocks: list[str], budget_bytes: int) -> str:
+def render_with_budget(
+    header: str,
+    blocks: Iterable[str],
+    budget_bytes: int = RESPONSE_BUDGET_BYTES,
+    total: int | None = None,
+) -> str:
     """Join `header` + `blocks` under a UTF-8 byte budget, appending an
     elision footer when trailing blocks must be dropped to fit.
 
@@ -19,28 +29,40 @@ def render_with_budget(header: str, blocks: list[str], budget_bytes: int) -> str
     blocks if even the footer would overflow). Output is byte-identical to the
     prior inline SqlFamily implementation, so both families — and the future
     ImageFamily — can share one transport-ceiling guard.
+
+    `blocks` may be a LAZY iterable so callers skip formatting blocks past the
+    cap; pass `total` (the result count) in that case, because the footer
+    reports "[X of TOTAL results elided]" and a consumed iterator cannot be
+    counted after the early exit. Byte accounting is incremental — one join at
+    return — but decision-for-decision identical to re-joining per block.
     """
+    if total is None:
+        blocks = list(blocks)
+        total = len(blocks)
+
     output = [header]
-    total = len(blocks)
+    used = _byte_len(header)  # bytes of "\n".join(output)
 
-    def _append_elision_footer(omitted: int) -> None:
-        footer = f"[{omitted} of {total} results elided due to MCP response size cap]"
-        while len(output) > 1 and _byte_len("\n".join([*output, footer])) > budget_bytes:
-            output.pop()
-            omitted += 1
-            footer = f"[{omitted} of {total} results elided due to MCP response size cap]"
-        if _byte_len("\n".join([*output, footer])) <= budget_bytes:
-            output.append(footer)
+    def _footer(omitted: int) -> tuple[str, int]:
+        text = f"[{omitted} of {total} results elided due to MCP response size cap]"
+        return text, 1 + _byte_len(text)  # +1 for the "\n" join separator
 
-    for idx, block in enumerate(blocks):
-        # Re-joins the accumulated output each step (O(n·total_chars)); benign
-        # because the byte budget caps total_chars at ~budget_bytes (~1 MB), so
-        # n is bounded by budget_bytes / min_block_bytes.
-        candidate = "\n".join([*output, block])
-        if _byte_len(candidate) > budget_bytes:
-            _append_elision_footer(total - idx)
+    emitted = 0
+    for block in blocks:
+        cost = 1 + _byte_len(block)
+        if used + cost > budget_bytes:
+            omitted = total - emitted
+            footer, fcost = _footer(omitted)
+            while len(output) > 1 and used + fcost > budget_bytes:
+                used -= 1 + _byte_len(output.pop())
+                omitted += 1
+                footer, fcost = _footer(omitted)
+            if used + fcost <= budget_bytes:
+                output.append(footer)
             break
         output.append(block)
+        used += cost
+        emitted += 1
     return "\n".join(output)
 
 

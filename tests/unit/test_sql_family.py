@@ -12,9 +12,9 @@ import pytest
 from dbs_vector.core.models import SqlChunk, SqlSearchResult
 from dbs_vector.infrastructure.storage.lancedb_engine import LanceDBStore
 from dbs_vector.infrastructure.storage.mappers import SqlMapper
+from dbs_vector.mcp.families.base import RESPONSE_BUDGET_BYTES
 from dbs_vector.mcp.families.sql import (
     _RAW_QUERY_DISPLAY_LIMIT,
-    _RESPONSE_BUDGET_BYTES,
     SqlFamily,
 )
 
@@ -318,7 +318,7 @@ def test_format_results_caps_total_response_size():
 
     out = fam.format_results(results, query="q", total_matching=1_000)
 
-    assert len(out.encode("utf-8")) <= _RESPONSE_BUDGET_BYTES
+    assert len(out.encode("utf-8")) <= RESPONSE_BUDGET_BYTES
     assert "results elided due to MCP response size cap" in out
 
 
