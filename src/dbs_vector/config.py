@@ -405,17 +405,13 @@ def _populate_singleton_from(new_settings: "Settings") -> None:
 
     The CLI Typer callback (and the `mcp` subcommand's reload-when-set path)
     calls this with a Settings instance returned from
-    `load_settings(config_file, validate=True)`. The field list here is the
-    source of truth for what runtime callers propagate from disk to the
-    singleton.
+    `load_settings(config_file, validate=True)`. _PROPAGATED_SETTINGS_FIELDS
+    is LOAD-BEARING: the loop below copies exactly that set, so adding a field
+    name there (which the drift-guard test demands for every new Settings
+    field) IS the propagation — there is no second list to forget.
     """
-    settings.db_path = new_settings.db_path
-    settings.nprobes = new_settings.nprobes
-    settings.engines = new_settings.engines
-    settings.profiles = new_settings.profiles
-    settings.memory_budget_gb = new_settings.memory_budget_gb
-    settings.log_level = new_settings.log_level
-    settings.log_serialize = new_settings.log_serialize
+    for field in _PROPAGATED_SETTINGS_FIELDS:
+        setattr(settings, field, getattr(new_settings, field))
 
 
 # Module-level singleton: ZERO file I/O at import. We pass _env_file=None
