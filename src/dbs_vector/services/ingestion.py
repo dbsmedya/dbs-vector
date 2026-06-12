@@ -99,8 +99,19 @@ class IngestionService:
         total_chunks = 0
         skipped_chunks = 0
         for batch in batched(_chunk_generator(), self.batch_size):
-            # Filter out chunks whose content hash is already present in the store
-            new_chunks = [c for c in batch if c.content_hash not in existing_hashes]
+            # Check-AND-ADD against the live hash set so a duplicate is skipped
+            # wherever it appears: already in the store, in an earlier batch, or
+            # earlier in THIS batch (two identical files routinely land in one
+            # batch at the default batch_size=64 — a post-ingest set update
+            # alone misses that case). get_existing_hashes() is a one-time
+            # snapshot and never sees in-run inserts; this set is its live
+            # extension.
+            new_chunks = []
+            for c in batch:
+                if c.content_hash in existing_hashes:
+                    continue
+                existing_hashes.add(c.content_hash)
+                new_chunks.append(c)
 
             if not new_chunks:
                 skipped_chunks += len(batch)
@@ -112,11 +123,6 @@ class IngestionService:
             self.vector_store.ingest_chunks(
                 chunks=new_chunks, vectors=vectors, workflow=self.workflow
             )
-            # Fold this batch's hashes into the live set so a duplicate that
-            # appears LATER in the same run (identical file, or same normalized
-            # SQL from two sources) is skipped — get_existing_hashes() is a
-            # one-time snapshot and never sees in-run inserts.
-            existing_hashes.update(c.content_hash for c in new_chunks)
             total_chunks += len(new_chunks)
             skipped_chunks += len(batch) - len(new_chunks)
             logger.info("Streamed {} new chunks (total: {})", len(new_chunks), total_chunks)

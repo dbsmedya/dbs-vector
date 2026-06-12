@@ -135,9 +135,50 @@ def test_intra_run_dedup_stores_duplicate_hash_once(tmp_path):
     store = MagicMock()
     store.get_existing_hashes.return_value = set()
 
-    # 1 chunk/batch → each file is its own batch, exercising the CROSS-batch dedup path
-    # (a larger batch would dedupe within one batch and pass for the wrong reason)
+    # 1 chunk/batch → each file is its own batch, exercising the CROSS-batch
+    # dedup path. The INTRA-batch path (both duplicates inside one batch) is
+    # covered separately below — it requires check-and-add at filter time, not
+    # just a post-ingest set update.
     svc = IngestionService(chunker, embedder, store, batch_size=1)
+    svc.ingest_directory(str(tmp_path))
+
+    stored = [
+        c.content_hash for call in store.ingest_chunks.call_args_list for c in call.kwargs["chunks"]
+    ]
+    assert stored.count(dup_hash) == 1
+
+
+def test_intra_batch_dedup_stores_duplicate_hash_once(tmp_path):
+    """Two same-hash chunks landing in the SAME batch → stored once.
+
+    This is the production-realistic case (batch_size=64 puts chunks from
+    adjacent identical files into one batch). A dedup that only folds hashes
+    into the set AFTER each batch is ingested misses it.
+    """
+    (tmp_path / "a.md").write_text("# A\n\nbody a")  # different contents ⇒
+    (tmp_path / "b.md").write_text("# B\n\nbody b")  # different file hashes
+
+    dup_hash = "deadbeefdeadbeef"
+    chunker = MagicMock()
+    chunker.supported_extensions = [".md"]
+    chunker.process.side_effect = lambda doc: iter(
+        [
+            Chunk(
+                id=f"{doc.filepath}_chunk_0",
+                text="same body",
+                source=doc.filepath,
+                content_hash=dup_hash,
+            )
+        ]
+    )
+
+    embedder = MagicMock()
+    embedder.embed_batch.side_effect = lambda texts: [[0.1, 0.2, 0.3] for _ in texts]
+    store = MagicMock()
+    store.get_existing_hashes.return_value = set()
+
+    # Large batch → both files' chunks arrive in ONE batch.
+    svc = IngestionService(chunker, embedder, store, batch_size=64)
     svc.ingest_directory(str(tmp_path))
 
     stored = [
