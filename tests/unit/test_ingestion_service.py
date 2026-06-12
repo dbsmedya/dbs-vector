@@ -96,15 +96,21 @@ def test_ingestion_service_uses_self_batch_size_in_batched():
 
 def test_intra_run_dedup_stores_duplicate_hash_once(tmp_path):
     """Two files whose chunks share one content_hash in ONE run → stored once."""
-    (tmp_path / "a.md").write_text("# A\n\nbody a")   # different contents ⇒
-    (tmp_path / "b.md").write_text("# B\n\nbody b")   # different file hashes
+    (tmp_path / "a.md").write_text("# A\n\nbody a")  # different contents ⇒
+    (tmp_path / "b.md").write_text("# B\n\nbody b")  # different file hashes
 
     dup_hash = "deadbeefdeadbeef"
     chunker = MagicMock()
     chunker.supported_extensions = [".md"]
     chunker.process.side_effect = lambda doc: iter(
-        [Chunk(id=f"{doc.filepath}_chunk_0", text="same body",
-               source=doc.filepath, content_hash=dup_hash)]
+        [
+            Chunk(
+                id=f"{doc.filepath}_chunk_0",
+                text="same body",
+                source=doc.filepath,
+                content_hash=dup_hash,
+            )
+        ]
     )
 
     embedder = MagicMock()
@@ -118,8 +124,6 @@ def test_intra_run_dedup_stores_duplicate_hash_once(tmp_path):
     svc.ingest_directory(str(tmp_path))
 
     stored = [
-        c.content_hash
-        for call in store.ingest_chunks.call_args_list
-        for c in call.kwargs["chunks"]
+        c.content_hash for call in store.ingest_chunks.call_args_list for c in call.kwargs["chunks"]
     ]
     assert stored.count(dup_hash) == 1

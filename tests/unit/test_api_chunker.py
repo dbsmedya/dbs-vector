@@ -370,7 +370,5 @@ def test_pagination_breaks_when_has_more_true_but_cursor_missing():
 
         chunks = list(chunker.process(_doc()))
 
-    assert call_count["n"] == 1, (
-        f"Expected 1 fetch (guard broke loop), got {call_count['n']}"
-    )
+    assert call_count["n"] == 1, f"Expected 1 fetch (guard broke loop), got {call_count['n']}"
     assert len(chunks) == 1
