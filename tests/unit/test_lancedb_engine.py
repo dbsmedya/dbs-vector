@@ -126,6 +126,14 @@ class TestClear:
             schema=store.mapper.schema,
         )
 
+    def test_clear_resets_hybrid_cache(self, lancedb_store):
+        """clear() must reset _hybrid_ok to None so hybrid search is retried
+        after the table (and its FTS index) has been dropped and recreated."""
+        store, _, _, _ = lancedb_store
+        store._hybrid_ok = False  # simulate a prior failed hybrid attempt
+        store.clear()
+        assert store._hybrid_ok is None
+
 
 class TestIngestChunks:
     """Tests for the ingest_chunks method."""
@@ -444,7 +452,7 @@ class TestSearch:
 
         # First call (hybrid) fails, second call (vector) succeeds
         mock_hybrid_search = MagicMock()
-        mock_hybrid_search.vector.side_effect = Exception("Hybrid not available")
+        mock_hybrid_search.vector.side_effect = ValueError("Hybrid not available")
 
         mock_vector_search = MagicMock()
         mock_vector_search.metric.return_value = mock_vector_search
@@ -765,3 +773,51 @@ class TestSearch:
 
         assert results == ["dup_0", "uniq_1"]
         assert store.mapper.from_polars_row.call_count == 2
+
+    def test_hybrid_failure_cached_and_reset_by_create_indices(self, lancedb_store, monkeypatch):
+        """After hybrid fails once, subsequent searches skip the hybrid attempt
+        (cache hit). create_indices resets the cache so hybrid is retried."""
+        import polars as pl
+
+        store, _, mock_table, _ = lancedb_store
+        qv = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        # Vector-path chain succeeds; hybrid path raises deterministically.
+        mock_search = MagicMock()
+        mock_search.metric.return_value = mock_search
+        mock_search.nprobes.return_value = mock_search
+        mock_search.limit.return_value = mock_search
+        mock_search.to_polars.return_value = pl.DataFrame(
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+        )
+
+        def search_side_effect(*args, **kwargs):
+            if kwargs.get("query_type") == "hybrid":
+                raise ValueError("fts index not found")
+            return mock_search
+
+        mock_table.search.side_effect = search_side_effect
+
+        warnings: list[str] = []
+        monkeypatch.setattr(
+            "dbs_vector.infrastructure.storage.lancedb_engine.logger.warning",
+            lambda msg, *a, **k: warnings.append(str(msg)),
+        )
+
+        store.search("q", qv, limit=3)
+        store.search("q", qv, limit=3)
+
+        hybrid_attempts = [
+            c for c in mock_table.search.call_args_list if c.kwargs.get("query_type") == "hybrid"
+        ]
+        assert len(hybrid_attempts) == 1, (
+            f"Expected 1 hybrid attempt (2nd call should be cached), "
+            f"got {len(hybrid_attempts)}. All calls: {mock_table.search.call_args_list}"
+        )
+        assert sum("Hybrid search unavailable" in w for w in warnings) == 1, (
+            f"Expected exactly 1 warning, got: {warnings}"
+        )
+        assert store._hybrid_ok is False
+
+        store.create_indices()  # FTS rebuilt → cache reset
+        assert store._hybrid_ok is None

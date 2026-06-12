@@ -29,6 +29,8 @@ class LanceDBStore:
         self.mapper = mapper
         self.schema = mapper.schema
 
+        self._hybrid_ok: bool | None = None  # None=untried, True=works, False=skip
+
         self.db = lancedb.connect(db_path)
         # Use exist_ok to open existing tables rather than overwriting on app start
         try:
@@ -46,6 +48,8 @@ class LanceDBStore:
         """Drops the table and recreates it with an empty schema."""
         self.db.drop_table(self.table_name, ignore_missing=True)  # pyright: ignore[reportCallIssue]
         self.table = self.db.create_table(self.table_name, schema=self.schema)
+        # FTS index is gone after table drop/recreate — allow hybrid retry.
+        self._hybrid_ok = None
 
     def ingest_chunks(self, chunks: list[Any], vectors: NDArray[np.float32], workflow: str) -> None:
         """Constructs an Arrow RecordBatch to completely bypass Python iterators."""
@@ -81,6 +85,9 @@ class LanceDBStore:
             self.table.create_fts_index("text", replace=True)
         except Exception as e:
             logger.warning("FTS indexing failed (tantivy missing?): {}", e)
+
+        # FTS index may now exist (or have been replaced) — allow hybrid retry.
+        self._hybrid_ok = None
 
     def get_existing_hashes(self) -> set[str]:
         """Returns all existing content hashes, projecting a single column
@@ -158,16 +165,32 @@ class LanceDBStore:
                 op = op.nprobes(self.nprobes)
             return op.limit(limit)
 
-        # First attempt: hybrid (builder + execute)
-        try:
-            search_op = _build_hybrid()
-            results_df = search_op.to_polars()
-        except Exception as e:
-            logger.warning(
-                "Hybrid search unavailable or failed ({}), falling back to pure vector", e
-            )
+        # Hybrid requires an FTS index. Once we learn it is unavailable, skip
+        # the build+raise on every subsequent query; the cache is reset wherever
+        # the FTS index can change (create_indices / clear).
+        if self._hybrid_ok is False:
             search_op = _build_vector()
             results_df = search_op.to_polars()
+        else:
+            try:
+                search_op = _build_hybrid()
+                results_df = search_op.to_polars()
+                self._hybrid_ok = True
+            except (ValueError, RuntimeError, FileNotFoundError) as e:
+                # Narrowed from bare Exception so a genuinely bad filter / OOM
+                # surfaces instead of silently degrading to vector-only.
+                # ValueError/RuntimeError cover query-build errors;
+                # FileNotFoundError covers LanceDB 0.30.2's FTS-absent case
+                # (lancedb/query.py:1570-1573 raises FileNotFoundError when the
+                # FTS index directory does not exist). Catching all of OSError
+                # would silently swallow unrelated disk/IO errors (PermissionError,
+                # ConnectionError, etc.) and degrade them to vector-only.
+                self._hybrid_ok = False
+                logger.warning(
+                    "Hybrid search unavailable or failed ({}), falling back to pure vector", e
+                )
+                search_op = _build_vector()
+                results_df = search_op.to_polars()
 
         # Hybrid search merges vector + FTS branches and can yield the same
         # `id` from both. Dedupe after LanceDB applies `limit`; this may return
