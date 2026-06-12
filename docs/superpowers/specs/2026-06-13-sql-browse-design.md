@@ -23,12 +23,19 @@ CLI and MCP, **without touching the semantic path**.
 `browse` runs a read-only **SQL `SELECT`** over an engine's table. Execution uses
 **`polars.SQLContext`** (already a core dep, `polars==1.40.0`) over the Arrow data
 read from LanceDB, with **`sqlglot`** (core dep, `sqlglot>=27.0.0`) guarding that
-the statement is a single read-only `SELECT`. No new dependency; `polars`
-`SQLContext` is **sandboxed to registered frames** (it cannot read files), so it
-is safe to expose to an LLM — unlike DuckDB, which can touch the filesystem.
+the statement is a single read-only `SELECT` (so a typo cannot mutate the table).
+No new dependency.
 
 This collapses the would-be `--select/--group-by/--order-by` machinery into "you
 write the `SELECT`, polars does the grouping/sorting/aggregation."
+
+The one genuine exposure concern is **data egress, not query injection**: browse
+output can contain `raw_query` (verbatim production SQL with real literal values),
+and an MCP client may be a remote model — so raw SQL would leave the operator's
+network. That boundary is handled by an explicit, default-off config gate (see
+**Raw query exposure**). On the CLI there is nothing to gate: the operator runs
+SQL in their own terminal under their own privileges, exactly as they would
+`cat` a file.
 
 **Two front-ends, one execution core:**
 
@@ -153,8 +160,9 @@ From `SqlChunk` (`core/models.py`). These are the columns in frame `t`:
 
 **Excluded from frames (#5):** the embedding `vector` column is **never** read
 into the frame (large; projected out at scan time). `workflow` is also excluded
-from the frame. `text` / `raw_query` ARE available (short normalized/raw query
-text) for display.
+from the frame. `text` (normalized fingerprint) is freely available for display.
+`raw_query` (verbatim production SQL, real literals) is in the frame but
+**gated on the MCP path** — see **Raw query exposure**.
 
 **Table-sharing semantics (#5).** `browse` reads an engine's `table_name`
 directly and does not filter on `workflow`. `sql` and `sql-api` share the physical
@@ -162,6 +170,39 @@ table `query_vault` with the same `workflow` (`config.yaml:32,43`), so
 `browse_sql` and `browse_sql_api` see the same rows — identical to existing
 `search` behavior (it doesn't filter `workflow` either). `*_granite` /
 `*_granite_api` have distinct tables and are isolated.
+
+## Raw query exposure (data egress, #1)
+
+`raw_query` is the **verbatim production SQL**, literal values included (emails,
+ids, tokens that appeared in the captured statement). `text` is the **normalized
+fingerprint** — literals stripped — which the `search` path already surfaces to
+the calling LLM today. The egress boundary is therefore *normalized-yes, raw-no*,
+identical to `search`'s existing `include_raw=False` default
+(`SqlFamily.make_handler`). browse must not silently widen it.
+
+The MCP server cannot know whether its client is a remote model (raw SQL leaves
+the network) or a local one, so exposure is an **explicit operator choice, not
+auto-detected**:
+
+- **New per-engine config field `expose_raw_query: bool`, default `false`**,
+  added to `EngineConfig` (`config.py`).
+- **MCP, gate OFF (default):** `raw_query` is **not** in the selectable column
+  vocabulary. A `select` that names it is rejected before any scan with a
+  friendly message ("raw query text is not exposed on this engine; set
+  `expose_raw_query: true` to enable"), and `browse_description` omits
+  `raw_query` from the advertised columns. `text` (normalized) stays freely
+  selectable — consistent with `search`.
+- **MCP, gate ON:** `raw_query` joins the selectable vocabulary and the
+  description advertises it. Operators set this only when driving the engine with
+  a local model.
+- **CLI, always unrestricted:** `SELECT raw_query FROM t` works regardless of the
+  flag. The CLI prints to the operator's own terminal — no network egress — so
+  the gate lives only in the MCP builder's column-vocabulary validation
+  (`build_and_run`), which the CLI's `run_sql` path never invokes.
+
+This reuses the established `normalized-yes / raw-no` contract rather than
+inventing a new mechanism, and keeps raw production literals off a remote model
+by default.
 
 ## MCP grouped-mode output (what the builder emits)
 
@@ -183,9 +224,14 @@ authors can of course write any aggregates they like):
 
 Two explicitly-named averages (#10): per-fingerprint vs per-execution — the
 latter (`avg_ms_per_call`) is the number a DBA usually reads. `NULLIF` guards
-divide-by-zero (verified: empty/zero denominators yield `0.0`). polars `SUM`
-skips NULLs and an all-NULL group sums to `0.0` (verified, #7). When `group_by`
-is `tables`, the builder targets `t_by_table`. `select`, if given, restricts the
+**divide-by-zero by producing `NULL`, not `0.0`** — when `SUM(calls)` is 0 the
+ratio is genuinely undefined, and `NULL` is the honest answer (verified on polars
+1.40.0). Likewise polars `SUM` skips NULLs but an **all-NULL group sums to
+`NULL`, not `0.0`** (verified, #7) — e.g. a group whose every `lock_time_sec` is
+NULL. The builder does **not** wrap these in `COALESCE`; instead `NULL` is
+rendered as `n/a` in the table formatter and `null` in `--json` (#2, #7),
+matching the existing `SqlFamily` `_fmt_*` "n/a" convention. When `group_by` is
+`tables`, the builder targets `t_by_table`. `select`, if given, restricts the
 emitted columns to a validated subset of {group cols} ∪ {aggregate names};
 naming a raw per-fingerprint field (e.g. `id`) under grouping is rejected (#3).
 `order_by` appends `ORDER BY <col> <dir> NULLS LAST` (#7); `<col>` is validated
@@ -230,16 +276,26 @@ class BrowseService:
 
     def run_sql(self, sql: str) -> BrowseResult: ...        # raw path (CLI)
     def build_and_run(self, *, where, group_by, order_by,   # structured path (MCP)
-                      select, limit) -> BrowseResult: ...
+                      select, limit,
+                      expose_raw_query: bool = False) -> BrowseResult: ...
 ```
 
 `run_sql`:
 
-1. **Guard** with sqlglot: parse; require exactly one statement and that it is a
-   `SELECT` (reject any DDL/DML/`PRAGMA`/`COPY`/`ATTACH`/multiple statements) →
-   `BrowseError` with a friendly message on failure.
-2. If the parsed statement has no `LIMIT`, append the safety `LIMIT` (default
-   1000) via sqlglot and flag `limit_injected`.
+1. **Guard** with sqlglot: parse with **`dialect="postgres"`** (the dialect that
+   round-trips polars' `NULLS LAST` and double-quoted identifiers — see step 2);
+   require exactly one statement and that it is a `SELECT` (reject any
+   DDL/DML/`PRAGMA`/`COPY`/`ATTACH`/multiple statements) → `BrowseError` with a
+   friendly message on failure.
+2. If the parsed statement has no `LIMIT` on the outer query, inject the safety
+   `LIMIT` (default 1000) on the AST and regenerate with **`.sql(dialect=
+   "postgres")`**, then flag `limit_injected`. **The dialect pin is load-bearing
+   (#3):** sqlglot's *default* dialect drops the `NULLS LAST` clause on
+   regeneration, and polars sorts NULLs *first* under a bare `DESC` — so a
+   default-dialect round-trip would silently reorder exactly the ranked queries
+   browse exists to run. Postgres preserves `NULLS LAST` and the `"user"`
+   quoting (verified on sqlglot 30.7 + polars 1.40.0). Parsing and regenerating
+   under the **same** dialect avoids any translation artifact.
 3. `arrow = store.scan()` → `pl.from_arrow(arrow)` as `df`.
 4. Register frames: `{frame_alias: df, "t": df, "t_by_table": df.explode("tables")}`.
 5. `pl.SQLContext(frames).execute(sql, eager=True)` → rows.
@@ -248,7 +304,9 @@ class BrowseService:
 
 `build_and_run` (MCP): validate the structured params against the column /
 aggregate vocabulary (friendly errors: unknown column, `order_by tables`,
-grouped `select` naming a raw field), **build the SQL string** (quoting all
+grouped `select` naming a raw field, **`select raw_query` when
+`expose_raw_query` is false** — see Raw query exposure), **build the SQL string**
+(quoting all
 identifiers, choosing `t`/`t_by_table`, emitting the grouped aggregate set,
 `NULLS LAST`, `NULLIF`), compute `total_matching` via the same query minus
 `LIMIT`, then reuse `run_sql`'s executor. All of step-3-onward is pure
@@ -256,7 +314,9 @@ polars/Arrow compute → directly unit-tested with a fake `scan`.
 
 `BrowseResult`: `rows: list[dict]`, `columns: list[str]`, `total_matching: int`,
 `grouped: bool`, `limit_injected: bool`. `latest_ts` serializes to ISO 8601 in
-the `--json` path.
+the `--json` path. `None` cell values (NULL aggregates, missing scalars) render
+as `n/a` in the table formatter and `null` in `--json` — no `COALESCE` rewriting
+(#2, #7).
 
 ### MCP — naming, registrar, family handler
 
@@ -289,7 +349,8 @@ Ownership).
      reuses the already-initialized store (`_services[engine_name]` is a
      `SearchService`, `state.py:8`; store is `.vector_store`). **No embedder** —
      zero extra model load.
-  2. Runs `BrowseService.build_and_run(...)` inside a **single
+  2. Runs `BrowseService.build_and_run(..., expose_raw_query=engine.expose_raw_query)`
+     (the per-engine gate, default false) inside a **single
      `asyncio.to_thread` closure** — same shared-`checkout_latest`-handle
      discipline as the search handler.
   3. Renders via `format_browse(BrowseResult)` reusing `render_with_budget` for
@@ -349,8 +410,9 @@ required field, now consumed only by `list_engines` (`discovery.py:47`) + humans
 description: "Slow-query fingerprints from a remote slow-log API (Gemma embeddings)."
 ```
 
-All six engine `description:` fields shorten the same way. No `EngineConfig`
-change (`config.py`) — the field stays `description: str`.
+All six engine `description:` fields shorten the same way. The only
+`EngineConfig` (`config.py`) change is the new `expose_raw_query: bool = False`
+field (see **Raw query exposure**); `description` stays `description: str`.
 
 ## Error Handling
 
@@ -361,6 +423,9 @@ change (`config.py`) — the field stays `description: str`.
   polars message returned verbatim so the caller can fix it.
 - **Bad MCP structured params** (unknown column, `order_by tables`, grouped
   `select` naming a raw field) → validated before building SQL; friendly message.
+- **MCP `select raw_query` with `expose_raw_query` false** → rejected before any
+  scan with the "raw query text is not exposed on this engine" message (see Raw
+  query exposure). CLI is unaffected.
 - **Non-SQL engine** → rejected up front (browse is SQL-family only).
 - **Empty result** → "0 rows" message, not an error.
 
@@ -369,12 +434,20 @@ change (`config.py`) — the field stays `description: str`.
 - **Unit (`tests/unit/test_browse_service.py`)** — against a fake `IVectorStore.scan`
   returning an in-memory Arrow table:
   - `run_sql` guard: rejects `INSERT`/`UPDATE`/`DROP`/`PRAGMA`/`COPY`/`ATTACH`,
-    multi-statement; accepts a `SELECT`; injects safety `LIMIT` when absent.
+    multi-statement; accepts a `SELECT`; injects safety `LIMIT` when absent **and
+    the injection preserves a `NULLS LAST` clause** (regression guard for #3 — a
+    default-dialect round-trip would drop it).
   - `build_and_run`: params → expected SQL; grouped aggregate set incl.
-    `avg_ms_per_call` = `SUM(exec)/NULLIF(SUM(calls),0)`, all-null group → `0.0`,
-    NULLs-last ordering, `total_matching` = groups (grouped) vs rows (raw),
+    `avg_ms_per_call` = `SUM(exec)/NULLIF(SUM(calls),0)`; **all-NULL group and
+    zero-denominator average yield `NULL`, rendered `n/a` in table / `null` in
+    JSON** (#2, #7); NULLs-last ordering, `total_matching` = groups (grouped) vs
+    rows (raw),
     `t_by_table` selected for `group_by=tables`, rejections (unknown column,
     `order_by tables`, grouped `select id`), `"user"` quoted.
+  - raw-query gate: `select=raw_query` rejected when `expose_raw_query=False`,
+    accepted when `True`; `browse_description` omits `raw_query` from advertised
+    columns when off and includes it when on; CLI `run_sql("SELECT raw_query …")`
+    is unaffected by the flag.
 - **Unit (MCP)** — `make_browse_handler` formatting, byte-budget truncation,
   guard/polars errors → error-string-not-exception, store sourced from
   `_services[engine].vector_store`.
@@ -394,6 +467,8 @@ change (`config.py`) — the field stays `description: str`.
 - Frames: `t`, `t_by_table`, and the engine-name alias for `t`.
 - `vector` (and `workflow`) never read into the frame; `latest_ts` → ISO 8601 in
   `--json`.
+- `raw_query` exposure on MCP is gated by per-engine `expose_raw_query` (default
+  `false`); CLI is always unrestricted.
 - MCP grouped default columns: group cols, `fingerprints`, `calls`,
   `execution_time_ms`, `lock_time_sec`, `rows_examined`, `rows_sent`,
   `latest_ts`, `avg_ms_per_fingerprint`, `avg_ms_per_call`.

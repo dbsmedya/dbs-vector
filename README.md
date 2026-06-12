@@ -128,61 +128,21 @@ Each configured engine registers a tool named `search_<engine_name>` with dashes
 For setup instructions, see:
 👉 **[MCP Server Documentation](docs/README_MCP.md)**
 
-### Bundled Claude Skills
+### Bundled Claude Skills — *being rebuilt*
 
-`dbs-vector` ships two complementary Claude Skills under `skills/` that
-encode token-efficient workflows for slow-log triage. Both assume the
-`dbs-vector mcp` stdio server is connected; the slow-query skill's Phase
-2 additionally needs a MySQL MCP (e.g.
-[`askdba/mysql-mcp-server`](https://github.com/askdba/mysql-mcp-server)).
+`dbs-vector` previously shipped two Claude Skills under `skills/`
+(`slow-query-triage` and `locking-query-triage`) for slow-log triage.
+**Both have been removed.** They were built on semantic-search
+*workarounds* — coercing a ranking out of the similarity-only `search`
+verb via filter parameters — which the new analytical `browse` verb
+replaces with direct ranking, aggregation, and point-lookup.
 
-#### `slow-query-triage` — find the most impacted single query
-
-A two-phase workflow that picks the worst slow-log fingerprint in **one
-MCP call**, then validates its root cause with four MySQL calls. Designed
-to spend ~10–15× fewer tokens than broad-probing the corpus.
-
-- **Phase 1 (1 MCP call):** `min_time=999999` pre-filters thousands of
-  fingerprints down to the heavy tail; the winner is picked by call
-  frequency (highest call count dominates — frequency × per-call cost,
-  not cumulative ms alone).
-- **Phase 2 (4 MySQL calls):** canonicalize the table name via
-  `search_schema`, then `list_indexes` + `show_create_table` +
-  `explain_query` to confirm a missing-composite-index diagnosis. The
-  textbook fix for `WHERE a=? ORDER BY b DESC LIMIT N` patterns is a
-  composite `(a, b)` index, but the skill also flags non-textbook cases
-  (`FORCE INDEX (PRIMARY)`, function-on-column predicates, PK-range
-  pagination) where the answer is a query rewrite rather than a new
-  index.
-
-Triggers: "find the worst slow query", "what's burning DB time", "top slow
-queries", "triage the slow log".
-
-#### `locking-query-triage` — survey the entire lock-contention universe
-
-A **single-call** workflow that returns the corpus's complete lock
-universe (typically 20–30 fingerprints) with `min_lock_time=0.001`, then
-aggregates lock-time by table and by service in memory — no extra MCP
-calls needed. Includes:
-
-- Cause-vs-victim attribution heuristics (multi-table `INSERT…SELECT`
-  causes vs single-call multi-second waits as victims).
-- ORM-fingerprint consolidation (Hibernate / ActiveRecord emit one
-  logical write as 4–6 near-duplicate fingerprints; the skill collapses
-  them before classifying).
-- Architecture-focused remediation patterns — hot-row decomposition,
-  transaction-scope shrinking, `SKIP LOCKED` queue patterns — because
-  most lock-contending queries are point updates that don't benefit from
-  a new index.
-
-Triggers: "find lock contention", "which queries lock the most rows",
-"who is blocking who", "which services cause lock waits".
-
-For the full decision frameworks, anti-patterns, and example report
-shapes, see
-[`skills/slow-query-triage/SKILL.md`](skills/slow-query-triage/SKILL.md)
-and
-[`skills/locking-query-triage/SKILL.md`](skills/locking-query-triage/SKILL.md).
+New triage and index-recommendation skills will be **rebuilt on top of
+`browse`** in a later phase. See
+[`docs/README_SQL.md`](docs/README_SQL.md#analytical-access-with-browse-planned--not-yet-shipped)
+for the planned `browse` interface and
+[`docs/superpowers/specs/2026-06-13-sql-browse-design.md`](docs/superpowers/specs/2026-06-13-sql-browse-design.md)
+for the design spec.
 
 ## 🏗 Architecture & Roadmap
 

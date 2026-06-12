@@ -60,6 +60,63 @@ uv run dbs-vector search "SELECT * FROM users" --type sql --min-time 1000
 
 ---
 
+## Analytical access with `browse` *(planned — not yet shipped)*
+
+> **Status:** designed and approved, **not yet implemented**. This section
+> documents the intended interface from
+> [`docs/superpowers/specs/2026-06-13-sql-browse-design.md`](superpowers/specs/2026-06-13-sql-browse-design.md).
+> Commands below will not work until the `feat/sql-browse` branch lands. No
+> output is shown because nothing runs yet.
+
+`search` is purely semantic — it embeds a query string and ranks by cosine
+similarity. It deliberately cannot point-look-up a fingerprint by `id`, rank by
+a scalar column (`calls`, `execution_time_ms`) without a query string, or
+aggregate ("which user / table burns the most DB time"). Those need scalar,
+analytical access — which is what `browse` adds, **without touching the semantic
+path**.
+
+`browse` runs a **read-only SQL `SELECT`** over a SQL engine's table (no
+embedder). Two front-ends share one execution core:
+
+- **CLI — raw SQL.** You write the `SELECT`; polars executes it. A `sqlglot`
+  guard rejects anything but a single read-only `SELECT` (so a typo can't mutate
+  the table), and a safety `LIMIT 1000` is appended if you omit one.
+- **MCP — structured params** (`where` / `group_by` / `order_by` / `select` /
+  `limit`) that an LLM fills in; the handler compiles them to the same SQL.
+
+### CLI examples *(planned)*
+
+```bash
+# Heaviest users by total execution time  (note: "user" must be quoted)
+dbs-vector browse --type sql-api \
+  --sql 'SELECT "user", COUNT(*) AS fingerprints, SUM(execution_time_ms) AS total_ms
+         FROM t GROUP BY "user" ORDER BY total_ms DESC LIMIT 10'
+
+# Point lookup by fingerprint id
+dbs-vector browse --type sql-api --sql "SELECT * FROM t WHERE id = '93FEDEB240C723E3'"
+
+# Everything touching a table — use the exploded frame t_by_table
+dbs-vector browse --type sql-api \
+  --sql "SELECT id, calls FROM t_by_table WHERE tables = 'rental' ORDER BY calls DESC"
+```
+
+**Frames available in `FROM`:** `t` (one row per fingerprint), `t_by_table`
+(`t` exploded on the `tables` list — one row per table, for filtering/grouping
+by table), and the engine name with dashes→underscores (e.g. `sql_api`) as an
+alias for `t`.
+
+**Engine selection** uses `--type/-t`, consistent with `ingest` and `search`.
+Only SQL engines (`sql`, `sql-granite`, `sql-api`, `sql-api-granite`) are
+browsable; a non-SQL engine is rejected with the list of valid ones.
+
+**Privacy note:** `raw_query` (verbatim production SQL with real literal values)
+is **gated on the MCP path** behind a per-engine `expose_raw_query` flag
+(default off), so raw query text is not sent to a remote model unless an operator
+opts in. The normalized fingerprint (`text`) is always available. The CLI is
+unrestricted — it prints to your own terminal.
+
+---
+
 ## Why use Vector Search for SQL?
 Traditional structural analysis often relies on exact hash matching of normalized queries. While useful, it misses queries that are **logically identical but structurally different** (e.g., a `JOIN` written in a different order, or different aliasing). 
 
@@ -80,330 +137,33 @@ See [README_EMBEDDINGS.md](README_EMBEDDINGS.md) for model details.
 
 ---
 
-## Investigating Slow Queries with the Bundled Claude Skill
+## Investigation skills — deferred to a later phase
 
-`dbs-vector` ships a Claude Skill at
-[`skills/slow-query-investigator/SKILL.md`](../skills/slow-query-investigator/SKILL.md)
-that turns the ingested slow-query corpus into an interactive
-investigation tool. Once installed, you ask Claude natural-language
-questions about lock contention, slow queries on a particular table,
-or "what indexes should I add to TABLE X" — and the skill picks the
-right MCP tool calls automatically.
+Earlier versions of this README documented a bundled Claude Skill
+(`slow-query-investigator`, later split into `slow-query-triage` and
+`locking-query-triage`) that answered questions like "lock contention on
+`rental`?", "slowest queries on `payment`?", and "what indexes should I add to
+`rental`?".
 
-The examples below use the
-[Sakila sample database](https://dev.mysql.com/doc/sakila/en/) so they
-read clearly without exposing real production schemas. Substitute your
-own table names directly.
+**Those skills have been removed.** They were built on semantic-search
+*workarounds* — e.g. calling `search_sql_api(query="lock contention row write",
+min_lock_time=…)` purely to coax a ranking out of a verb that only ranks by
+cosine similarity. That is exactly the gap `browse` (above) closes: ranking by a
+scalar column, aggregation, and point-lookup, done directly and correctly.
 
-### Two phases
+New triage and index-recommendation skills will be **rebuilt on top of `browse`**
+in a later phase, once it ships. Until then, run the analytical queries directly
+through `browse` (CLI) when the `feat/sql-browse` branch lands.
 
-| Phase | What you can ask | Required MCP servers |
-|---|---|---|
-| **1 — Investigation** | "Lock contention on `rental`?" / "Slowest queries on `payment`?" / "What's hammering `inventory`?" | `dbs-vector` only |
-| **2 — Index recommendation** | "What indexes should I add to `rental`?" / "Missing indexes on `payment`?" | `dbs-vector` + `mysql-mcp-server` |
-
-### Setup
-
-#### 1. Install `dbs-vector` MCP server (Phase 1 + 2)
-
-The CLI already includes the MCP server entry point — you just need to
-register it with your Claude client. See
-[README_MCP.md](README_MCP.md#integrating-with-claude-desktop) for full
-instructions; the short version:
-
-```jsonc
-// Claude Desktop:  ~/Library/Application Support/Claude/claude_desktop_config.json
-// Claude Code:     ~/.claude.json  (or use `claude mcp add` CLI)
-{
-  "mcpServers": {
-    "dbs-vector-stdio": {
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/dbs-vector", "dbs-vector", "mcp"]
-    }
-  }
-}
-```
-
-You'll also need to ingest at least one slow-query log first
-(`uv run dbs-vector ingest <source> --type sql` etc.) — see the
-[Command Line Usage](#command-line-usage) section above.
-
-#### 2. Install `askdba/mysql-mcp-server` (Phase 2 only)
-
-For index recommendation, the skill needs schema introspection (live
-indexes, table size, EXPLAIN, foreign keys) — that comes from
-[`askdba/mysql-mcp-server`](https://github.com/askdba/mysql-mcp-server):
-
-```bash
-brew install askdba/tap/mysql-mcp-server
-```
-
-Configure connection details and **enable the extended toolset**
-(it's gated behind an env flag because it adds 13 schema-introspection
-tools beyond the basic listing/query set):
-
-```bash
-export MYSQL_DSN="user:pass@tcp(localhost:3306)/sakila?parseTime=true"
-export MYSQL_MCP_EXTENDED=1
-```
-
-Register it with Claude alongside dbs-vector:
-
-```jsonc
-{
-  "mcpServers": {
-    "dbs-vector-stdio": { /* as above */ },
-    "mysql": {
-      "command": "mysql-mcp-server",
-      "env": {
-        "MYSQL_DSN": "user:pass@tcp(localhost:3306)/sakila?parseTime=true",
-        "MYSQL_MCP_EXTENDED": "1"
-      }
-    }
-  }
-}
-```
-
-The skill is RDBMS-agnostic at the architecture level (its abstract
-operation contract maps to MySQL today; PostgreSQL adapter planned).
-
-#### 3. Activate the skill
-
-Skills in this repo are discoverable as `skills/<name>/SKILL.md`. To
-make them available globally to your Claude Code workspace, symlink:
-
-```bash
-mkdir -p ~/.claude/skills
-ln -s "$(pwd)/skills/slow-query-investigator" ~/.claude/skills/slow-query-investigator
-```
-
-After this, the trigger phrases below activate the skill automatically.
+> The companion Phase 2 workflow (live-schema index recommendation via
+> [`askdba/mysql-mcp-server`](https://github.com/askdba/mysql-mcp-server)) is
+> also deferred and will return with the rebuilt skills.
 
 ---
-
-### Worked examples
-
-#### Example 1 — All queries that lock a specific table  *(Phase 1)*
-
-**You ask:** *"Show me all queries that lock `rental` rows."*
-
-**The skill calls:**
-```
-mcp__dbs-vector-stdio__search_sql_api(
-    query="lock contention row write",
-    table_filter="rental",
-    min_lock_time=0.001,
-    limit=100,
-)
-```
-
-**Why these parameters:**
-- `table_filter="rental"` returns only queries that touch the `rental`
-  table. Internally this triggers exact flat-scan over the slow-log
-  table so the IVF approximate index doesn't drop matches.
-- `min_lock_time=0.001` excludes queries with zero lock contribution
-  (pure SELECTs, EXPLAINs, monitoring tools).
-- `query=...` doesn't filter — it ranks within the filtered set,
-  biasing toward write-locking patterns.
-
-**You get back** (sorted by `lock_time_sec` DESC after Claude
-post-processes):
-
-```
-─── 23 queries on `rental`, total lock_time 142.7s, total calls 8,412 ───
-1. lock_sec=24.3  exec_ms=24,280  calls=1
-   INSERT INTO rental(rental_date, inventory_id, customer_id, return_date,
-   staff_id, last_update) VALUES (?, ?, ?, NULL, ?, NOW())
-   ON DUPLICATE KEY UPDATE last_update = NOW(), staff_id = VALUES(staff_id)
-
-2. lock_sec=17.5  exec_ms=8,964  calls=835
-   UPDATE rental SET return_date = NOW() WHERE rental_id = ?
-
-3. lock_sec=15.9  exec_ms=1,342,476  calls=131
-   INSERT INTO rental(rental_date, inventory_id, customer_id, return_date,
-   staff_id, last_update) VALUES (?, ?, ?, ?, ?, ?)
-…
-```
-
-The high-volume INSERT and the `return_date` UPDATE are the lock-time
-floor — they're the ones to optimize first.
-
-#### Example 2 — Where is lock contention coming from?  *(Phase 1, no specific table)*
-
-**You ask:** *"Where is our lock contention coming from?"*
-
-**The skill calls:**
-```
-mcp__dbs-vector-stdio__search_sql_api(
-    query="lock contention waiting blocking writes",
-    min_lock_time=10.0,
-    limit=50,
-)
-```
-
-…then post-aggregates the `tables` field across the result set in
-Claude's reply, ranking tables by attributed lock-time:
-
-```
-─── Top 5 tables by attributed lock_time (50 queries with lock ≥ 10s) ───
-rental                  342.1s  ── 12 queries
-payment                 178.5s  ──  8 queries
-inventory                94.2s  ──  6 queries
-customer                 41.8s  ──  4 queries
-staff                    18.3s  ──  2 queries
-```
-
-Use this to pick which table to drill into next (Example 1 or 4 with
-the worst offender).
-
-#### Example 3 — Slowest queries hitting a specific table  *(Phase 1)*
-
-**You ask:** *"What are the slowest queries on `inventory`?"*
-
-**The skill calls:**
-```
-mcp__dbs-vector-stdio__search_sql_api(
-    query="slow query large execution time",
-    table_filter="inventory",
-    min_time=1000.0,
-    limit=50,
-)
-```
-
-Same shape as Example 1 but ranks by `execution_time_ms` DESC instead
-of `lock_time_sec`. Use when the bottleneck is wall-clock rather than
-lock contention — typically table scans, missing indexes, or N+1
-patterns hidden in batch jobs.
-
-#### Example 4 — Recommend indexes for a specific table  *(Phase 2)*
-
-This is the full end-to-end Phase 2 workflow: the skill chains
-`dbs-vector` (slow-log corpus) + `mysql-mcp-server` (live schema +
-EXPLAIN) into a concrete CREATE INDEX recommendation.
-
-**You ask:** *"What indexes should I add to `rental`?"*
-
-**The skill walks 10 steps:**
-
-```
-Step 1: Confirm scope
-  ─ table_size("rental") → 16,044 rows | 1.6 MB data | 4.0 MB indexes
-  ─ "I'll analyze 80% of the slow-query call volume against
-     sakila.rental. Continue?"
-
-Step 2: Fetch slow-query corpus filtered to `rental`
-  ─ search_sql_api(query="*", table_filter="rental", limit=10000)
-  ─ 47 distinct queries returned
-
-Step 3: 80% cumulant
-  ─ Top 6 queries cover 80% of call volume (13% of fingerprints)
-
-Step 4: Fetch existing schema
-  ─ list_indexes("rental"):
-      PRIMARY              (rental_id)                   UNIQUE
-      rental_date          (rental_date,inventory_id,customer_id)  UNIQUE
-      idx_fk_inventory_id  (inventory_id)
-      idx_fk_customer_id   (customer_id)
-      idx_fk_staff_id      (staff_id)
-  ─ foreign_keys: 3 (inventory_id, customer_id, staff_id)
-
-Step 5: Extract predicate signatures (sqlglot + regex fallback)
-  Q1 [4,210 calls]:  WHERE rental_id eq             (kind=UPDATE)
-  Q2 [2,816 calls]:  WHERE customer_id eq, return_date eq (NULL)
-  Q3 [1,944 calls]:  WHERE staff_id eq, rental_date range
-  Q4 [1,508 calls]:  pure INSERT (no WHERE)
-  Q5 [1,022 calls]:  JOIN inventory_id, WHERE rental_date range
-  Q6 [  698 calls]:  WHERE customer_id eq
-
-Step 6: Synthesize index candidates
-  C1: (customer_id, return_date)        ← Q2, Q6 — 3,514 calls
-  C2: (staff_id, rental_date)           ← Q3 — 1,944 calls
-  C3: (rental_date, inventory_id)       ← Q5 — 1,022 calls
-
-Step 7: Eliminate redundancy
-  ─ C1 leading column = customer_id; existing idx_fk_customer_id is
-    a strict prefix → C1 strictly dominates and replaces it.
-  ─ C2 leading column = staff_id; existing idx_fk_staff_id is a strict
-    prefix → C2 strictly dominates and replaces it.
-  ─ C3 has no overlap with existing indexes.
-
-Step 8: EXPLAIN before/after
-  Q2 before: type=ref, key=idx_fk_customer_id, rows=14, Extra=Using where
-  Q2 after:  type=ref, key=<C1>,               rows=2,  Extra=(none)
-  Q3 before: type=ref, key=idx_fk_staff_id,    rows=8,  Extra=Using where; Using filesort
-  Q3 after:  type=range, key=<C2>,             rows=3,  Extra=(none)
-  Q5 before: type=ALL,  key=NULL,              rows=16,044
-  Q5 after:  type=range, key=<C3>,             rows=210
-
-Step 9: Cost analysis
-  C1: ~0.5 MB  | replaces idx_fk_customer_id; net +0 indexes; +1 col/INSERT
-  C2: ~0.5 MB  | replaces idx_fk_staff_id;    net +0 indexes; +1 col/INSERT
-  C3: ~0.5 MB  | net +1 index;                              ; +1 col/INSERT
-  Write rate (slow-log): 1,508 INSERTs/period → +3 col-writes per INSERT.
-
-Step 10: Recommendation
-
-  -- Drop the dominated single-column FK indexes:
-  ALTER TABLE sakila.rental DROP INDEX `idx_fk_customer_id`;
-  ALTER TABLE sakila.rental DROP INDEX `idx_fk_staff_id`;
-
-  -- Add the composite replacements (covers FK + hot query patterns):
-  ALTER TABLE sakila.rental
-    ADD INDEX `idx_customer_returns` (customer_id, return_date);
-  ALTER TABLE sakila.rental
-    ADD INDEX `idx_staff_date` (staff_id, rental_date);
-  ALTER TABLE sakila.rental
-    ADD INDEX `idx_date_inventory` (rental_date, inventory_id);
-
-Coverage: 3 indexes cover 6,480 of the top-80% calls.
-Net change: +1 secondary index (3 added, 2 dropped).
-EXPLAIN-verified row reduction across Q2/Q3/Q5: 16,044 → 215 (-99%).
-```
-
-The skill **does not run the DDL** — `mysql-mcp-server` is read-only.
-You apply the changes manually after reviewing.
-
----
-
-### Quick reference card
-
-| Question shape | Phase | Key parameters |
-|---|---|---|
-| Locks on TABLE X | 1 | `table_filter`, `min_lock_time` |
-| Slow queries on TABLE X | 1 | `table_filter`, `min_time` |
-| Lock contention (any table) | 1 | `min_lock_time`, post-aggregate |
-| Similar to QUERY | 1 | `query` (free text), no filter |
-| Rank tables by metric | 1 | bypass MCP entirely (Python + LanceDB) |
-| Recommend indexes for TABLE X | 2 | dbs-vector + mysql-mcp-server (10-step) |
-
-### Limitations
-
-The skill exposes its own caveats prominently in every Phase 2 report,
-but worth knowing up front:
-
-- **EXPLAIN with synthetic params** doesn't reflect production row
-  estimates. The plans use `1` for int columns, `'x'` for strings,
-  `'2024-01-01'` for dates. Real workloads may pick different paths.
-- **Slow-log under-represents fast queries.** A query that finishes
-  in <1ms is usually missing from the corpus. The skill optimizes
-  what's recorded; it can't help with what isn't.
-- **No FORCE INDEX recommendations.** The skill suggests indexes; it
-  doesn't override the optimizer.
-- **JSON / fulltext / spatial** indexes are out of scope.
-  Functional indexes get noted in the rejected list with a manual-
-  design hint.
-- **Read-only.** `mysql-mcp-server` cannot run the DDL — you apply
-  recommendations yourself in staging first.
-- **Drop indexes only after re-running EXPLAIN** on production-shaped
-  queries with real parameter values. The skill's redundancy logic
-  is correct on B-tree leftmost-prefix grounds, but pathological
-  histograms or stale ANALYZE statistics can produce surprising
-  optimizer choices.
 
 ### Further reading
 
-- [`skills/slow-query-investigator/SKILL.md`](../skills/slow-query-investigator/SKILL.md) — full skill body with Phase 2 algorithm
+- [`docs/superpowers/specs/2026-06-13-sql-browse-design.md`](superpowers/specs/2026-06-13-sql-browse-design.md) — `browse` design spec
 - [`README_MCP.md`](README_MCP.md) — MCP installation and tool naming
 - [`README_REMOTE_SQL_API.md`](README_REMOTE_SQL_API.md) — ingestion via remote slow-log API
-- [`askdba/mysql-mcp-server`](https://github.com/askdba/mysql-mcp-server) — schema introspection MCP server (Phase 2)
-- [Sakila DB documentation](https://dev.mysql.com/doc/sakila/en/) — sample database used in examples
+- [`README_EMBEDDINGS.md`](README_EMBEDDINGS.md) — embedding model details
