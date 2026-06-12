@@ -6,6 +6,7 @@ import sys
 # Suppress Hugging Face progress bars and telemetry globally
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"  # Disable hf-transfer to use standard downloads
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 
 from loguru import logger

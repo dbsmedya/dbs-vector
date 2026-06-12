@@ -1,11 +1,4 @@
 import os
-
-# Suppress Hugging Face progress bars BEFORE any imports that might use huggingface_hub
-os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
-os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"  # Disable hf-transfer to use standard downloads
-os.environ["TRANSFORMERS_VERBOSITY"] = "error"
-
 from typing import Annotated
 
 import typer
@@ -224,8 +217,6 @@ def mcp(
     ] = None,
 ) -> None:
     """Starts the FastMCP standard input/output (stdio) server for integrations."""
-    import os
-
     from dbs_vector.config import _populate_singleton_from, load_settings
     from dbs_vector.mcp.server import start_stdio_server
 
