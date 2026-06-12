@@ -45,7 +45,7 @@ verb on both the CLI and MCP, **without touching the semantic path**.
 
 ```bash
 # Rank: heaviest users by total execution time
-dbs-vector browse sql-api \
+dbs-vector browse --type sql-api \
   --where 'execution_time_ms>1000000 AND user="app"' \
   --group-by user \
   --order-by execution_time_ms:desc \
@@ -53,24 +53,22 @@ dbs-vector browse sql-api \
   --limit 10
 
 # Point lookup
-dbs-vector browse sql-api --where 'id="93FEDEB240C723E3"'
+dbs-vector browse --type sql-api --where 'id="93FEDEB240C723E3"'
 
 # Top fingerprints by call count (raw, no grouping)
-dbs-vector browse sql-api --order-by calls:desc --limit 10
+dbs-vector browse --type sql-api-granite --order-by calls:desc --limit 10
 ```
 
-Command: `dbs-vector browse <engine> [options]`. **Decision: engine is a
-positional argument.** `search` uses its positional slot for the query string
-and takes the engine via `--type`; `browse` has no query string, so its
-positional slot is free for the engine — which reads naturally
-(`browse sql-api ...`) and matches the sketched syntax. A non-SQL engine is
-rejected with the list of available SQL engines.
+Command: `dbs-vector browse --type <engine> [options]`. **Decision: engine is
+selected with `--type/-t`, consistent with `ingest` and `search`** (engines are
+ingested with `--type sql-api`, so they are browsed the same way). A non-SQL
+engine is rejected with the list of available SQL engines.
 
 Options:
 
 | Flag | Type | Default | Meaning |
 |------|------|---------|---------|
-| `<engine>` (positional) | str | required | Engine name; rejected if not a SQL-family engine. |
+| `--type/-t` | str | required (must be a SQL engine) | Engine name; rejected if not a SQL-family engine. |
 | `--where` | str \| None | None | LanceDB filter expression (DataFusion SQL predicate). |
 | `--group-by` | str \| None | None | Column to aggregate by. Presence switches to grouped output. |
 | `--order-by` | str | `execution_time_ms:desc` | `<column>[:asc\|:desc]`; default direction `desc`. |
