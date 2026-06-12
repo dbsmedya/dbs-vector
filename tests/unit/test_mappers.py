@@ -388,7 +388,7 @@ class TestMapperEdgeCases:
         chunks = [Chunk(id="chunk", text="Content", source="file.md", content_hash="hash")]
         vectors = np.array([[0.1, 0.2]], dtype=np.float32)
 
-        with pytest.raises(AssertionError, match=r"Expected vectors shape \(1, 3\), got \(1, 2\)"):
+        with pytest.raises(ValueError, match=r"Expected vectors shape \(1, 3\), got \(1, 2\)"):
             mapper.to_record_batch(chunks, vectors, workflow="test")
 
     def test_sql_mapper_vector_dimension_mismatch(self):
@@ -408,5 +408,14 @@ class TestMapperEdgeCases:
         ]
         vectors = np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
 
-        with pytest.raises(AssertionError, match=r"Expected vectors shape \(1, 4\), got \(1, 3\)"):
+        with pytest.raises(ValueError, match=r"Expected vectors shape \(1, 4\), got \(1, 3\)"):
             mapper.to_record_batch(chunks, vectors, workflow="test")
+
+
+def test_document_mapper_raises_valueerror_on_shape_mismatch():
+    """Test DocumentMapper raises ValueError (not AssertionError) on vector shape mismatch."""
+    mapper = DocumentMapper(vector_dimension=4)
+    chunks = [Chunk(id="a", text="t", source="s", content_hash="h")]
+    bad_vectors = np.zeros((1, 8), dtype=np.float32)  # wrong dim: 8 != 4
+    with pytest.raises(ValueError, match="Expected vectors shape"):
+        mapper.to_record_batch(chunks, bad_vectors, workflow="default")
