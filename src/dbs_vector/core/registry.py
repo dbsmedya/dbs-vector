@@ -1,5 +1,4 @@
 from collections.abc import Mapping
-from typing import Any
 
 from dbs_vector.core.ports import IStoreMapper
 from dbs_vector.infrastructure.chunking.api import ApiChunker
@@ -17,7 +16,7 @@ class ComponentRegistry:
         "sql": SqlMapper,
     }
 
-    _chunkers: dict[str, Any] = {
+    _chunkers: Mapping[str, type] = {
         "document": DocumentChunker,
         "sql": SqlChunker,
         "duckdb": DuckDBChunker,
@@ -31,7 +30,7 @@ class ComponentRegistry:
         return cls._mappers[name]
 
     @classmethod
-    def get_chunker(cls, name: str) -> Any:
+    def get_chunker(cls, name: str) -> type:
         if name not in cls._chunkers:
             raise ValueError(f"Unknown chunker type: '{name}'")
         return cls._chunkers[name]
