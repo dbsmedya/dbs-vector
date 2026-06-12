@@ -101,7 +101,14 @@ class ApiChunker:
             if not data.get("has_more", False):
                 break
 
-            cursor = data.get("next_cursor")
+            next_cursor = data.get("next_cursor")
+            if not next_cursor:
+                logger.warning(
+                    f"API returned has_more=true but next_cursor is missing/empty "
+                    f"for {url} — terminating pagination (server contract violation)."
+                )
+                break
+            cursor = next_cursor
 
     def _fetch_custom_query(self, client: Any, headers: dict) -> Iterator[SqlChunk]:
         url = f"{self._base_url}/sql/execute"

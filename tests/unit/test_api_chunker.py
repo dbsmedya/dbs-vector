@@ -330,3 +330,47 @@ def test_database_param_sent():
 
     _, call_kwargs = ctx.get.call_args
     assert call_kwargs["params"]["database"] == "prod_db"
+
+
+# ---------------------------------------------------------------------------
+# Pagination guard: has_more=true with missing next_cursor (A2)
+# ---------------------------------------------------------------------------
+
+
+def test_pagination_breaks_when_has_more_true_but_cursor_missing():
+    """has_more=true with null next_cursor must terminate, not loop forever.
+
+    Without the guard, cursor=None is set and the same first page is re-fetched
+    indefinitely. The fake raises StopIteration after MAX_CALLS to keep the test
+    deterministic; the assertion that call_count==1 proves the guard fired first.
+    """
+    MAX_CALLS = 5  # canary: test fails long before this if guard is missing
+    call_count = {"n": 0}
+
+    # Response always says has_more=True but omits next_cursor (server contract violation)
+    bad_resp = MagicMock()
+    bad_resp.status_code = 200
+    bad_resp.json.return_value = {
+        "data": [_RECORD],
+        "has_more": True,
+        # next_cursor intentionally absent → data.get("next_cursor") returns None
+    }
+
+    def _counting_get(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] > MAX_CALLS:
+            raise AssertionError("pagination guard missing: looped more than MAX_CALLS times")
+        return bad_resp
+
+    chunker = ApiChunker(base_url=BASE_URL, api_key=API_KEY, page_size=1)
+
+    with patch("httpx.Client") as MockClient:
+        ctx = MockClient.return_value.__enter__.return_value
+        ctx.get.side_effect = _counting_get
+
+        chunks = list(chunker.process(_doc()))
+
+    assert call_count["n"] == 1, (
+        f"Expected 1 fetch (guard broke loop), got {call_count['n']}"
+    )
+    assert len(chunks) == 1
