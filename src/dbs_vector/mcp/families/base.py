@@ -33,6 +33,9 @@ def render_with_budget(header: str, blocks: list[str], budget_bytes: int) -> str
             output.append(footer)
 
     for idx, block in enumerate(blocks):
+        # Re-joins the accumulated output each step (O(n·total_chars)); benign
+        # because the byte budget caps total_chars at ~budget_bytes (~1 MB), so
+        # n is bounded by budget_bytes / min_block_bytes.
         candidate = "\n".join([*output, block])
         if _byte_len(candidate) > budget_bytes:
             _append_elision_footer(total - idx)
