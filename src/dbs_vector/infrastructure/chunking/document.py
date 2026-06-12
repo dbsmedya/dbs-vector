@@ -36,6 +36,7 @@ class _PackedUnit:
     node_type: str
     start: int
     end: int
+    est: int = 0  # running token ESTIMATE for text (see _emit_section step 2)
 
 
 class DocumentChunker:
@@ -63,6 +64,29 @@ class DocumentChunker:
         self._len = length_fn
         self._filters = list(filters) if filters else []
         self._md = markdown_it.MarkdownIt("commonmark").enable("table")
+        # Lazy caches for the running-estimate math; length_fn may be a full
+        # tokenizer pass under the MLX model lock, so constants are measured
+        # at most once per instance.
+        self._special_overhead: int | None = None
+        self._jcost_cache: dict[str, int] = {}
+
+    def _overhead(self) -> int:
+        """Token cost of the EMPTY string — the special tokens (BOS/EOS) the
+        production tokenizer adds to every measurement. The joined text pays
+        this cost once, not once per atom, so running sums deduct it from
+        every measurement after the first (0 for plain `len`)."""
+        if self._special_overhead is None:
+            self._special_overhead = self._len("")
+        return self._special_overhead
+
+    def _joiner_cost(self, joiner: str) -> int:
+        """Net token cost of a joiner string (special-token overhead deducted),
+        memoized — joiners are a handful of constants."""
+        cost = self._jcost_cache.get(joiner)
+        if cost is None:
+            cost = max(0, self._len(joiner) - self._overhead())
+            self._jcost_cache[joiner] = cost
+        return cost
 
     @property
     def supported_extensions(self) -> list[str]:
@@ -160,39 +184,46 @@ class DocumentChunker:
         eff_target = max(1, self.target_tokens - plen)
         eff_max = max(1, self.max_tokens - plen)
 
-        # 1) expand oversized blocks into <= eff_max units (body-only sizing)
-        units: list[tuple[str, str, int, int]] = []  # text, node_type, start, end
+        # 1) expand oversized blocks into <= eff_max units (body-only sizing),
+        #    carrying each unit's measured length so step 2 never re-tokenizes
+        #    it. Split pieces ARE re-measured: _split_code/_split_table add
+        #    fence/header wrappers AFTER packing, so lengths measured inside
+        #    _pack_atoms don't survive the wrapping.
+        units: list[tuple[str, str, int, int, int]] = []  # text, ntype, start, end, tokens
         for b in blocks:
-            if self._len(b.text) <= eff_max:
-                units.append((b.text, b.node_type, b.start_line, b.end_line))
+            blen = self._len(b.text)
+            if blen <= eff_max:
+                units.append((b.text, b.node_type, b.start_line, b.end_line, blen))
             else:
                 for piece in self._split_block(b, eff_target, eff_max):
-                    units.append((piece, b.node_type, b.start_line, b.end_line))
+                    units.append(
+                        (piece, b.node_type, b.start_line, b.end_line, self._len(piece))
+                    )
 
-        # 2) greedy pack to eff_target, using a RUNNING TOKEN ESTIMATE (sum of
-        #    per-atom token counts + constant joiner cost) instead of
-        #    re-tokenizing the growing candidate each step. Estimate drift is
-        #    bounded and corrected exactly in step 4 (emit-time re-measure +
-        #    char-window), which preserves the hard <= max_tokens guarantee.
-        # "\n\n" is hardcoded to match the `cur.text + "\n\n" + text` concat in
-        # steps 2/3; do NOT DRY this with _pack_atoms' parameterized joiner_cost.
-        joiner_cost = self._len("\n\n")
+        # 2) greedy pack to eff_target, using a RUNNING TOKEN ESTIMATE instead
+        #    of re-tokenizing the growing candidate each step. Tokenization is
+        #    not additive: EVERY measurement includes the tokenizer's special
+        #    tokens (BOS/EOS), which the joined text pays exactly once — so the
+        #    first unit keeps its full count and every ADDED unit (and the
+        #    joiner) is netted by _overhead(). Estimate drift is corrected
+        #    exactly in step 4 (emit-time re-measure + char-window), which
+        #    preserves the hard <= max_tokens guarantee.
+        # "\n\n" matches the `cur.text + "\n\n" + text` concat in steps 2/3.
+        jcost = self._joiner_cost("\n\n")
+        ov = self._overhead()
         packed: list[_PackedUnit] = []
-        packed_est: list[int] = []
-        for text, ntype, start, end in units:
-            tlen = self._len(text)
+        for text, ntype, start, end, tlen in units:
             if packed:
-                est = packed_est[-1] + joiner_cost + tlen
+                cur = packed[-1]
+                est = cur.est + jcost + max(0, tlen - ov)
                 if est <= eff_target:
-                    cur = packed[-1]
                     cur.text = cur.text + "\n\n" + text
                     cur.end = end
                     if cur.node_type != ntype:
                         cur.node_type = "section"
-                    packed_est[-1] = est
+                    cur.est = est
                     continue
-            packed.append(_PackedUnit(text, ntype, start, end))
-            packed_est.append(tlen)
+            packed.append(_PackedUnit(text, ntype, start, end, est=tlen))
 
         # 3) tiny-merge: a chunk whose ESTIMATE is below min_tokens folds into
         #    the previous one (same section) — but ONLY if the merged estimate
@@ -200,19 +231,17 @@ class DocumentChunker:
         #    re-split (which would defeat the merge by fragmenting the combined
         #    content).
         merged: list[_PackedUnit] = []
-        merged_est: list[int] = []
-        for item, item_est in zip(packed, packed_est, strict=True):
-            if merged and item_est < self.min_tokens:
-                cand_est = merged_est[-1] + joiner_cost + item_est
+        for item in packed:
+            if merged and item.est < self.min_tokens:
+                p = merged[-1]
+                cand_est = p.est + jcost + max(0, item.est - ov)
                 if cand_est <= eff_max:
-                    p = merged[-1]
                     p.text = p.text + "\n\n" + item.text
                     p.node_type = "section"
                     p.end = item.end
-                    merged_est[-1] = cand_est
+                    p.est = cand_est
                     continue
             merged.append(item)
-            merged_est.append(item_est)
 
         # 4) compose final text (prefix once per chunk); 1-based inclusive line
         #    range; safety-net char-window guarantees len(text) <= max_tokens
@@ -287,16 +316,15 @@ class DocumentChunker:
         return items
 
     def _pack_atoms(self, atoms: list[str], joiner: str, target: int, max_: int) -> list[str]:
-        # RUNNING-SUM estimate: tokenization is not additive across string
-        # boundaries, so packing decisions use (sum of per-atom token counts +
-        # constant joiner cost) rather than re-measuring the growing candidate
-        # each step (which was O(n^2) chars tokenized per pack). The hard
-        # <= max_ guarantee is preserved by the per-atom _char_window split for
-        # oversized atoms and (for full chunks) by step 4's emit-time re-measure.
+        # RUNNING-SUM estimate with special-token netting — see _emit_section
+        # step 2 for the full rationale. The hard <= max_ guarantee is
+        # preserved by the per-atom _char_window split for oversized atoms and
+        # (for full chunks) by step 4's emit-time re-measure.
         out: list[str] = []
         cur = ""
         cur_est = 0
-        joiner_cost = self._len(joiner)
+        jcost = self._joiner_cost(joiner)
+        ov = self._overhead()
         for a in atoms:
             alen = self._len(a)
             if alen <= max_:
@@ -307,7 +335,7 @@ class DocumentChunker:
                 if not cur:
                     cur, cur_est = p, plen
                     continue
-                est = cur_est + joiner_cost + plen
+                est = cur_est + jcost + max(0, plen - ov)
                 if est > target:
                     out.append(cur)
                     cur, cur_est = p, plen

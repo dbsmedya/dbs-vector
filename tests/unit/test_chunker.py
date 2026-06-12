@@ -289,3 +289,53 @@ def test_pack_atoms_measured_chars_grow_linearly_not_quadratically():
     # Old code re-measures the growing candidate every step ⇒ ~7,000+ chars.
     # Running-sum: each atom once + the joiner once ⇒ ≈ total_input.
     assert measured["chars"] <= 2 * total_input
+
+
+
+def test_running_estimate_nets_out_special_token_overhead():
+    """With a tokenizer that adds 2 special tokens to EVERY measurement (like
+    the production count_tokens with add_special_tokens=True), the running sum
+    must not pay those specials once per atom — the joined text pays them
+    exactly once. Uncorrected summing packs far below target."""
+
+    def tok(s: str) -> int:
+        return (len(s.split()) if s else 0) + 2  # content words + BOS/EOS
+
+    chunker = DocumentChunker(target_tokens=20, max_tokens=40, min_tokens=1, length_fn=tok)
+    atoms = ["w w w"] * 12  # 3 content tokens each; k joined atoms measure 3k+2
+    out = chunker._pack_atoms(atoms, "\n\n", target=20, max_=40)
+
+    # Corrected estimate: first atom 5, each addition +3 → 6 atoms reach
+    # exactly 20 ≤ target → 2 groups. Uncorrected: first 5, each addition
+    # +7 (joiner 2 + atom 5) → flushes at 3 atoms → 4 groups.
+    assert len(out) == 2, f"expected 2 groups of 6 atoms, got {len(out)}: {out}"
+    assert all(tok(g) <= 20 for g in out)  # the estimate never under-counted
+
+
+def test_tiny_merge_uses_net_estimate_not_inflated_sum():
+    """A chunk genuinely below min_tokens must still be folded into its
+    neighbour when the estimate carries per-atom special-token inflation.
+
+    Uncorrected summing sees the trailing 3-word fragment as 13 "tokens"
+    (specials counted once per paragraph + per-join cost) >= min_tokens=10
+    and emits it standalone; its true size is 5."""
+
+    def tok(s: str) -> int:
+        return (len(s.split()) if s else 0) + 2  # content words + BOS/EOS
+
+    # Empty prefix measures tok("")=2, so eff_target = 16-2 = 14. Lead: 12
+    # words -> tok 14 == eff_target (cannot absorb more). Then three 1-word
+    # paragraphs that pack into one trailing fragment: uncorrected est
+    # 3 +(2+3)+(2+3) = 13 >= min_tokens -> escapes the merge; net est is 5.
+    lead = " ".join(f"word{i}" for i in range(12))
+    chunker = DocumentChunker(target_tokens=16, max_tokens=60, min_tokens=10, length_fn=tok)
+    doc = Document(
+        filepath="t.md",
+        content=f"{lead}\n\nx\n\ny\n\nz\n",
+        content_hash="h",
+    )
+    chunks = list(chunker.process(doc))
+
+    # The fragment "x\n\ny\n\nz" (true size 5 < min_tokens) must fold into
+    # the previous chunk, not be emitted as a standalone sub-minimum chunk.
+    assert len(chunks) == 1, f"expected tiny trailing chunk merged, got: {[c.text for c in chunks]}"
