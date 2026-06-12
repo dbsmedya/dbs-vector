@@ -209,3 +209,19 @@ system:
             # Should use defaults
             assert settings.db_path == "./lancedb_dbs_vector"
             assert settings.engines == {}
+
+
+def test_every_settings_field_has_a_propagation_decision():
+    """Adding a Settings field without deciding propagation must fail CI."""
+    from dbs_vector.config import (
+        _NOT_PROPAGATED_SETTINGS_FIELDS,  # noqa: PLC2701
+        _PROPAGATED_SETTINGS_FIELDS,  # noqa: PLC2701
+        Settings,
+    )
+
+    decided = _PROPAGATED_SETTINGS_FIELDS | _NOT_PROPAGATED_SETTINGS_FIELDS
+    actual = set(Settings.model_fields)
+    missing = actual - decided
+    stale = decided - actual
+    assert not missing, f"Settings fields with no propagation decision: {missing}"
+    assert not stale, f"Propagation sets reference non-existent fields: {stale}"

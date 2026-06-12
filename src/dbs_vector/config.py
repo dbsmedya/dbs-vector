@@ -385,6 +385,21 @@ def load_settings(config_file: str | None = None, validate: bool = False) -> Set
     return base_settings
 
 
+# Fields copied from a freshly-loaded Settings onto the module-level singleton.
+_PROPAGATED_SETTINGS_FIELDS: set[str] = {
+    "db_path",
+    "nprobes",
+    "engines",
+    "profiles",
+    "memory_budget_gb",
+    "log_level",
+    "log_serialize",
+}
+# Fields deliberately NOT propagated to the runtime singleton. Empty today; a
+# future field that must keep its import-time default goes here EXPLICITLY.
+_NOT_PROPAGATED_SETTINGS_FIELDS: set[str] = set()
+
+
 def _populate_singleton_from(new_settings: "Settings") -> None:
     """Copy fields from a freshly-loaded Settings onto the module-level singleton.
 
