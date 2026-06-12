@@ -262,3 +262,30 @@ def test_compressed_json_block_is_dropped():
     chunks = list(ch.process(Document(filepath="t.md", content=content, content_hash="h")))
     assert all("compressed-json" not in c.text and "N4KAblob" not in c.text for c in chunks)
     assert any("Intro line" in c.text for c in chunks)
+
+
+def test_pack_atoms_measured_chars_grow_linearly_not_quadratically():
+    """Running-sum estimate ⇒ total characters passed to length_fn are O(total
+    input chars), not O(atoms × chunk_size).
+
+    NOTE: counting CALLS does not discriminate — the old code already made
+    only ~2 calls per atom. The quadratic quantity is the SIZE of the strings
+    re-measured (the candidate grows toward `target` before each flush), so we
+    sum chars.
+    """
+    measured = {"chars": 0}
+
+    def counting_len(s: str) -> int:
+        measured["chars"] += len(s)
+        return len(s)
+
+    chunker = DocumentChunker(
+        target_tokens=50, max_tokens=100, min_tokens=1, length_fn=counting_len
+    )
+    atoms = [f"word{i}" for i in range(200)]  # ~1,300 chars of input total
+    total_input = sum(len(a) for a in atoms)
+    chunker._pack_atoms(atoms, " ", target=50, max_=100)
+
+    # Old code re-measures the growing candidate every step ⇒ ~7,000+ chars.
+    # Running-sum: each atom once + the joiner once ⇒ ≈ total_input.
+    assert measured["chars"] <= 2 * total_input

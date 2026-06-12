@@ -169,35 +169,50 @@ class DocumentChunker:
                 for piece in self._split_block(b, eff_target, eff_max):
                     units.append((piece, b.node_type, b.start_line, b.end_line))
 
-        # 2) greedy pack to eff_target
+        # 2) greedy pack to eff_target, using a RUNNING TOKEN ESTIMATE (sum of
+        #    per-atom token counts + constant joiner cost) instead of
+        #    re-tokenizing the growing candidate each step. Estimate drift is
+        #    bounded and corrected exactly in step 4 (emit-time re-measure +
+        #    char-window), which preserves the hard <= max_tokens guarantee.
+        # "\n\n" is hardcoded to match the `cur.text + "\n\n" + text` concat in
+        # steps 2/3; do NOT DRY this with _pack_atoms' parameterized joiner_cost.
+        joiner_cost = self._len("\n\n")
         packed: list[_PackedUnit] = []
+        packed_est: list[int] = []
         for text, ntype, start, end in units:
+            tlen = self._len(text)
             if packed:
-                cur = packed[-1]
-                cand = cur.text + "\n\n" + text
-                if self._len(cand) <= eff_target:
-                    cur.text = cand
+                est = packed_est[-1] + joiner_cost + tlen
+                if est <= eff_target:
+                    cur = packed[-1]
+                    cur.text = cur.text + "\n\n" + text
                     cur.end = end
                     if cur.node_type != ntype:
                         cur.node_type = "section"
+                    packed_est[-1] = est
                     continue
             packed.append(_PackedUnit(text, ntype, start, end))
+            packed_est.append(tlen)
 
-        # 3) tiny-merge: a chunk below min_tokens folds into the previous one
-        #    (same section) — but ONLY if the merged result still fits eff_max,
-        #    so the merge never forces a later char-window re-split (which would
-        #    defeat the merge by fragmenting the combined content).
+        # 3) tiny-merge: a chunk whose ESTIMATE is below min_tokens folds into
+        #    the previous one (same section) — but ONLY if the merged estimate
+        #    still fits eff_max, so the merge never forces a later char-window
+        #    re-split (which would defeat the merge by fragmenting the combined
+        #    content).
         merged: list[_PackedUnit] = []
-        for item in packed:
-            if merged and self._len(item.text) < self.min_tokens:
-                p = merged[-1]
-                cand = p.text + "\n\n" + item.text
-                if self._len(cand) <= eff_max:
-                    p.text = cand
+        merged_est: list[int] = []
+        for item, item_est in zip(packed, packed_est, strict=True):
+            if merged and item_est < self.min_tokens:
+                cand_est = merged_est[-1] + joiner_cost + item_est
+                if cand_est <= eff_max:
+                    p = merged[-1]
+                    p.text = p.text + "\n\n" + item.text
                     p.node_type = "section"
                     p.end = item.end
+                    merged_est[-1] = cand_est
                     continue
             merged.append(item)
+            merged_est.append(item_est)
 
         # 4) compose final text (prefix once per chunk); 1-based inclusive line
         #    range; safety-net char-window guarantees len(text) <= max_tokens
@@ -272,17 +287,33 @@ class DocumentChunker:
         return items
 
     def _pack_atoms(self, atoms: list[str], joiner: str, target: int, max_: int) -> list[str]:
+        # RUNNING-SUM estimate: tokenization is not additive across string
+        # boundaries, so packing decisions use (sum of per-atom token counts +
+        # constant joiner cost) rather than re-measuring the growing candidate
+        # each step (which was O(n^2) chars tokenized per pack). The hard
+        # <= max_ guarantee is preserved by the per-atom _char_window split for
+        # oversized atoms and (for full chunks) by step 4's emit-time re-measure.
         out: list[str] = []
         cur = ""
+        cur_est = 0
+        joiner_cost = self._len(joiner)
         for a in atoms:
-            pieces = [a] if self._len(a) <= max_ else self._char_window(a, max_)
-            for p in pieces:
-                cand = p if not cur else cur + joiner + p
-                if cur and self._len(cand) > target:
+            alen = self._len(a)
+            if alen <= max_:
+                pieces: list[tuple[str, int]] = [(a, alen)]
+            else:
+                pieces = [(w, self._len(w)) for w in self._char_window(a, max_)]
+            for p, plen in pieces:
+                if not cur:
+                    cur, cur_est = p, plen
+                    continue
+                est = cur_est + joiner_cost + plen
+                if est > target:
                     out.append(cur)
-                    cur = p
+                    cur, cur_est = p, plen
                 else:
-                    cur = cand
+                    cur = cur + joiner + p
+                    cur_est = est
         if cur:
             out.append(cur)
         return out
