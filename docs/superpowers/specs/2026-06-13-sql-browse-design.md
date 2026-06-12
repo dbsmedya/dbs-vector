@@ -28,7 +28,12 @@ verb on both the CLI and MCP, **without touching the semantic path**.
 - Available on the CLI (`dbs-vector browse`) and MCP (`browse_<engine>`).
 - Available for **all SQL engines** (`sql`, `sql-granite`, `sql-api`,
   `sql-api-granite`) via the shared `SqlFamily`.
-- Zero changes to the existing semantic `search` path — new code only.
+- Zero changes to the existing semantic `search` **behavior** — new code only.
+- **Description ownership refactor** (bundled, see dedicated section): move the
+  verbose LLM-facing tool descriptions out of `config.yaml` and into the
+  families, composed from inert engine facts. `config.yaml` keeps only a short
+  one-line summary. This avoids `config.yaml` carrying *two* paragraphs per
+  engine once browse adds a second description.
 
 ## Non-Goals (YAGNI)
 
@@ -245,6 +250,9 @@ def normalize_tool_name(engine_name: str, verb: str = "search") -> str:
 
 It is invoked in `start_stdio_server()` (`mcp/server.py`) between the existing
 `register_search_tools(mcp)` and `register_discovery_tool(mcp)` calls.
+`register_search_tools` is also touched: its `description=` argument switches
+from `engine.description` to `family.search_description(engine_name)` (see
+**Description Ownership**).
 
 **Family handler (`mcp/families/sql.py`).** Add to `SqlFamily`:
 
@@ -270,6 +278,62 @@ rejects non-SQL engines with the available-SQL-engines list, builds
 `BrowseService` (no embedder needed), calls `browse(...)`, prints a table or
 `--json`.
 
+## Description Ownership (config cleanup)
+
+**Problem.** The verbose, LLM-facing tool prose currently lives in each engine's
+`config.yaml` `description:` field. It is long (a full paragraph per SQL engine)
+and would *double* once browse adds a second description. config is the wrong
+home for prose tuned for an LLM tool schema.
+
+**Rule after this change.** *Families own the MCP tool descriptions; `config.yaml`
+owns a short human summary.*
+
+**Protocol.** `SearchFamily` (`mcp/families/base.py`) gains:
+
+```python
+def search_description(self, engine_name: str) -> str: ...
+```
+
+`SqlFamily` additionally has `browse_description(engine_name)` (already listed
+above). Both `DocumentFamily` and `SqlFamily` implement `search_description`.
+
+**Composition — template from inert engine facts (no per-engine code map).**
+Each family holds ONE hardcoded template per verb and fills the variable bits
+from config fields that already exist, so a new A/B engine variant still needs
+**only a `config.yaml` edit** (preserving the contract in CLAUDE.md):
+
+- *source phrase* ← `chunker_type`: `"api"` → "a remote slow-log API";
+  `"duckdb"` → "a local DuckDB slow-query log".
+- *embeddings phrase* ← `model`: `"granite-r2"` → "Granite embeddings";
+  `"gemma-bf16"` → "Gemma embeddings". Unknown model → fall back to the model
+  key (non-breaking).
+
+The composed `search_description` reproduces the current verbose semantic prose
+(filters `min_time` / `min_lock_time` / `table_filter`, the "Showing N of M"
+truncation note) so there is **no LLM-facing regression** — the truncation note
+is now applied uniformly to all four SQL engines (today `sql` / `sql-granite`
+omit it; gaining it is an improvement). `browse_description` is the analytic
+template (columns, `--where` grammar, group-by aggregates, "ranks by scalar, no
+query string").
+
+**Registrars source descriptions from the family, not config:**
+
+- `register_search_tools`: `description=family.search_description(engine_name)`
+  (was `engine.description`).
+- `register_browse_tools`: `description=family.browse_description(engine_name)`.
+
+**`config.yaml` change.** `description:` is shortened to a one-line summary and
+**remains a required field**, now consumed only by the `list_engines` discovery
+tool (`discovery.py:47`) and human readers. Example before/after for `sql-api`:
+
+```yaml
+# before (paragraph) → after:
+description: "Slow-query fingerprints from a remote slow-log API (Gemma embeddings)."
+```
+
+All six engine `description:` fields are shortened the same way. No change to
+`EngineConfig` (`config.py`) — the field stays `description: str`.
+
 ## Error Handling
 
 - **Malformed `--where`** → catch the LanceDB/DataFusion exception, return a
@@ -294,6 +358,11 @@ rejects non-SQL engines with the available-SQL-engines list, builds
   point lookup by id, group-by user end-to-end.
 - **CLI smoke** — `browse` command wiring (engine resolution, non-SQL
   rejection) with a mocked service.
+- **Unit (descriptions)** — `search_description` / `browse_description` compose
+  the right source phrase per `chunker_type` and embeddings phrase per `model`
+  across all four SQL engines; the "Showing N of M" truncation note is present;
+  unknown model falls back to the model key. Guards against LLM-facing
+  regression vs the current config prose.
 
 ## Defaults Summary
 
