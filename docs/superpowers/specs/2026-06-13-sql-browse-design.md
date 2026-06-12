@@ -79,23 +79,30 @@ Options:
 ### MCP
 
 One tool per SQL engine: `browse_sql`, `browse_sql_granite`, `browse_sql_api`,
-`browse_sql_api_granite`. Parameters mirror the CLI:
+`browse_sql_api_granite`. Registered by a **sibling registrar**
+`register_browse_tools(mcp)` (see Architecture → MCP), not by modifying
+`register_search_tools`.
 
-```
-browse_<engine>(
-  where:    str | None = None,
-  group_by: str | None = None,
-  order_by: str        = "execution_time_ms:desc",
-  select:   str | None = None,
-  limit:    int        = 10,
-)
+The tool's **input schema is derived by FastMCP from the handler's function
+signature** (type hints + defaults), so the parameters are literally:
+
+```python
+async def handler(
+    where:    str | None = None,
+    group_by: str | None = None,
+    order_by: str        = "execution_time_ms:desc",
+    select:   str | None = None,
+    limit:    int        = 10,
+) -> str: ...
 ```
 
-The tool description enumerates the available columns and the `--where`
-predicate syntax (LanceDB/DataFusion expression, string literals double-quoted,
-operators `= != > >= < <= AND OR`, `IN (...)`) so the calling LLM forms valid
-filters. It states explicitly: **`browse` ranks by the chosen scalar column, not
-by similarity; there is no query string.**
+The tool **description** is browse-specific (NOT `engine.description`, which is
+semantic-flavored). It is a family-level template, with the engine's columns
+injected, that enumerates the available columns and the `--where` predicate
+syntax (LanceDB/DataFusion expression: string literals double-quoted, operators
+`= != > >= < <= AND OR`, `IN (...)`) so the calling LLM forms valid filters. It
+states explicitly: **`browse` ranks by the chosen scalar column, not by
+similarity; there is no query string.**
 
 ## Available Columns
 
@@ -212,18 +219,49 @@ Returns a `BrowseResult` (rows as `list[dict]` + `total_matching` count +
 `grouped: bool`) so the formatter and `--json` path share one structure.
 All steps 3–6 are pure pandas/Arrow compute with no I/O → directly unit-tested.
 
-### MCP — `SqlFamily`
+### MCP — naming, registrar, family handler
 
-Add to `SqlFamily` (`mcp/families/sql.py`):
+**Naming (`core/naming.py`).** Generalize the tool-name helper to take a verb:
 
-- `make_browse_handler(engine_name) -> handler` — async handler with the five
-  browse params; builds a `BrowseService` from the engine's store and renders
-  via a `format_browse` method (reuses `render_with_budget` for the MCP byte
-  budget; compact table output).
-- `register_search_tools` (or a sibling `register_browse_tools`) registers
-  `browse_<engine>` for every engine whose `resolved_family == "sql"`. Same
-  pre-flight atomic / idempotent / collision-safe discipline as the existing
-  search-tool registration.
+```python
+def normalize_tool_name(engine_name: str, verb: str = "search") -> str:
+    return f"{verb}_{engine_name.replace('-', '_')}"
+```
+
+`search` callers are unaffected (default verb); browse passes `verb="browse"`
+→ `browse_sql_api`. Browse and search tool names share the
+`_dbs_vector_registrations` namespace but cannot collide (`browse_*` vs
+`search_*`).
+
+**Registrar (`mcp/dynamic_tools.py`).** Add a sibling
+`register_browse_tools(mcp)` mirroring `register_search_tools`'s pre-flight
+(name-pattern check, collision check, family resolution, idempotency via
+`_dbs_vector_registrations`), with two differences:
+
+- It **only registers engines whose `resolved_family == "sql"`** — document
+  engines are skipped entirely.
+- It passes a **browse-specific description** (family template + injected
+  columns), not `engine.description`.
+
+It is invoked in `start_stdio_server()` (`mcp/server.py`) between the existing
+`register_search_tools(mcp)` and `register_discovery_tool(mcp)` calls.
+
+**Family handler (`mcp/families/sql.py`).** Add to `SqlFamily`:
+
+- `make_browse_handler(engine_name) -> handler` — async handler whose signature
+  IS the five-param browse schema above. It:
+  1. Looks up the already-initialized store via `_services[engine_name]`
+     (browse needs **no embedder** — zero extra model load).
+  2. Runs the blocking `BrowseService.browse(...)` inside a **single
+     `asyncio.to_thread` closure** — same shared-`checkout_latest`-handle
+     discipline as the search handler, but simpler (one read, no separate
+     count call; the total is computed in-process from the scanned Arrow).
+  3. Renders via a `format_browse(BrowseResult)` method that reuses
+     `render_with_budget` for the MCP byte budget (compact table output).
+  4. Catches exceptions (incl. malformed `where`) and returns the message as
+     the tool result string so the LLM can self-correct — never raises.
+- `browse_description(engine_name) -> str` — builds the family-level tool
+  description with the engine's columns injected.
 
 ### CLI — `cli.py`
 
