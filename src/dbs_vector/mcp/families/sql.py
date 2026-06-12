@@ -115,6 +115,7 @@ class SqlFamily:
                 f"that matched your filters for '{query}' "
                 f"(ranked by similarity):\n"
             )
+
         def _block(res: Any) -> str:
             if res.distance is not None:
                 dist_str = f"{res.distance:.4f}"

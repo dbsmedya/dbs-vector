@@ -341,7 +341,7 @@ def test_pagination_breaks_when_has_more_true_but_cursor_missing():
     """has_more=true with null next_cursor must terminate, not loop forever.
 
     Without the guard, cursor=None is set and the same first page is re-fetched
-    indefinitely. The fake raises StopIteration after MAX_CALLS to keep the test
+    indefinitely. The fake raises AssertionError after MAX_CALLS to keep the test
     deterministic; the assertion that call_count==1 proves the guard fired first.
     """
     MAX_CALLS = 5  # canary: test fails long before this if guard is missing

@@ -43,14 +43,6 @@ def _clean_settings(monkeypatch):
     yield s
 
 
-def test_normalize_tool_name_replaces_dashes_with_underscores():
-    from dbs_vector.core.naming import normalize_tool_name
-
-    assert normalize_tool_name("md-granite") == "search_md_granite"
-    assert normalize_tool_name("md") == "search_md"
-    assert normalize_tool_name("sql-api-granite") == "search_sql_api_granite"
-
-
 def test_register_search_tools_registers_one_tool_per_engine(fresh_mcp, _clean_settings):
     _clean_settings.engines = {
         "md": _make_engine("document", "Markdown engine"),

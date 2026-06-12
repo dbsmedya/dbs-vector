@@ -196,9 +196,7 @@ class DocumentChunker:
                 units.append((b.text, b.node_type, b.start_line, b.end_line, blen))
             else:
                 for piece in self._split_block(b, eff_target, eff_max):
-                    units.append(
-                        (piece, b.node_type, b.start_line, b.end_line, self._len(piece))
-                    )
+                    units.append((piece, b.node_type, b.start_line, b.end_line, self._len(piece)))
 
         # 2) greedy pack to eff_target, using a RUNNING TOKEN ESTIMATE instead
         #    of re-tokenizing the growing candidate each step. Tokenization is

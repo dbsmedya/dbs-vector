@@ -1,7 +1,6 @@
 """Tests for DocumentFamily run_search / format_results / make_handler."""
 
 import inspect
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,11 +9,13 @@ from dbs_vector.core.models import Chunk, SearchResult
 from dbs_vector.mcp.families.document import DocumentFamily
 
 
-def _fake_doc_result(source: str, text: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        distance=None,
+def _fake_doc_result(source: str, text: str) -> SearchResult:
+    # Real domain models (not SimpleNamespace) so a field rename in
+    # SearchResult/Chunk breaks these tests the same way it breaks production.
+    return SearchResult(
+        chunk=Chunk(id=f"{source}_chunk_0", text=text, source=source, content_hash="h"),
         score=0.9,
-        chunk=SimpleNamespace(source=source, text=text),
+        distance=None,
     )
 
 

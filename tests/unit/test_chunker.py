@@ -291,7 +291,6 @@ def test_pack_atoms_measured_chars_grow_linearly_not_quadratically():
     assert measured["chars"] <= 2 * total_input
 
 
-
 def test_running_estimate_nets_out_special_token_overhead():
     """With a tokenizer that adds 2 special tokens to EVERY measurement (like
     the production count_tokens with add_special_tokens=True), the running sum
