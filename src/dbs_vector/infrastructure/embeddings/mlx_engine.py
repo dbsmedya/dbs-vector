@@ -53,11 +53,16 @@ class MLXEmbedder:
     def dimension(self) -> int:
         return self._dimension
 
+    def _hf_tokenizer(self) -> Any:
+        """The underlying Hugging Face fast tokenizer. Wrapped in one place so
+        mlx_embeddings' private `_tokenizer` attribute is referenced once."""
+        return self.tokenizer._tokenizer
+
     def count_tokens(self, text: str) -> int:
         """Token count for a single string, using the same tokenizer (and
         special tokens) the model embeds with."""
         with self._lock:
-            ids = self.tokenizer._tokenizer(text, add_special_tokens=True)["input_ids"]
+            ids = self._hf_tokenizer()(text, add_special_tokens=True)["input_ids"]
         return len(ids)
 
     def _execute_mlx(self, texts: list[str]) -> NDArray[np.float32]:
@@ -65,7 +70,7 @@ class MLXEmbedder:
         with self._lock:
             # Pre-tokenize without truncation/padding to detect over-budget inputs.
             # Cost: one extra fast tokenizer pass; negligible vs. the model forward.
-            no_trunc = self.tokenizer._tokenizer(
+            no_trunc = self._hf_tokenizer()(
                 texts,
                 padding=False,
                 truncation=False,
@@ -87,7 +92,7 @@ class MLXEmbedder:
                 )
 
             # Existing tokenizer call — performs truncation+padding for the model.
-            inputs = self.tokenizer._tokenizer(
+            inputs = self._hf_tokenizer()(
                 texts,
                 padding=True,
                 truncation=True,

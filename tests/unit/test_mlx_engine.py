@@ -560,3 +560,17 @@ class TestCountTokens:
         # add_special_tokens must be requested so the count matches embedding time
         _, kwargs = mock_tokenizer._tokenizer.call_args
         assert kwargs.get("add_special_tokens") is True
+
+
+class TestHfTokenizerHelper:
+    """Tests for the _hf_tokenizer() helper that wraps private attr access."""
+
+    def test_hf_tokenizer_helper_returns_underlying_tokenizer(self, mock_load):
+        """_hf_tokenizer() must return exactly self.tokenizer._tokenizer."""
+        _, _, mock_tokenizer = mock_load
+
+        sentinel = object()
+        mock_tokenizer._tokenizer = sentinel
+
+        embedder = MLXEmbedder(model_name="m", max_token_length=128, dimension=384)
+        assert embedder._hf_tokenizer() is sentinel
