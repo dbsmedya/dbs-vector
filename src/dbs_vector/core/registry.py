@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from typing import Any
 
 from dbs_vector.core.ports import IStoreMapper
@@ -11,7 +12,7 @@ from dbs_vector.infrastructure.storage.mappers import DocumentMapper, SqlMapper
 class ComponentRegistry:
     """Registry pattern to dynamically map string names to class implementations."""
 
-    _mappers: dict[str, type[IStoreMapper]] = {
+    _mappers: Mapping[str, type[IStoreMapper]] = {
         "document": DocumentMapper,
         "sql": SqlMapper,
     }

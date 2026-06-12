@@ -27,7 +27,7 @@ class IEmbedder(Protocol):
 
 
 class IStoreMapper(Protocol):
-    def __init__(self, vector_dimension: int, **kwargs: Any) -> None: ...
+    def __init__(self, vector_dimension: int) -> None: ...
 
     @property
     def schema(self) -> Any:

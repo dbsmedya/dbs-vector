@@ -3,6 +3,7 @@ import os
 import pytest
 
 from dbs_vector.config import settings
+from dbs_vector.core.model_registry import ModelRegistry
 from dbs_vector.core.models import Document
 from dbs_vector.infrastructure.chunking.document import DocumentChunker
 from dbs_vector.infrastructure.chunking.filters import FilterRegistry
@@ -35,12 +36,20 @@ def test_ingestion_and_search_integration(tmp_path):
 
     from dbs_vector.infrastructure.storage.mappers import DocumentMapper
 
-    md_config = settings.engines["md"]
+    # Resolve config the way bootstrap.build_dependencies does: model facts
+    # (name, dimension, dtype) come from ModelRegistry; numeric knobs
+    # (token length, chunk budgets) come from the engine's tuning profile.
+    engine = settings.engines["md"]
+    contract = ModelRegistry.get(engine.model)
+    profile = settings.profiles[engine.tuning_profile]
 
     embedder = MLXEmbedder(
-        model_name=md_config.model_name,
-        max_token_length=md_config.max_token_length,
-        dimension=md_config.vector_dimension,
+        model_name=contract.model_name,
+        max_token_length=profile.max_token_length,
+        dimension=contract.vector_dimension,
+        passage_prefix=engine.passage_prefix,
+        query_prefix=engine.query_prefix,
+        attention_mask_dtype=contract.attention_mask_dtype,
     )
 
     mapper = DocumentMapper(vector_dimension=embedder.dimension)
@@ -52,7 +61,13 @@ def test_ingestion_and_search_integration(tmp_path):
         mapper=mapper,
     )
 
-    chunker = DocumentChunker(max_chars=md_config.chunk_max_chars)
+    chunker = DocumentChunker(
+        max_chars=profile.chunk_max_chars or 1000,
+        target_tokens=profile.chunk_target_tokens,
+        max_tokens=profile.chunk_max_tokens,
+        length_fn=embedder.count_tokens,
+        filters=FilterRegistry.resolve(engine.exclusion_filters),
+    )
 
     # 2. Ingestion Phase (Using the relative docs/ path!)
     ingestion_service = IngestionService(chunker, embedder, store)

@@ -41,7 +41,7 @@ class DuckDBChunker:
     def process(self, document: Document) -> Iterator[SqlChunk]:
         """Process a DuckDB file and yield SqlChunks."""
         try:
-            import duckdb
+            import duckdb  # pyright: ignore[reportMissingImports]
         except ImportError:
             logger.error(
                 "duckdb package is not installed. Please install with 'uv pip install dbs-vector[sql]' or 'uv pip install duckdb'."

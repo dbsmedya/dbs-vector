@@ -44,7 +44,7 @@ class LanceDBStore:
 
     def clear(self) -> None:
         """Drops the table and recreates it with an empty schema."""
-        self.db.drop_table(self.table_name, ignore_missing=True)
+        self.db.drop_table(self.table_name, ignore_missing=True)  # pyright: ignore[reportCallIssue]
         self.table = self.db.create_table(self.table_name, schema=self.schema)
 
     def ingest_chunks(self, chunks: list[Any], vectors: NDArray[np.float32], workflow: str) -> None:
@@ -141,7 +141,7 @@ class LanceDBStore:
             # Applying them after the index strategy can demote prefilter
             # behavior and let unfiltered rows leak through LanceDB hybrid
             # search when `table_filter` triggers bypass mode.
-            op = self.table.search(query_vector).metric("cosine")
+            op = self.table.search(query_vector).metric("cosine")  # pyright: ignore[reportAttributeAccessIssue]
             op = _apply_filters(op)
             if bypass_index:
                 op = op.bypass_vector_index()

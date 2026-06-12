@@ -93,7 +93,7 @@ def _stmt_kind(sql: str) -> tuple[str, bool]:
     return "?", False
 
 
-def _col_name(node: exp.Expression | None) -> str | None:
+def _col_name(node: exp.Expression | None) -> str | None:  # pyright: ignore[reportPrivateImportUsage]
     return node.name.lower() if isinstance(node, exp.Column) else None
 
 
