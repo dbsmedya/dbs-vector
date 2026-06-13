@@ -1,8 +1,6 @@
 from datetime import UTC, datetime
 
 import numpy as np
-import pyarrow as pa
-import pytest
 
 from dbs_vector.infrastructure.storage.lancedb_engine import LanceDBStore
 from dbs_vector.infrastructure.storage.mappers import SqlMapper
@@ -39,6 +37,15 @@ def _seed(store: LanceDBStore) -> None:
     ]
     vectors = np.ones((len(chunks), VECTOR_DIM), dtype=np.float32)
     store.ingest_chunks(chunks, vectors, workflow="sql_clustering")
+
+
+def test_scan_empty_table_returns_zero_rows_with_projected_schema(tmp_path):
+    store = _make_store(tmp_path)
+    table = store.scan()
+    assert table.num_rows == 0
+    assert "vector" not in table.schema.names
+    assert "workflow" not in table.schema.names
+    assert "id" in table.schema.names
 
 
 def test_scan_returns_all_rows_without_vector_or_workflow(tmp_path):

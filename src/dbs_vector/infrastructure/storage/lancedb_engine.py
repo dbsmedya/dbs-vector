@@ -295,6 +295,4 @@ class LanceDBStore:
         self.table.checkout_latest()
         if columns is None:
             columns = [c for c in self.schema.names if c not in ("vector", "workflow")]
-        if len(self.table) == 0:
-            return self.table.search().select(columns).limit(1).to_arrow().slice(0, 0)
         return self.table.search().select(columns).to_arrow()
