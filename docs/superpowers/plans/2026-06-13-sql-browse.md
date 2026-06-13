@@ -12,7 +12,7 @@
 
 **Verified polars behavior (tests must match these, not the spec's prose):**
 - `NULLIF(SUM(x),0)` divide-by-zero → `null` (reliable).
-- Grouped `SUM` of an all-null group → `0.0` (NOT null — the spec's "sums to NULL" line came from an ungrouped probe; assert `0.0`).
+- `NULLIF(SUM(calls),0)` divide-by-zero → `None` (this is what the tests pin). Grouped `SUM` of an all-null group renders as `n/a` regardless of whether polars yields `None` or `0.0`, so no test pins the raw all-null SUM value; the formatter (`None`→`n/a`) absorbs the difference.
 - `df.explode("tables")` turns an empty list `[]` into one row with `tables = null`.
 - `df.filter(pl.col("user") == "x' OR 1=1--")` matches 0 rows — bound values are opaque data.
 - `table.search().select(cols).to_arrow()` returns ALL rows (no default cap).
