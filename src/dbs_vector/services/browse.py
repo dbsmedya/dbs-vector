@@ -62,10 +62,8 @@ _AGG_SQL = {
     "rows_examined": 'SUM("rows_examined") AS rows_examined',
     "rows_sent": 'SUM("rows_sent") AS rows_sent',
     "latest_ts": 'MAX("latest_ts") AS latest_ts',
-    "avg_ms_per_fingerprint":
-        'SUM("execution_time_ms")/NULLIF(COUNT(*),0) AS avg_ms_per_fingerprint',
-    "avg_ms_per_call":
-        'SUM("execution_time_ms")/NULLIF(SUM("calls"),0) AS avg_ms_per_call',
+    "avg_ms_per_fingerprint": 'SUM("execution_time_ms")/NULLIF(COUNT(*),0) AS avg_ms_per_fingerprint',
+    "avg_ms_per_call": 'SUM("execution_time_ms")/NULLIF(SUM("calls"),0) AS avg_ms_per_call',
 }
 assert set(_AGG_SQL) == set(_GROUP_AGGREGATES), "_AGG_SQL keys must match _GROUP_AGGREGATES"
 # Default non-grouped projection (raw_query appended only when allowed).
@@ -167,8 +165,10 @@ class BrowseService:
         group_cols = self._parse_group_by(group_by)
         grouped = len(group_cols) > 0
         sql = self._build_sql(
-            group_cols=group_cols, order_by=order_by,
-            select=select, allow_raw_queries=allow_raw_queries,
+            group_cols=group_cols,
+            order_by=order_by,
+            select=select,
+            allow_raw_queries=allow_raw_queries,
         )
         frame = self._filtered_frame(filters, group_cols)
         result = self._execute(sql, {"data": frame})
@@ -313,3 +313,27 @@ def _json_default(value: Any) -> str:
 def result_to_json(result: BrowseResult) -> str:
     """Serialize all rows as JSON; datetimes → ISO 8601."""
     return json.dumps(result.rows, indent=2, ensure_ascii=False, default=_json_default)
+
+
+def result_to_table(result: BrowseResult) -> str:
+    """Aligned text table for CLI display (no byte budget; operator-facing)."""
+    if not result.rows:
+        return "0 rows."
+    cols = result.columns
+
+    def cell(v: Any) -> str:
+        if v is None:
+            return "n/a"
+        if isinstance(v, datetime):
+            return v.isoformat()
+        if isinstance(v, list):
+            return ",".join(str(x) for x in v) if v else "n/a"
+        return str(v)
+
+    widths = {c: max(len(c), *(len(cell(r.get(c))) for r in result.rows)) for c in cols}
+    head = " | ".join(c.ljust(widths[c]) for c in cols)
+    sep = "-+-".join("-" * widths[c] for c in cols)
+    body = "\n".join(
+        " | ".join(cell(r.get(c)).ljust(widths[c]) for c in cols) for r in result.rows
+    )
+    return f"{head}\n{sep}\n{body}\n({result.total_matching} rows)"

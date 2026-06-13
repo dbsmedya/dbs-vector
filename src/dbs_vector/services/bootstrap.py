@@ -95,3 +95,28 @@ def build_dependencies(
         workflow=engine.workflow,
         batch_size=profile.batch_size,
     )
+
+
+def build_store(engine_name: str) -> LanceDBStore:
+    """Resolve ONLY the vector store for an engine — no embedder, no chunker.
+
+    For read paths (browse) that never embed. Avoids MLX model load and the
+    cost/failure modes of constructing a chunker. The mapper (hence the table
+    schema) and vector_dimension come from the engine's model contract.
+    """
+    if engine_name not in settings.engines:
+        raise ValueError(
+            f"Unknown engine: '{engine_name}'. "
+            f"Check {os.environ.get('DBS_CONFIG_FILE', 'config.yaml')}."
+        )
+    engine = settings.engines[engine_name]
+    contract = ModelRegistry.get(engine.model)
+    MapperClass = ComponentRegistry.get_mapper(engine.mapper_type)
+    mapper = MapperClass(vector_dimension=contract.vector_dimension)
+    return LanceDBStore(
+        db_path=settings.db_path,
+        table_name=engine.table_name,
+        vector_dimension=contract.vector_dimension,
+        mapper=mapper,
+        nprobes=settings.nprobes,
+    )

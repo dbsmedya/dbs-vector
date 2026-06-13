@@ -136,7 +136,7 @@ def test_mcp_uses_global_config_when_no_subcommand_override(tmp_path, monkeypatc
 
         called = {"yes": False}
 
-        def fake_start():
+        def fake_start(**kw):
             called["yes"] = True
 
         ctx.setattr(server_mod, "start_stdio_server", fake_start)
@@ -166,7 +166,7 @@ def test_mcp_uses_global_callback_config(tmp_path, monkeypatch):
     with monkeypatch.context() as ctx:
         from dbs_vector.mcp import server as server_mod
 
-        ctx.setattr(server_mod, "start_stdio_server", lambda: None)
+        ctx.setattr(server_mod, "start_stdio_server", lambda **kw: None)
         result = runner.invoke(app, ["-c", str(config_path), "mcp"])
     assert result.exit_code == 0
 
@@ -198,7 +198,7 @@ def test_mcp_subcommand_config_overrides_global(tmp_path, monkeypatch):
     with monkeypatch.context() as ctx:
         from dbs_vector.mcp import server as server_mod
 
-        ctx.setattr(server_mod, "start_stdio_server", lambda: None)
+        ctx.setattr(server_mod, "start_stdio_server", lambda **kw: None)
         result = runner.invoke(app, ["-c", str(global_path), "mcp", "-c", str(sub_path)])
     assert result.exit_code == 0
 
@@ -233,7 +233,7 @@ def test_mcp_subcommand_config_sets_env_var(tmp_path, monkeypatch):
     with monkeypatch.context() as ctx:
         from dbs_vector.mcp import server as server_mod
 
-        ctx.setattr(server_mod, "start_stdio_server", lambda: None)
+        ctx.setattr(server_mod, "start_stdio_server", lambda **kw: None)
         runner.invoke(app, ["-c", str(global_path), "mcp", "-c", str(sub_path)])
 
     assert os.environ.get("DBS_CONFIG_FILE") == str(sub_path)

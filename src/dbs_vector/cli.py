@@ -1,12 +1,13 @@
 import os
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from loguru import logger
 
 from dbs_vector.config import settings
 from dbs_vector.logger import configure_logger
-from dbs_vector.services.bootstrap import EngineDeps, build_dependencies
+from dbs_vector.services.bootstrap import EngineDeps, build_dependencies, build_store
+from dbs_vector.services.browse import BrowseService, result_to_json, result_to_table
 from dbs_vector.services.ingestion import IngestionService
 from dbs_vector.services.search import SearchService
 
@@ -75,6 +76,17 @@ def _build_dependencies(
             query_override=query_override,
             url_override=url_override,
         )
+    except ValueError as e:
+        if "Schema mismatch" in str(e):
+            typer.echo(f"\n[!] Database Error: {e}", err=True)
+            raise typer.Exit(code=1) from e
+        raise
+
+
+def _build_store(engine_name: str) -> Any:
+    """CLI-facing store-only builder: converts schema-mismatch to a typer exit."""
+    try:
+        return build_store(engine_name)
     except ValueError as e:
         if "Schema mismatch" in str(e):
             typer.echo(f"\n[!] Database Error: {e}", err=True)
@@ -206,6 +218,55 @@ def search(
 
 
 @app.command()
+def browse(
+    sql: Annotated[
+        str, typer.Option("--sql", help="A read-only SELECT (polars SQL dialect).")
+    ],
+    engine_name: Annotated[
+        str, typer.Option("--type", "-t", help="SQL engine to browse (sql, sql-api, ...).")
+    ] = "sql-api",
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit rows as JSON instead of a table.")
+    ] = False,
+) -> None:
+    """Analytical SQL over a SQL engine's table (no embedder, no ranking).
+
+    Frames: `t` (one row per fingerprint), `t_by_table` (exploded on `tables`),
+    and the engine name with dashes->underscores. Quote "user" (SQL keyword).
+    Unbounded - use LIMIT in your SQL; `SELECT * FROM t` is a full export.
+    """
+    if engine_name not in settings.engines:
+        typer.echo(
+            f"Error: Unknown engine type '{engine_name}'. Available: "
+            f"{list(settings.engines.keys())}"
+        )
+        raise typer.Exit(code=1)
+    if settings.engines[engine_name].resolved_family != "sql":
+        sql_engines = [
+            n for n, e in settings.engines.items() if e.resolved_family == "sql"
+        ]
+        typer.echo(
+            f"Error: browse is only available for SQL engines. "
+            f"'{engine_name}' is not one. Available SQL engines: {sql_engines}"
+        )
+        raise typer.Exit(code=1)
+
+    store = _build_store(engine_name)
+    frame_alias = engine_name.replace("-", "_")
+    service = BrowseService(store, frame_alias)
+    try:
+        result = service.run_sql(sql)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1) from e
+
+    if json_output:
+        typer.echo(result_to_json(result))
+    else:
+        typer.echo(result_to_table(result))
+
+
+@app.command()
 def mcp(
     config_file: Annotated[
         str | None,
@@ -215,6 +276,14 @@ def mcp(
             help="Override the global --config-file for this subcommand.",
         ),
     ] = None,
+    allow_raw_queries: Annotated[
+        bool,
+        typer.Option(
+            "--allow-raw-queries",
+            help="Expose the verbatim raw_query column (literal PII values) to "
+            "browse MCP tools. Default off - enable only for a trusted local model.",
+        ),
+    ] = False,
 ) -> None:
     """Starts the FastMCP standard input/output (stdio) server for integrations."""
     from dbs_vector.config import _populate_singleton_from, load_settings
@@ -231,7 +300,7 @@ def mcp(
 
     logger.info("Initializing MLX Embedders and LanceDB connections")
     try:
-        start_stdio_server()
+        start_stdio_server(allow_raw_queries=allow_raw_queries)
     except Exception as e:
         logger.error("Failed to initialize search services: {}", e)
         raise
