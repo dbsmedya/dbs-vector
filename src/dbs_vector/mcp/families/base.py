@@ -1,9 +1,12 @@
 """SearchFamily Protocol: contract that each search family implements."""
 
 from collections.abc import Iterable
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from dbs_vector.services.search import SearchService
+
+if TYPE_CHECKING:
+    from dbs_vector.config import EngineConfig
 
 # MCP response-size cap shared by every family formatter. A transport-level
 # property, not a per-family choice — defined once, beside the helper.
@@ -100,6 +103,14 @@ class SearchFamily(Protocol):
         prefilters, regardless of whether they ranked above the similarity or
         FTS threshold. Families may surface it or ignore it.
         """
+        ...
+
+    def search_description(self, engine_name: str, engine: "EngineConfig") -> str:
+        """Compose the LLM-facing description for this engine's search tool
+        from inert config facts (chunker_type, model) on the passed `engine`.
+        Takes `engine` directly (not via the global settings) so it composes
+        purely from its arguments — no hidden global read, trivially testable.
+        Families own this prose; config.yaml holds only a short human summary."""
         ...
 
     def make_handler(self, engine_name: str) -> Any:

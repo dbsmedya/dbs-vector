@@ -2,10 +2,13 @@
 
 import asyncio
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dbs_vector.mcp.families.base import RESPONSE_BUDGET_BYTES, render_with_budget
 from dbs_vector.services.search import SearchService
+
+if TYPE_CHECKING:
+    from dbs_vector.config import EngineConfig
 
 _RAW_QUERY_DISPLAY_LIMIT = 2_000
 
@@ -46,6 +49,17 @@ def _fmt_tables(tables: Any) -> str:
     if isinstance(tables, list) and tables:
         return ", ".join(tables)
     return "n/a"
+
+
+def _sql_source_phrase(chunker_type: str) -> str:
+    return {"api": "a remote slow-log API",
+            "duckdb": "a local DuckDB slow-query log"}.get(
+        chunker_type, "a SQL slow-query log")
+
+
+def _sql_embeddings_phrase(model: str) -> str:
+    return {"granite-r2": "Granite embeddings",
+            "gemma-bf16": "Gemma embeddings"}.get(model, f"{model} embeddings")
 
 
 class SqlFamily:
@@ -152,6 +166,49 @@ class SqlFamily:
             (_block(res) for res in results),
             RESPONSE_BUDGET_BYTES,
             total=len(results),
+        )
+
+    def search_description(self, engine_name: str, engine: "EngineConfig") -> str:
+        source = _sql_source_phrase(engine.chunker_type)
+        emb = _sql_embeddings_phrase(engine.model)
+        return (
+            f"Semantic search over slow-query fingerprints from {source} "
+            f"({emb}). Returns up to `limit` results ranked by cosine "
+            f"similarity to the query string — NOT by execution_time_ms or "
+            f"calls. Filters (optional, AND prefilters applied before "
+            f"ranking): `min_time` — minimum cumulative execution_time_ms in "
+            f"ms; `min_lock_time` — minimum cumulative lock_time_sec in "
+            f"seconds; `table_filter` — restrict to fingerprints whose "
+            f"`tables` list contains the given table. The header reports "
+            f"'Showing N of M results that matched your filters' so callers "
+            f"can tell when results are similarity-truncated. For ranking by "
+            f"a scalar column, aggregation, or point lookup (no query string) "
+            f"use the sibling `browse_{engine_name.replace('-', '_')}` tool."
+        )
+
+    def browse_description(
+        self, engine_name: str, engine: "EngineConfig", allow_raw_queries: bool
+    ) -> str:
+        source = _sql_source_phrase(engine.chunker_type)
+        cols = ("id, content_hash, user, host, source, tables, calls, "
+                "execution_time_ms, lock_time_sec, rows_examined, rows_sent, "
+                "latest_ts, text")
+        if allow_raw_queries:
+            cols += ", raw_query (verbatim production SQL with literal values)"
+        return (
+            f"Analytical (non-semantic) access to slow-query fingerprints from "
+            f"{source}. Ranks by the column you choose, NOT by similarity — no "
+            f"query string. Parameters: filters `id`, `content_hash`, `user`, "
+            f"`host`, `source`, `table` (matches the `tables` list), "
+            f"`min_calls`, `min_execution_time_ms`, `min_lock_time_sec`; "
+            f"`group_by` (comma-separated columns — set to `tables` to group "
+            f"by table); `order_by` ('<col>[:asc|:desc]', default "
+            f"execution_time_ms:desc); `select` (comma-separated output "
+            f"columns); `limit` (default 10). Columns: {cols}. Grouping yields "
+            f"fingerprints (COUNT), calls/execution_time_ms/lock_time_sec/"
+            f"rows_examined/rows_sent (SUM), latest_ts (MAX), "
+            f"avg_ms_per_fingerprint and avg_ms_per_call (the per-execution "
+            f"average a DBA usually reads)."
         )
 
     def make_handler(self, engine_name: str) -> Any:

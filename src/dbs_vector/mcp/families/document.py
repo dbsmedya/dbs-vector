@@ -1,10 +1,18 @@
 """DocumentFamily — search engines whose results are document chunks."""
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dbs_vector.mcp.families.base import RESPONSE_BUDGET_BYTES, render_with_budget
 from dbs_vector.services.search import SearchService
+
+if TYPE_CHECKING:
+    from dbs_vector.config import EngineConfig
+
+
+def _embeddings_phrase(model: str) -> str:
+    return {"granite-r2": "Granite embeddings",
+            "gemma-bf16": "Gemma embeddings"}.get(model, f"{model} embeddings")
 
 
 class DocumentFamily:
@@ -48,6 +56,14 @@ class DocumentFamily:
             (_block(res) for res in results),
             RESPONSE_BUDGET_BYTES,
             total=len(results),
+        )
+
+    def search_description(self, engine_name: str, engine: "EngineConfig") -> str:
+        emb = _embeddings_phrase(engine.model)
+        return (
+            f"Semantic search over Markdown documentation chunks ({emb}). "
+            f"Returns the top-K most similar passages, ranked by cosine "
+            f"similarity — not by recency or size."
         )
 
     def make_handler(self, engine_name: str) -> Any:
