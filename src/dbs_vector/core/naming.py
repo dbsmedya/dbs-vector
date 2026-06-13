@@ -12,6 +12,9 @@ import re
 ENGINE_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
-def normalize_tool_name(engine_name: str) -> str:
-    """Convert an engine name to its MCP tool name (dashes → underscores)."""
-    return f"search_{engine_name.replace('-', '_')}"
+def normalize_tool_name(engine_name: str, verb: str = "search") -> str:
+    """Convert an engine name to its MCP tool name (dashes → underscores).
+
+    `verb` selects the tool family prefix: "search" (default) or "browse".
+    """
+    return f"{verb}_{engine_name.replace('-', '_')}"
