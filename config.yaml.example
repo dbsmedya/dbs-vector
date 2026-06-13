@@ -85,7 +85,7 @@ engines:
 
   # ----- Markdown / prose, Gemma (instruction-tuned, asymmetric retrieval) ----
   md:
-    description:    "Semantic search over Markdown documentation chunks. Returns the top-K most similar passages (by cosine similarity, not recency or size)."
+    description:    "Markdown documentation chunks (Gemma embeddings)."
     model:          "gemma-bf16"          # ModelRegistry key (core/model_registry.py)
     mapper_type:    "document"            # storage schema for document chunks
     chunker_type:   "document"            # markdown-it semantic chunker
@@ -102,7 +102,7 @@ engines:
 
   # ----- Markdown / prose, Granite R2 (symmetric bi-encoder) ------------------
   md-granite:
-    description:    "Semantic search over Markdown documentation chunks (Granite embeddings). Returns the top-K most similar passages by cosine similarity."
+    description:    "Markdown documentation chunks (Granite embeddings)."
     model:          "granite-r2"
     mapper_type:    "document"
     chunker_type:   "document"
@@ -128,7 +128,7 @@ engines:
 
   # ----- SQL slow-query log, local DuckDB source -----------------------------
   sql:
-    description:    "Semantic search over the top-N most impactful slow-query fingerprints from a local DuckDB log. Ranks by cosine similarity to the query string, not by execution time or call count. Filters (optional, applied as AND prefilters before similarity ranking): `min_time` — minimum cumulative `execution_time_ms` in milliseconds (e.g. 60000 = 60 s of total accumulated time across all calls of a fingerprint, not per-call avg); `min_lock_time` — minimum cumulative `lock_time_sec` in seconds; `table_filter` — restrict to fingerprints whose `tables` list contains the given table name."
+    description:    "Slow-query fingerprints from a local DuckDB log (Gemma embeddings)."
     model:          "gemma-bf16"
     mapper_type:    "sql"                 # SQL schema (raw_query, exec time, calls, ts)
     chunker_type:   "duckdb"              # reads slow-log DuckDB files
@@ -148,7 +148,7 @@ engines:
   # See docs/README_REMOTE_SQL_API.md for the expected API contract.
   # Treat this file as a secret if api_key is non-empty (gitignore config.yaml).
   sql-api:
-    description:    "Semantic search over the top-N most impactful slow-query fingerprints from a remote slow-log API. Returns up to `limit` results ranked by cosine similarity to the query string (NOT by execution_time_ms or calls). Filters (optional, applied as AND prefilters before similarity ranking): `min_time` — minimum cumulative `execution_time_ms` in milliseconds (e.g. 60000 = 60 s of total accumulated time across all calls of a fingerprint, not per-call avg); `min_lock_time` — minimum cumulative `lock_time_sec` in seconds; `table_filter` — restrict to fingerprints whose `tables` list contains the given table name. The response header reports 'Showing N of M results that matched your filters' so callers can tell when results are similarity-truncated."
+    description:    "Slow-query fingerprints from a remote slow-log API (Gemma embeddings)."
     model:          "gemma-bf16"
     mapper_type:    "sql"
     chunker_type:   "api"                 # paginated REST API source
@@ -167,7 +167,7 @@ engines:
 
   # ----- SQL slow-query log, Granite R2 (no prefixes) -----------------------
   sql-granite:
-    description:    "Semantic search over the top-N most impactful slow-query fingerprints from a local DuckDB log (Granite embeddings). Ranks by cosine similarity to the query string, not by execution time or call count. Filters (optional, applied as AND prefilters before similarity ranking): `min_time` — minimum cumulative `execution_time_ms` in milliseconds (e.g. 60000 = 60 s of total accumulated time across all calls of a fingerprint, not per-call avg); `min_lock_time` — minimum cumulative `lock_time_sec` in seconds; `table_filter` — restrict to fingerprints whose `tables` list contains the given table name."
+    description:    "Slow-query fingerprints from a local DuckDB log (Granite embeddings)."
     model:          "granite-r2"
     mapper_type:    "sql"
     chunker_type:   "duckdb"
@@ -178,7 +178,7 @@ engines:
 
   # ----- SQL slow-query log, Granite R2 + remote API ------------------------
   sql-api-granite:
-    description:    "Semantic search over the top-N most impactful slow-query fingerprints from a remote slow-log API (Granite embeddings). Returns up to `limit` results ranked by cosine similarity to the query string (NOT by execution_time_ms or calls). Filters (optional, applied as AND prefilters before similarity ranking): `min_time` — minimum cumulative `execution_time_ms` in milliseconds (e.g. 60000 = 60 s of total accumulated time across all calls of a fingerprint, not per-call avg); `min_lock_time` — minimum cumulative `lock_time_sec` in seconds; `table_filter` — restrict to fingerprints whose `tables` list contains the given table name. The response header reports 'Showing N of M results that matched your filters' so callers can tell when results are similarity-truncated."
+    description:    "Slow-query fingerprints from a remote slow-log API (Granite embeddings)."
     model:          "granite-r2"
     mapper_type:    "sql"
     chunker_type:   "api"
