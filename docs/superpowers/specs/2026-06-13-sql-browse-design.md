@@ -22,28 +22,81 @@ CLI and MCP, **without touching the semantic path**.
 
 `browse` runs a read-only **SQL `SELECT`** over an engine's table. Execution uses
 **`polars.SQLContext`** (already a core dep, `polars==1.40.0`) over the Arrow data
-read from LanceDB, with **`sqlglot`** (core dep, `sqlglot>=27.0.0`) guarding that
-the statement is a single read-only `SELECT` (so a typo cannot mutate the table).
-No new dependency.
+read from LanceDB. No new dependency.
 
 This collapses the would-be `--select/--group-by/--order-by` machinery into "you
-write the `SELECT`, polars does the grouping/sorting/aggregation."
+write the `SELECT` (CLI), or you send structured params the handler compiles to a
+`SELECT` (MCP), and polars does the grouping/sorting/aggregation."
 
-The one genuine exposure concern is **data egress, not query injection**: browse
-output can contain `raw_query` (verbatim production SQL with real literal values),
-and an MCP client may be a remote model — so raw SQL would leave the operator's
-network. That boundary is handled by an explicit, default-off config gate (see
-**Raw query exposure**). On the CLI there is nothing to gate: the operator runs
-SQL in their own terminal under their own privileges, exactly as they would
-`cat` a file.
+### What polars `SQLContext` can and cannot do (verified)
+
+Two facts, established empirically on `polars==1.40.0`, drive the entire trust
+model below:
+
+- **It cannot mutate the store.** Frames registered in a `SQLContext` are
+  in-memory copies of the Arrow read; there is **no write-back path to LanceDB**.
+  `INSERT`/`COPY` are rejected by polars itself; `DROP TABLE t` only drops the
+  in-memory frame (discarded when the call returns). So a malformed `browse`
+  statement **cannot corrupt or delete data** — no read-only guard is needed to
+  prevent that, and the project deliberately omits one.
+- **It is NOT a filesystem sandbox.** `SELECT * FROM read_csv('/etc/passwd')`
+  *succeeds* — `read_csv` / `read_parquet` are reachable inside polars SQL and can
+  read any file the server process can. On the **CLI** this is irrelevant (the
+  operator already has full file and data access — `read_csv` is no escalation
+  over `cat`). On the **MCP** it is the one real exposure, and it is the reason the
+  MCP defaults to a **structured-only** surface (see Trust & exposure model).
+
+`sqlglot` (used elsewhere in the repo by `services/sql_parser.py`) is **not** used
+by `browse`: there is no statement to guard for mutation (impossible) and no
+`LIMIT` to inject (handled post-execution, see Architecture).
 
 **Two front-ends, one execution core:**
 
-- **CLI** — raw SQL passthrough. Deliberately minimal (the user writes SQL).
-- **MCP** — structured params (`where/group_by/order_by/select/limit`) that the
-  handler **compiles to SQL** and runs through the same core. The structured,
-  validated, well-described shape is what an LLM consumer benefits from; the
-  curated aggregate semantics live in the builder.
+- **CLI** — raw SQL passthrough. Deliberately minimal (the operator writes SQL).
+  Always full power: every column, `read_csv`, no restrictions.
+- **MCP** — **structured params** (typed filters + `group_by/order_by/select/
+  limit`) that the handler **compiles to SQL** and runs through the same core. The
+  structured, validated, well-described shape is what an LLM consumer benefits
+  from; the curated aggregate semantics live in the builder. A single server flag
+  (`--allow-raw-queries`) unlocks raw-SQL passthrough on the MCP too, for operators
+  driving a trusted local model.
+
+## Trust & exposure model
+
+`browse` is a single-operator tool, not a network database server. The CLI runs
+under the operator's own privileges. The only place exposure matters is the **MCP
+server**, whose client may be a *remote* model — so two things must not reach a
+remote model by default: **verbatim production SQL** (`raw_query`, real literal
+values) and **arbitrary file reads** (`read_csv`). Both are enabled by *raw SQL*,
+so **one server-level flag gates both**:
+
+```
+dbs-vector mcp --allow-raw-queries     # default: OFF
+```
+
+| Capability | CLI (operator) | MCP, flag **off** (default) | MCP, flag **on** |
+|---|---|---|---|
+| Raw SQL passthrough | ✅ always | ❌ structured params only | ✅ |
+| `read_csv` / arbitrary file reads | ✅ (no escalation) | ❌ unconstructable (builder owns `FROM`) | ✅ (trusted local model) |
+| `raw_query` column | ✅ always | ❌ not in select vocabulary | ✅ |
+| normalized `text`, scalar cols, aggregates | ✅ | ✅ | ✅ |
+
+**Why flag-off is structurally safe, not just policed:** with no raw SQL, the MCP
+handler only ever runs SQL its own builder emits. The builder hard-codes `FROM t`
+/ `FROM t_by_table`, never emits a function call, and validates every identifier
+against a fixed column vocabulary that excludes `raw_query`. There is therefore no
+input path through which `read_csv(...)` or `raw_query` can appear — the leaks are
+*unconstructable*, not merely rejected. (This is why the MCP filter surface is
+typed params and **not** a raw `where` string: a raw predicate fragment would let
+`WHERE id IN (SELECT x FROM read_csv('/secret'))` through, reopening the hole.)
+
+**Flag-on** is an explicit operator opt-in: "I am driving this MCP with a trusted
+(local) model; give it the same raw-SQL power the CLI has." It adds a `sql`
+parameter to each browse tool and admits `raw_query` to the select vocabulary.
+
+The flag is **server-level** (one `--allow-raw-queries` on `dbs-vector mcp`),
+applies to all SQL engines, and replaces the per-engine config field an earlier
+draft proposed — so `EngineConfig` gains **no** new field.
 
 ## Goals
 
@@ -52,24 +105,27 @@ SQL in their own terminal under their own privileges, exactly as they would
 - CLI (`dbs-vector browse --sql "…"`) + MCP (`browse_<engine>(structured params)`).
 - All SQL engines (`sql`, `sql-granite`, `sql-api`, `sql-api-granite`) via the
   shared `SqlFamily`.
-- One execution core (polars + sqlglot); CLI and MCP are thin front-ends over it.
+- One execution core (polars); CLI and MCP are thin front-ends over it.
 - Zero changes to existing semantic `search` **behavior** — new code only.
+- A single `--allow-raw-queries` server flag gating both raw-SQL leaks (file read,
+  `raw_query`) on the MCP path; default off.
 - **Description ownership refactor** (bundled, see dedicated section): move the
   verbose LLM-facing tool descriptions out of `config.yaml` into the families.
 
 ## Non-Goals (YAGNI)
 
 - No `browse` for document/markdown engines (different columns, not the use case).
-- No write/mutation — `browse` rejects anything but a single `SELECT`.
-- No structured filter flags on the **CLI** (`--group-by`, `--order-by`, …). The
-  CLI is raw SQL; only the MCP tool has structured params.
+- No mutation: structurally impossible (in-memory frames), so no guard is written.
+- No raw `where` string / raw SQL on the **default** MCP surface. Structured typed
+  filters only; raw SQL is the `--allow-raw-queries` escape hatch.
+- No `sqlglot` in the browse path. No SQL rewriting; `LIMIT` is a display cap.
 - No DuckDB dependency. polars is the engine.
 - No joins across engine tables; one frame (+ its exploded variant) per call.
 - No new ranking inside `search`. `search` stays purely semantic.
 
 ## Surface
 
-### CLI — raw SQL
+### CLI — raw SQL (always full power)
 
 ```bash
 # Heaviest users by total execution time  (note: "user" must be quoted)
@@ -90,12 +146,15 @@ Options (intentionally small):
 | Flag | Type | Default | Meaning |
 |------|------|---------|---------|
 | `--type/-t` | str | required (must be a SQL engine) | Engine; rejected if not SQL-family. |
-| `--sql` | str | required | A single read-only `SELECT`, polars SQL dialect. |
+| `--sql` | str | required | A SQL `SELECT`, polars SQL dialect. |
 | `--json` | bool | False | Emit rows as JSON instead of a table. |
 
 `--type/-t` matches `ingest` / `search`. A non-SQL engine is rejected with the
-list of available SQL engines. If the SQL omits a `LIMIT`, a safety
-`LIMIT` (default 1000) is appended (see Architecture) and noted in the output.
+list of available SQL engines. The CLI imposes no read-only guard (there is
+nothing to guard — see Trust & exposure model) and no column restrictions. If a
+result exceeds the **display cap** (1000 rows), only the first 1000 are printed
+with a "Showing 1000 of N" note; the operator's own `LIMIT` is applied first by
+polars (see Architecture).
 
 **Frames available in `FROM`:**
 
@@ -113,31 +172,56 @@ description):**
 - Filter/group by a **table** via `t_by_table` (the `tables` list is exploded to
   a scalar there), e.g. `WHERE tables = 'orders'`.
 - `NULLS LAST`, `NULLIF(...)`, `IS NULL` / `IS NOT NULL` are supported (verified
-  on polars 1.40).
+  on polars 1.40); the builder emits them directly to polars (no rewrite), so
+  ordering semantics are exactly what polars executes.
 
 ### MCP — structured params compiled to SQL
 
 One tool per SQL engine (`browse_sql`, `browse_sql_granite`, `browse_sql_api`,
-`browse_sql_api_granite`), registered by a sibling `register_browse_tools(mcp)`.
-The handler signature IS the schema (FastMCP derives it from type hints):
+`browse_sql_api_granite`), registered by a sibling `register_browse_tools(mcp,
+allow_raw_queries)`. The handler signature IS the schema (FastMCP derives it from
+type hints). **Two variants** are defined; the registrar picks one per the server
+flag, so the advertised schema is honest either way.
+
+**Default variant (`--allow-raw-queries` off):**
 
 ```python
 async def handler(
-    where:    str | None = None,   # raw polars-SQL predicate fragment, optional
+    # --- typed filters (compiled to a safe WHERE; all optional) ---
+    id:                    str | None   = None,  # exact match (point lookup)
+    content_hash:          str | None   = None,  # exact match (point lookup)
+    user:                  str | None   = None,  # exact match (quoted "user")
+    host:                  str | None   = None,
+    source:                str | None   = None,  # db name
+    table:                 str | None   = None,  # uses t_by_table
+    min_calls:             int | None   = None,  # calls >=
+    min_execution_time_ms: float | None = None,  # execution_time_ms >=
+    min_lock_time_sec:     float | None = None,  # lock_time_sec >=
+    # --- shape ---
     group_by: str | None = None,   # comma-separated column(s); presence → grouped
     order_by: str        = "execution_time_ms:desc",  # "<col>[:asc|:desc]"
-    select:   str | None = None,   # comma-separated output columns
-    limit:    int        = 10,
+    select:   str | None = None,   # comma-separated output columns (raw_query rejected)
+    limit:    int        = 10,      # display cap (post-execution head)
 ) -> str: ...
 ```
 
-The handler **builds a SQL string** from these params (quoting identifiers,
-choosing `t` vs `t_by_table`, emitting the curated aggregate set for grouped
-mode) and runs it through the shared executor. Because the builder only ever
-emits a `SELECT`, the read-only guard always passes. The tool **description**
-(family template, see Description Ownership) documents the columns, the
-group-by-table-via-`t_by_table` rule, the `"user"` quoting gotcha, and that
-`browse` ranks by the chosen column, not similarity — no query string.
+**Raw variant (`--allow-raw-queries` on)** — identical, plus:
+
+```python
+    sql: str | None = None,        # raw SELECT; when given, overrides all of the above
+```
+
+and `raw_query` becomes a legal `select` column. When `sql` is provided the
+handler runs the raw path (`run_sql`); otherwise it runs the structured builder.
+
+The handler **builds a SQL string** from the typed params (quoting identifiers,
+ANDing the filters into a `WHERE`, choosing `t` vs `t_by_table`, emitting the
+curated aggregate set for grouped mode) and runs it through the shared executor.
+Because the builder only ever emits a builder-controlled `SELECT`, neither
+`read_csv` nor `raw_query` can appear unless the operator enabled the flag. The
+tool **description** (family template, see Description Ownership) documents the
+columns, the group-by-table-via-`t_by_table` rule, the `"user"` quoting gotcha,
+and that `browse` ranks by the chosen column, not similarity — no query string.
 
 ## Available Columns
 
@@ -158,56 +242,24 @@ From `SqlChunk` (`core/models.py`). These are the columns in frame `t`:
 | `rows_sent` | int \| None | |
 | `latest_ts` | datetime | ISO 8601 string in `--json` output |
 
-**Excluded from frames (#5):** the embedding `vector` column is **never** read
-into the frame (large; projected out at scan time). `workflow` is also excluded
-from the frame. `text` (normalized fingerprint) is freely available for display.
-`raw_query` (verbatim production SQL, real literals) is in the frame but
-**gated on the MCP path** — see **Raw query exposure**.
+**Excluded from frames:** the embedding `vector` column is **never** read into the
+frame (large; projected out at scan time). `workflow` is also excluded. `text`
+(normalized fingerprint) is freely available. `raw_query` (verbatim production
+SQL, real literals) is in the frame and freely available on the CLI, but on the
+MCP it is gated by `--allow-raw-queries` (off → not in the select vocabulary;
+on → selectable) — see Trust & exposure model.
 
-**Table-sharing semantics (#5).** `browse` reads an engine's `table_name`
-directly and does not filter on `workflow`. `sql` and `sql-api` share the physical
-table `query_vault` with the same `workflow` (`config.yaml:32,43`), so
-`browse_sql` and `browse_sql_api` see the same rows — identical to existing
-`search` behavior (it doesn't filter `workflow` either). `*_granite` /
-`*_granite_api` have distinct tables and are isolated.
-
-## Raw query exposure (data egress, #1)
-
-`raw_query` is the **verbatim production SQL**, literal values included (emails,
-ids, tokens that appeared in the captured statement). `text` is the **normalized
-fingerprint** — literals stripped — which the `search` path already surfaces to
-the calling LLM today. The egress boundary is therefore *normalized-yes, raw-no*,
-identical to `search`'s existing `include_raw=False` default
-(`SqlFamily.make_handler`). browse must not silently widen it.
-
-The MCP server cannot know whether its client is a remote model (raw SQL leaves
-the network) or a local one, so exposure is an **explicit operator choice, not
-auto-detected**:
-
-- **New per-engine config field `expose_raw_query: bool`, default `false`**,
-  added to `EngineConfig` (`config.py`).
-- **MCP, gate OFF (default):** `raw_query` is **not** in the selectable column
-  vocabulary. A `select` that names it is rejected before any scan with a
-  friendly message ("raw query text is not exposed on this engine; set
-  `expose_raw_query: true` to enable"), and `browse_description` omits
-  `raw_query` from the advertised columns. `text` (normalized) stays freely
-  selectable — consistent with `search`.
-- **MCP, gate ON:** `raw_query` joins the selectable vocabulary and the
-  description advertises it. Operators set this only when driving the engine with
-  a local model.
-- **CLI, always unrestricted:** `SELECT raw_query FROM t` works regardless of the
-  flag. The CLI prints to the operator's own terminal — no network egress — so
-  the gate lives only in the MCP builder's column-vocabulary validation
-  (`build_and_run`), which the CLI's `run_sql` path never invokes.
-
-This reuses the established `normalized-yes / raw-no` contract rather than
-inventing a new mechanism, and keeps raw production literals off a remote model
-by default.
+**Table-sharing semantics.** `browse` reads an engine's `table_name` directly and
+does not filter on `workflow`. `sql` and `sql-api` share the physical table
+`query_vault` with the same `workflow` (`config.yaml:32,43`), so `browse_sql` and
+`browse_sql_api` see the same rows — identical to existing `search` behavior (it
+doesn't filter `workflow` either). `*_granite` / `*_granite_api` have distinct
+tables and are isolated.
 
 ## MCP grouped-mode output (what the builder emits)
 
-When `group_by` is set, the builder emits this curated aggregate set (raw CLI
-authors can of course write any aggregates they like):
+When `group_by` is set, the builder emits this curated aggregate set (raw-SQL
+authors, CLI or flag-on MCP, can of course write any aggregates they like):
 
 | Output column | SQL the builder emits |
 |---------------|------------------------|
@@ -222,25 +274,27 @@ authors can of course write any aggregates they like):
 | `avg_ms_per_fingerprint` | `SUM(execution_time_ms)/NULLIF(COUNT(*),0)` |
 | `avg_ms_per_call` | `SUM(execution_time_ms)/NULLIF(SUM(calls),0)` |
 
-Two explicitly-named averages (#10): per-fingerprint vs per-execution — the
-latter (`avg_ms_per_call`) is the number a DBA usually reads. `NULLIF` guards
+Two explicitly-named averages: per-fingerprint vs per-execution — the latter
+(`avg_ms_per_call`) is the number a DBA usually reads. `NULLIF` guards
 **divide-by-zero by producing `NULL`, not `0.0`** — when `SUM(calls)` is 0 the
 ratio is genuinely undefined, and `NULL` is the honest answer (verified on polars
 1.40.0). Likewise polars `SUM` skips NULLs but an **all-NULL group sums to
-`NULL`, not `0.0`** (verified, #7) — e.g. a group whose every `lock_time_sec` is
+`NULL`, not `0.0`** (verified) — e.g. a group whose every `lock_time_sec` is
 NULL. The builder does **not** wrap these in `COALESCE`; instead `NULL` is
-rendered as `n/a` in the table formatter and `null` in `--json` (#2, #7),
-matching the existing `SqlFamily` `_fmt_*` "n/a" convention. When `group_by` is
-`tables`, the builder targets `t_by_table`. `select`, if given, restricts the
-emitted columns to a validated subset of {group cols} ∪ {aggregate names};
-naming a raw per-fingerprint field (e.g. `id`) under grouping is rejected (#3).
-`order_by` appends `ORDER BY <col> <dir> NULLS LAST` (#7); `<col>` is validated
-against the available columns / aggregate names, and the list column `tables` is
-not a valid `order_by` target except via `t_by_table` (#9).
+rendered as `n/a` in the table formatter and `null` in `--json`, matching the
+existing `SqlFamily` `_fmt_*` "n/a" convention. When `group_by` is `tables`, the
+builder targets `t_by_table`. `select`, if given, restricts the emitted columns to
+a validated subset of {group cols} ∪ {aggregate names}; naming a raw
+per-fingerprint field (e.g. `id`) under grouping is rejected. `order_by` appends
+`ORDER BY <col> <dir> NULLS LAST`; `<col>` is validated against the available
+columns / aggregate names, and the list column `tables` is not a valid `order_by`
+target except via `t_by_table`.
 
-`total_matching` for the "Showing N of M" header (#8): the builder runs its query
-once **without** the `LIMIT` and counts — raw rows in raw mode, **groups** in
-grouped mode ("Showing 10 of 47 users"). Cheap on a ~6,200-row corpus.
+`total_matching` for the "Showing N of M" header: because no `LIMIT` is ever
+emitted into the SQL (see Architecture), the executed result already contains
+**all** matching rows — raw rows in raw mode, **groups** in grouped mode. So
+`total_matching = result.height` directly, and the displayed slice is
+`result.head(limit)` ("Showing 10 of 47 users"). One execution, no count query.
 
 ## Architecture
 
@@ -274,49 +328,49 @@ class BrowseService:
     def __init__(self, store: IVectorStore, frame_alias: str) -> None: ...
         # frame_alias = engine name, dashes→underscores (e.g. "sql_api")
 
-    def run_sql(self, sql: str) -> BrowseResult: ...        # raw path (CLI)
-    def build_and_run(self, *, where, group_by, order_by,   # structured path (MCP)
-                      select, limit,
-                      expose_raw_query: bool = False) -> BrowseResult: ...
+    def run_sql(self, sql: str, *, display_cap: int) -> BrowseResult: ...
+        # raw path: CLI always; MCP only when --allow-raw-queries and `sql` given
+    def build_and_run(self, *, filters: dict, group_by, order_by, select, limit,
+                      allow_raw_queries: bool = False) -> BrowseResult: ...
+        # structured path (MCP)
 ```
 
 `run_sql`:
 
-1. **Guard** with sqlglot: parse with **`dialect="postgres"`** (the dialect that
-   round-trips polars' `NULLS LAST` and double-quoted identifiers — see step 2);
-   require exactly one statement and that it is a `SELECT` (reject any
-   DDL/DML/`PRAGMA`/`COPY`/`ATTACH`/multiple statements) → `BrowseError` with a
-   friendly message on failure.
-2. If the parsed statement has no `LIMIT` on the outer query, inject the safety
-   `LIMIT` (default 1000) on the AST and regenerate with **`.sql(dialect=
-   "postgres")`**, then flag `limit_injected`. **The dialect pin is load-bearing
-   (#3):** sqlglot's *default* dialect drops the `NULLS LAST` clause on
-   regeneration, and polars sorts NULLs *first* under a bare `DESC` — so a
-   default-dialect round-trip would silently reorder exactly the ranked queries
-   browse exists to run. Postgres preserves `NULLS LAST` and the `"user"`
-   quoting (verified on sqlglot 30.7 + polars 1.40.0). Parsing and regenerating
-   under the **same** dialect avoids any translation artifact.
-3. `arrow = store.scan()` → `pl.from_arrow(arrow)` as `df`.
-4. Register frames: `{frame_alias: df, "t": df, "t_by_table": df.explode("tables")}`.
-5. `pl.SQLContext(frames).execute(sql, eager=True)` → rows.
-6. Return `BrowseResult(rows, columns, total_matching=len(rows), grouped=False,
-   limit_injected=…)`.
+1. `arrow = store.scan()` → `pl.from_arrow(arrow)` as `df`.
+2. Register frames: `{frame_alias: df, "t": df, "t_by_table": df.explode("tables")}`.
+3. `result = pl.SQLContext(frames).execute(sql, eager=True)` — polars raises on
+   bad SQL (unknown column, unquoted `user`, etc.); the message is caught upstream
+   and surfaced to the caller verbatim. **No read-only guard** — mutation is
+   impossible (in-memory frames) and the CLI / flag-on MCP are trusted.
+4. `total = result.height`; `rows = result.head(display_cap)`;
+   `limit_applied = total > display_cap`.
+5. Return `BrowseResult(rows, columns, total_matching=total, grouped=False,
+   limit_applied)`. The raw path does not parse the SQL, so it reports `grouped=
+   False` and the header reads "Showing N of M rows" regardless of any `GROUP BY`
+   the author wrote; only `build_and_run` sets `grouped=True` (header "… of M
+   <group>s") because it knows it grouped.
 
-`build_and_run` (MCP): validate the structured params against the column /
-aggregate vocabulary (friendly errors: unknown column, `order_by tables`,
-grouped `select` naming a raw field, **`select raw_query` when
-`expose_raw_query` is false** — see Raw query exposure), **build the SQL string**
-(quoting all
-identifiers, choosing `t`/`t_by_table`, emitting the grouped aggregate set,
-`NULLS LAST`, `NULLIF`), compute `total_matching` via the same query minus
-`LIMIT`, then reuse `run_sql`'s executor. All of step-3-onward is pure
-polars/Arrow compute → directly unit-tested with a fake `scan`.
+**`LIMIT` is never injected into SQL.** The result is materialized in full
+(cheap at corpus scale), `total_matching = result.height`, and `limit`/`display_cap`
+is applied as a post-execution `.head()`. This removes all SQL rewriting (and thus
+any need for `sqlglot` or dialect round-tripping). A raw query's own `LIMIT` is
+honored by polars and simply lowers `height`.
+
+`build_and_run` (MCP structured): validate the typed filters and shape params
+against the column / aggregate vocabulary (friendly errors: unknown column,
+`order_by tables`, grouped `select` naming a raw field, **`select raw_query` when
+`allow_raw_queries` is false**), **build the SQL string** (quoting all
+identifiers, ANDing filters into `WHERE`, choosing `t`/`t_by_table`, emitting the
+grouped aggregate set, `NULLS LAST`, `NULLIF`), then call the same executor as
+`run_sql` with `display_cap=limit`. The builder emits **no `LIMIT`**. All of
+step-1-onward is pure polars/Arrow compute → directly unit-tested with a fake
+`scan`.
 
 `BrowseResult`: `rows: list[dict]`, `columns: list[str]`, `total_matching: int`,
-`grouped: bool`, `limit_injected: bool`. `latest_ts` serializes to ISO 8601 in
-the `--json` path. `None` cell values (NULL aggregates, missing scalars) render
-as `n/a` in the table formatter and `null` in `--json` — no `COALESCE` rewriting
-(#2, #7).
+`grouped: bool`, `limit_applied: bool`. `latest_ts` serializes to ISO 8601 in the
+`--json` path. `None` cell values (NULL aggregates, missing scalars) render as
+`n/a` in the table formatter and `null` in `--json` — no `COALESCE` rewriting.
 
 ### MCP — naming, registrar, family handler
 
@@ -331,40 +385,52 @@ def normalize_tool_name(engine_name: str, verb: str = "search") -> str:
 `browse_*` and `search_*` share the `_dbs_vector_registrations` namespace but
 cannot collide.
 
-**Registrar (`mcp/dynamic_tools.py`).** Sibling `register_browse_tools(mcp)`
-mirrors `register_search_tools`'s pre-flight (name pattern, collision, family
-resolution, idempotency) with two differences: it registers **only engines whose
-`resolved_family == "sql"`**, and passes `family.browse_description(engine_name)`.
-Invoked in `start_stdio_server()` (`mcp/server.py`) between
+**Registrar (`mcp/dynamic_tools.py`).** Sibling `register_browse_tools(mcp,
+allow_raw_queries)` mirrors `register_search_tools`'s pre-flight (name pattern,
+collision, family resolution, idempotency) with two differences: it registers
+**only engines whose `resolved_family == "sql"`**, and passes
+`family.browse_description(engine_name, allow_raw_queries)`. The `allow_raw_queries`
+flag selects the handler variant (with/without `sql`) and the description text.
+Invoked in `start_stdio_server(allow_raw_queries)` (`mcp/server.py`) between
 `register_search_tools(mcp)` and `register_discovery_tool(mcp)`.
 `register_search_tools` is also touched: its `description=` switches from
 `engine.description` to `family.search_description(engine_name)` (see Description
 Ownership).
 
+**Flag plumbing.** `dbs-vector mcp` (`cli.py`) gains
+`--allow-raw-queries` (`bool`, default `False`), passed to
+`start_stdio_server(allow_raw_queries=...)`, which forwards it to
+`register_browse_tools`. No global state — the flag is captured in the handler
+closure and the registrar argument.
+
 **Family handler (`mcp/families/sql.py`).** Add to `SqlFamily`:
 
-- `make_browse_handler(engine_name)` — async handler with the five structured
-  params. It:
+- `make_browse_handler(engine_name, allow_raw_queries)` — returns the matching
+  async handler variant. It:
   1. Builds `BrowseService(_services[engine_name].vector_store, frame_alias)` —
      reuses the already-initialized store (`_services[engine_name]` is a
      `SearchService`, `state.py:8`; store is `.vector_store`). **No embedder** —
      zero extra model load.
-  2. Runs `BrowseService.build_and_run(..., expose_raw_query=engine.expose_raw_query)`
-     (the per-engine gate, default false) inside a **single
-     `asyncio.to_thread` closure** — same shared-`checkout_latest`-handle
-     discipline as the search handler.
+  2. If `allow_raw_queries` and the call passed `sql`, runs
+     `BrowseService.run_sql(sql, display_cap=…)`; otherwise runs
+     `BrowseService.build_and_run(..., allow_raw_queries=allow_raw_queries)` —
+     both inside a **single `asyncio.to_thread` closure** (same
+     shared-`checkout_latest`-handle discipline as the search handler).
   3. Renders via `format_browse(BrowseResult)` reusing `render_with_budget` for
      the MCP byte budget (compact table).
-  4. Catches exceptions (sqlglot guard failure, polars error, bad params) and
-     returns the message as the tool result string so the LLM self-corrects —
-     never raises.
-- `browse_description(engine_name)` — family template + injected columns.
+  4. Catches exceptions (polars error, bad params, disallowed column) and returns
+     the message as the tool result string so the LLM self-corrects — never
+     raises.
+- `browse_description(engine_name, allow_raw_queries)` — family template +
+  injected columns; advertises `raw_query` and the `sql` param **only when the
+  flag is on**.
 
 ### CLI — `cli.py`
 
 New `@app.command() def browse(...)`: resolve engine, reject non-SQL with the
 available-SQL-engines list, build `BrowseService` (no embedder), call
-`run_sql(sql)`, print a table or `--json`.
+`run_sql(sql, display_cap=1000)`, print a table or `--json`. No flag, no column
+restrictions — the CLI is always full power.
 
 ## Description Ownership (config cleanup)
 
@@ -377,8 +443,8 @@ human summary.*
 
 **Protocol.** `SearchFamily` (`mcp/families/base.py`) gains
 `search_description(self, engine_name) -> str`. `SqlFamily` also has
-`browse_description(engine_name)`. Both `DocumentFamily` and `SqlFamily`
-implement `search_description`.
+`browse_description(engine_name, allow_raw_queries)`. Both `DocumentFamily` and
+`SqlFamily` implement `search_description`.
 
 **Composition — template from inert engine facts (no per-engine code map).** One
 hardcoded template per verb, variable bits filled from existing config fields, so
@@ -397,11 +463,12 @@ not recency or size" clause for both md engines (`md-granite` gains it). So the
 guarantee is "reproduces or strictly improves," for every family.
 `browse_description` is the analytic template (frames `t` / `t_by_table`,
 columns, the `"user"` quoting note, grouped aggregate names, "ranks by the chosen
-column, no query string").
+column, no query string"); it lists `raw_query` and documents the `sql` param
+**only when `allow_raw_queries` is on**.
 
 **Registrars source descriptions from the family, not config:**
 `register_search_tools` → `family.search_description(engine_name)`;
-`register_browse_tools` → `family.browse_description(engine_name)`.
+`register_browse_tools` → `family.browse_description(engine_name, allow_raw_queries)`.
 
 **`config.yaml` change.** `description:` shortens to a one-line summary, stays a
 required field, now consumed only by `list_engines` (`discovery.py:47`) + humans:
@@ -410,22 +477,22 @@ required field, now consumed only by `list_engines` (`discovery.py:47`) + humans
 description: "Slow-query fingerprints from a remote slow-log API (Gemma embeddings)."
 ```
 
-All six engine `description:` fields shorten the same way. The only
-`EngineConfig` (`config.py`) change is the new `expose_raw_query: bool = False`
-field (see **Raw query exposure**); `description` stays `description: str`.
+All six engine `description:` fields shorten the same way. `EngineConfig`
+(`config.py`) is **unchanged** (`description` stays `description: str`; the
+raw-query gate is a server CLI flag, not config).
 
 ## Error Handling
 
-- **Non-SELECT / multi-statement / DDL/DML** → rejected by the sqlglot guard with
-  a friendly "browse is read-only; use a single SELECT" message. MCP: returned as
-  tool text; CLI: `typer.echo` + `Exit(1)`.
-- **polars execution error** (bad column, syntax, unquoted `user`) → caught, the
-  polars message returned verbatim so the caller can fix it.
-- **Bad MCP structured params** (unknown column, `order_by tables`, grouped
+- **polars execution error** (bad column, syntax, unquoted `user`, etc.) →
+  caught, the polars message returned verbatim so the caller can fix it. MCP:
+  returned as tool text; CLI: `typer.echo` + `Exit(1)`. (No read-only guard
+  exists — mutation is impossible and the raw paths are trusted.)
+- **Bad MCP structured params** (unknown column/filter, `order_by tables`, grouped
   `select` naming a raw field) → validated before building SQL; friendly message.
-- **MCP `select raw_query` with `expose_raw_query` false** → rejected before any
-  scan with the "raw query text is not exposed on this engine" message (see Raw
-  query exposure). CLI is unaffected.
+- **MCP `select raw_query` (or a `sql` param) when `--allow-raw-queries` is off**
+  → the `raw_query` column is absent from the vocabulary (rejected with "raw query
+  text is not exposed; start the server with --allow-raw-queries"); the `sql`
+  param does not exist on the default handler variant at all. CLI is unaffected.
 - **Non-SQL engine** → rejected up front (browse is SQL-family only).
 - **Empty result** → "0 rows" message, not an error.
 
@@ -433,42 +500,47 @@ field (see **Raw query exposure**); `description` stays `description: str`.
 
 - **Unit (`tests/unit/test_browse_service.py`)** — against a fake `IVectorStore.scan`
   returning an in-memory Arrow table:
-  - `run_sql` guard: rejects `INSERT`/`UPDATE`/`DROP`/`PRAGMA`/`COPY`/`ATTACH`,
-    multi-statement; accepts a `SELECT`; injects safety `LIMIT` when absent **and
-    the injection preserves a `NULLS LAST` clause** (regression guard for #3 — a
-    default-dialect round-trip would drop it).
-  - `build_and_run`: params → expected SQL; grouped aggregate set incl.
-    `avg_ms_per_call` = `SUM(exec)/NULLIF(SUM(calls),0)`; **all-NULL group and
-    zero-denominator average yield `NULL`, rendered `n/a` in table / `null` in
-    JSON** (#2, #7); NULLs-last ordering, `total_matching` = groups (grouped) vs
-    rows (raw),
-    `t_by_table` selected for `group_by=tables`, rejections (unknown column,
-    `order_by tables`, grouped `select id`), `"user"` quoted.
-  - raw-query gate: `select=raw_query` rejected when `expose_raw_query=False`,
-    accepted when `True`; `browse_description` omits `raw_query` from advertised
-    columns when off and includes it when on; CLI `run_sql("SELECT raw_query …")`
-    is unaffected by the flag.
+  - `run_sql`: a `SELECT` executes; `total_matching = result.height`;
+    `result.head(display_cap)` truncates with `limit_applied` set; a query's own
+    `LIMIT` lowers `height`; mutation statements are a non-issue (frames are
+    in-memory — assert `DROP TABLE t` does not affect a subsequent `store.scan`).
+  - `build_and_run`: typed filters → expected `WHERE`; params → expected SQL; no
+    `LIMIT` emitted; grouped aggregate set incl. `avg_ms_per_call` =
+    `SUM(exec)/NULLIF(SUM(calls),0)`; **all-NULL group and zero-denominator
+    average yield `NULL`, rendered `n/a` in table / `null` in JSON**; NULLs-last
+    ordering; `total_matching` = groups (grouped) vs rows (raw);
+    `t_by_table` selected for `group_by=tables` / `table=` filter; rejections
+    (unknown column, `order_by tables`, grouped `select id`); `"user"` quoted.
+  - raw-query / flag gate: with `allow_raw_queries=False`, `select=raw_query`
+    rejected and the `sql` param absent from the handler schema; with `True`,
+    `raw_query` selectable and `sql` runs the raw path; `browse_description` omits
+    `raw_query`/`sql` when off and includes them when on; CLI `run_sql("SELECT
+    raw_query …")` works regardless.
 - **Unit (MCP)** — `make_browse_handler` formatting, byte-budget truncation,
-  guard/polars errors → error-string-not-exception, store sourced from
-  `_services[engine].vector_store`.
+  polars/param errors → error-string-not-exception, store sourced from
+  `_services[engine].vector_store`, handler variant matches the flag.
 - **Integration (`tests/integration/`)** — real tmpdir LanceDB seeded with a few
   `SqlChunk`s; `LanceDBStore.scan` projects out `vector`, sees `checkout_latest`
   updates; raw `run_sql` point lookup; grouped `build_and_run` by user and by
   table (via `t_by_table`) end-to-end.
 - **Unit (descriptions)** — `search_description` / `browse_description` compose
   the right source/embeddings phrases per engine; truncation note present;
-  unknown model/chunker fall back. Guards LLM-facing regression.
+  unknown model/chunker fall back; `browse_description` flag-on vs flag-off
+  difference. Guards LLM-facing regression.
 
 ## Defaults Summary
 
-- CLI: `--sql` required; safety `LIMIT 1000` appended if the SQL has none.
+- CLI: `--sql` required; full power; display cap 1000 rows (head, with a note).
 - MCP: `order_by` default `execution_time_ms:desc` (NULLS LAST); `limit` default
-  `10`.
+  `10` (display head).
+- `--allow-raw-queries` default **off**: structured-only MCP, no `raw_query`, no
+  `read_csv` constructable. On: adds the `sql` param + `raw_query` column for a
+  trusted local model. Server-level; no per-engine config field.
 - Frames: `t`, `t_by_table`, and the engine-name alias for `t`.
 - `vector` (and `workflow`) never read into the frame; `latest_ts` → ISO 8601 in
   `--json`.
-- `raw_query` exposure on MCP is gated by per-engine `expose_raw_query` (default
-  `false`); CLI is always unrestricted.
+- No `LIMIT` ever injected into SQL; `total_matching = result.height`, display via
+  `.head()`. No `sqlglot` in the browse path.
 - MCP grouped default columns: group cols, `fingerprints`, `calls`,
   `execution_time_ms`, `lock_time_sec`, `rows_examined`, `rows_sent`,
   `latest_ts`, `avg_ms_per_fingerprint`, `avg_ms_per_call`.
