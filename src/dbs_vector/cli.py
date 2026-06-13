@@ -1,10 +1,11 @@
 import os
-from typing import Annotated, Any
+from typing import Annotated
 
 import typer
 from loguru import logger
 
 from dbs_vector.config import settings
+from dbs_vector.infrastructure.storage.lancedb_engine import LanceDBStore
 from dbs_vector.logger import configure_logger
 from dbs_vector.services.bootstrap import EngineDeps, build_dependencies, build_store
 from dbs_vector.services.browse import BrowseService, result_to_json, result_to_table
@@ -83,7 +84,7 @@ def _build_dependencies(
         raise
 
 
-def _build_store(engine_name: str) -> Any:
+def _build_store(engine_name: str) -> LanceDBStore:
     """CLI-facing store-only builder: converts schema-mismatch to a typer exit."""
     try:
         return build_store(engine_name)

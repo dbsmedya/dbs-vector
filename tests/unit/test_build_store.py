@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import dbs_vector.services.bootstrap as boot
 
@@ -16,8 +16,6 @@ def test_build_store_does_not_construct_embedder(monkeypatch):
         def __init__(self, **kwargs):
             calls["store"] += 1
             captured.update(kwargs)
-
-    from unittest.mock import MagicMock
 
     engine_config = MagicMock()
     engine_config.model = "gemma-bf16"
@@ -38,3 +36,9 @@ def test_build_store_does_not_construct_embedder(monkeypatch):
     assert calls["store"] == 1
     assert captured["table_name"] == "query_vault"
     assert isinstance(store, _FakeStore)
+
+
+def test_build_store_unknown_engine_raises():
+    import pytest
+    with pytest.raises(ValueError, match="Unknown engine"):
+        boot.build_store("does-not-exist")
