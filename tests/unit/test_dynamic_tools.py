@@ -72,7 +72,8 @@ def test_register_search_tools_legacy_names_absent(fresh_mcp, _clean_settings):
     assert "search_sql_logs" not in tool_names
 
 
-def test_register_search_tools_uses_engine_description(fresh_mcp, _clean_settings):
+def test_register_search_tools_uses_family_description(fresh_mcp, _clean_settings):
+    """Tool description is sourced from family.search_description, not engine.description."""
     _clean_settings.engines = {"md": _make_engine("document", "Markdown & Prose")}
     _clean_settings.profiles = {
         "p": TuningProfile(max_token_length=2048, chunk_max_chars=0, batch_size=1)
@@ -81,7 +82,9 @@ def test_register_search_tools_uses_engine_description(fresh_mcp, _clean_setting
     dyn.register_search_tools(fresh_mcp)
 
     tool = next(t for t in fresh_mcp._tool_manager.list_tools() if t.name == "search_md")
-    assert tool.description == "Markdown & Prose"
+    # Description now comes from DocumentFamily.search_description, not engine.description
+    assert "Semantic search" in tool.description
+    assert tool.description != "Markdown & Prose"
 
 
 def test_invalid_engine_name_raises(fresh_mcp, _clean_settings):
