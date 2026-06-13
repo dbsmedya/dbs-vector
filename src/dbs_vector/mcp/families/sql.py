@@ -10,6 +10,11 @@ from dbs_vector.mcp.families.base import (
     embeddings_phrase,
     render_with_budget,
 )
+from dbs_vector.services.browse import (
+    BrowseResult,
+    BrowseService,
+    BrowseValidationError,
+)
 from dbs_vector.services.search import SearchService
 
 if TYPE_CHECKING:
@@ -54,6 +59,39 @@ def _fmt_tables(tables: Any) -> str:
     if isinstance(tables, list) and tables:
         return ", ".join(tables)
     return "n/a"
+
+
+def _fmt_cell(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, float):
+        return f"{value:,.3f}"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return f"{value:,}"
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value) if value else "n/a"
+    return str(value)
+
+
+def format_browse(result: BrowseResult) -> str:
+    """Render a BrowseResult under the MCP byte budget. One compact block per
+    row ('col=val | col=val'); None cells render as 'n/a'."""
+    if not result.rows:
+        return "0 rows matched."
+    noun = "groups" if result.grouped else "rows"
+    header = f"Showing {len(result.rows)} of {result.total_matching} {noun}:\n"
+
+    def _block(row: dict[str, Any]) -> str:
+        return " | ".join(f"{col}={_fmt_cell(row.get(col))}" for col in result.columns)
+
+    return render_with_budget(
+        header,
+        (_block(r) for r in result.rows),
+        RESPONSE_BUDGET_BYTES,
+        total=len(result.rows),
+    )
 
 
 def _sql_source_phrase(chunker_type: str) -> str:
@@ -270,5 +308,56 @@ class SqlFamily:
                 )
             except Exception as e:
                 return f"Search execution failed: {e}"
+
+        return handler
+
+    def make_browse_handler(self, engine_name: str, allow_raw_queries: bool) -> Any:
+        async def handler(
+            id: str | None = None,
+            content_hash: str | None = None,
+            user: str | None = None,
+            host: str | None = None,
+            source: str | None = None,
+            table: str | None = None,
+            min_calls: int | None = None,
+            min_execution_time_ms: float | None = None,
+            min_lock_time_sec: float | None = None,
+            group_by: str | None = None,
+            order_by: str = "execution_time_ms:desc",
+            select: str | None = None,
+            limit: int = 10,
+        ) -> str:
+            from loguru import logger
+
+            from dbs_vector.mcp.state import _services
+
+            service = _services.get(engine_name)
+            if service is None:
+                return f"Error: search service '{engine_name}' is not initialized."
+
+            frame_alias = engine_name.replace("-", "_")
+            browse = BrowseService(service.vector_store, frame_alias)
+            filters = {
+                "id": id, "content_hash": content_hash, "user": user,
+                "host": host, "source": source, "table": table,
+                "min_calls": min_calls,
+                "min_execution_time_ms": min_execution_time_ms,
+                "min_lock_time_sec": min_lock_time_sec,
+            }
+
+            def _run() -> BrowseResult:
+                return browse.build_and_run(
+                    filters=filters, group_by=group_by, order_by=order_by,
+                    select=select, limit=limit, allow_raw_queries=allow_raw_queries,
+                )
+
+            try:
+                result = await asyncio.to_thread(_run)
+                return format_browse(result)
+            except BrowseValidationError as e:
+                return str(e)                       # safe, author-controlled
+            except Exception as e:                  # infra: log full, return generic
+                logger.warning("browse '{}' failed: {}", engine_name, e)
+                return "browse execution failed (see server logs)."
 
         return handler

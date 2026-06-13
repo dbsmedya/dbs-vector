@@ -38,3 +38,21 @@ async def test_search_tools_use_family_description(patched):
     tool = next(t for t in await mcp.list_tools() if t.name == "search_sql_api")
     assert "min_time" in tool.description          # family prose, not config's "short summary"
     assert tool.description != "short summary"
+
+
+@pytest.mark.asyncio
+async def test_register_browse_tools_only_sql_engines(patched):
+    mcp = FastMCP("t")
+    dyn.register_browse_tools(mcp, allow_raw_queries=False)
+    tools = {t.name for t in await mcp.list_tools()}
+    assert "browse_sql_api" in tools
+    assert "browse_md" not in tools          # md is not the sql family
+
+
+@pytest.mark.asyncio
+async def test_register_browse_tools_idempotent(patched):
+    mcp = FastMCP("t")
+    dyn.register_browse_tools(mcp, allow_raw_queries=False)
+    dyn.register_browse_tools(mcp, allow_raw_queries=False)   # no raise
+    tools = {t.name for t in await mcp.list_tools()}
+    assert "browse_sql_api" in tools
