@@ -10,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 
 from dbs_vector.config import settings
 from dbs_vector.core.naming import ENGINE_NAME_PATTERN, normalize_tool_name
+from dbs_vector.mcp.families.base import BrowseFamily
 from dbs_vector.mcp.families.registry import FamilyRegistry
 
 
@@ -97,7 +98,7 @@ def register_browse_tools(mcp: FastMCP, allow_raw_queries: bool) -> None:
     mcp_any: Any = mcp
     if not hasattr(mcp_any, "_dbs_vector_registrations"):
         mcp_any._dbs_vector_registrations = {}
-    registrations: dict[str, tuple[str, str]] = mcp_any._dbs_vector_registrations
+    registrations: dict[str, tuple] = mcp_any._dbs_vector_registrations
 
     seen: dict[str, str] = {}
     resolved: list[tuple[str, str, str, Any]] = []
@@ -121,13 +122,20 @@ def register_browse_tools(mcp: FastMCP, allow_raw_queries: bool) -> None:
 
     for engine_name, tool_name, family_key, engine in resolved:
         family = FamilyRegistry.get(family_key)
+        if not isinstance(family, BrowseFamily):
+            raise RuntimeError(
+                f"Family '{family_key}' for engine '{engine_name}' does not "
+                f"support browse (missing make_browse_handler/browse_description)."
+            )
         prior = registrations.get(tool_name)
+        current = (engine_name, family_key, allow_raw_queries)
         if prior is not None:
-            if prior == (engine_name, family_key):
+            if prior == current:
                 continue
             raise RuntimeError(
-                f"Stale tool registration for '{tool_name}': was {prior}, "
-                f"now engine={engine_name} family={family_key}."
+                f"Stale browse tool registration for '{tool_name}': previously "
+                f"{prior}, now {current}. Reset the FastMCP instance instead of "
+                f"re-registering with different settings."
             )
         handler = family.make_browse_handler(engine_name, allow_raw_queries)
         mcp.add_tool(
@@ -135,4 +143,4 @@ def register_browse_tools(mcp: FastMCP, allow_raw_queries: bool) -> None:
             name=tool_name,
             description=family.browse_description(engine_name, engine, allow_raw_queries),
         )
-        registrations[tool_name] = (engine_name, family_key)
+        registrations[tool_name] = current

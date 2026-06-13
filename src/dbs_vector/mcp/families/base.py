@@ -1,7 +1,7 @@
 """SearchFamily Protocol: contract that each search family implements."""
 
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from dbs_vector.services.search import SearchService
 
@@ -19,8 +19,9 @@ def _byte_len(value: str) -> int:
 
 def embeddings_phrase(model: str) -> str:
     """Human label for an embedding model key, shared across families."""
-    return {"granite-r2": "Granite embeddings",
-            "gemma-bf16": "Gemma embeddings"}.get(model, f"{model} embeddings")
+    return {"granite-r2": "Granite embeddings", "gemma-bf16": "Gemma embeddings"}.get(
+        model, f"{model} embeddings"
+    )
 
 
 def render_with_budget(
@@ -122,4 +123,24 @@ class SearchFamily(Protocol):
     def make_handler(self, engine_name: str) -> Any:
         """Build a per-engine async handler whose explicit signature FastMCP
         will introspect for the tool schema."""
+        ...
+
+
+@runtime_checkable
+class BrowseFamily(Protocol):
+    """A family that additionally exposes a non-semantic `browse` MCP tool.
+
+    Only SQL-style families implement this; document families do not. Declared
+    separately from SearchFamily so the browse registrar can narrow the
+    FamilyRegistry's SearchFamily to a browse-capable family with isinstance().
+    """
+
+    def make_browse_handler(self, engine_name: str, allow_raw_queries: bool) -> Any:
+        """Build a per-engine async browse handler for FastMCP."""
+        ...
+
+    def browse_description(
+        self, engine_name: str, engine: "EngineConfig", allow_raw_queries: bool
+    ) -> str:
+        """Compose the LLM-facing description for this engine's browse tool."""
         ...
