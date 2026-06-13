@@ -31,6 +31,7 @@
 **Modified files:**
 - `src/dbs_vector/core/ports.py` — add `scan()` to `IVectorStore`.
 - `src/dbs_vector/infrastructure/storage/lancedb_engine.py` — implement `scan()`.
+- `src/dbs_vector/services/bootstrap.py` — add `build_store()` (store-only; no embedder/chunker).
 - `src/dbs_vector/core/naming.py` — add `verb` param to `normalize_tool_name`.
 - `src/dbs_vector/mcp/families/base.py` — add `search_description` to `SearchFamily` Protocol.
 - `src/dbs_vector/mcp/families/document.py` — implement `search_description`.
@@ -799,9 +800,7 @@ git commit -m "feat(browse): parameterize normalize_tool_name with verb"
 Create `tests/unit/test_browse_descriptions.py`:
 
 ```python
-import pytest
-
-from dbs_vector.config import EngineConfig, settings
+from dbs_vector.config import EngineConfig
 from dbs_vector.mcp.families.document import DocumentFamily
 from dbs_vector.mcp.families.sql import SqlFamily
 
@@ -816,25 +815,8 @@ def _engine(**over) -> EngineConfig:
     return EngineConfig(**base)
 
 
-@pytest.fixture(autouse=True)
-def _engines(monkeypatch):
-    monkeypatch.setitem(
-        settings.engines, "sql-api",
-        _engine(chunker_type="api", model="gemma-bf16"),
-    )
-    monkeypatch.setitem(
-        settings.engines, "sql-granite",
-        _engine(chunker_type="duckdb", model="granite-r2"),
-    )
-    monkeypatch.setitem(
-        settings.engines, "md",
-        _engine(mapper_type="document", chunker_type="document",
-                model="gemma-bf16", tuning_profile="gemma-md"),
-    )
-
-
 def test_sql_search_description_keeps_filter_docs_and_source_phrase():
-    d = SqlFamily().search_description("sql-api")
+    d = SqlFamily().search_description("sql-api", _engine(chunker_type="api", model="gemma-bf16"))
     assert "min_time" in d and "min_lock_time" in d and "table_filter" in d
     assert "API" in d            # source phrase from chunker_type="api"
     assert "Gemma" in d          # embeddings phrase from model
@@ -842,25 +824,34 @@ def test_sql_search_description_keeps_filter_docs_and_source_phrase():
 
 
 def test_sql_search_description_duckdb_granite_phrases():
-    d = SqlFamily().search_description("sql-granite")
+    d = SqlFamily().search_description(
+        "sql-granite", _engine(chunker_type="duckdb", model="granite-r2")
+    )
     assert "DuckDB" in d
     assert "Granite" in d
 
 
 def test_document_search_description_similarity_clause():
-    d = DocumentFamily().search_description("md")
+    d = DocumentFamily().search_description(
+        "md", _engine(mapper_type="document", chunker_type="document",
+                      model="gemma-bf16", tuning_profile="gemma-md")
+    )
     assert "similarity" in d.lower()
 
 
 def test_browse_description_off_omits_raw_query():
-    d = SqlFamily().browse_description("sql-api", allow_raw_queries=False)
+    d = SqlFamily().browse_description(
+        "sql-api", _engine(chunker_type="api"), allow_raw_queries=False
+    )
     assert "raw_query" not in d
     assert "group_by" in d and "order_by" in d
     assert "execution_time_ms" in d
 
 
 def test_browse_description_on_includes_raw_query():
-    d = SqlFamily().browse_description("sql-api", allow_raw_queries=True)
+    d = SqlFamily().browse_description(
+        "sql-api", _engine(chunker_type="api"), allow_raw_queries=True
+    )
     assert "raw_query" in d
 ```
 
@@ -871,19 +862,39 @@ Expected: FAIL — `AttributeError: 'SqlFamily' object has no attribute 'search_
 
 - [ ] **Step 3: Add `search_description` to the `SearchFamily` Protocol**
 
-In `src/dbs_vector/mcp/families/base.py`, add to the `SearchFamily` Protocol (after `format_results`, before `make_handler`):
+In `src/dbs_vector/mcp/families/base.py`, add a `TYPE_CHECKING` import at the top (after the existing imports):
 
 ```python
-    def search_description(self, engine_name: str) -> str:
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dbs_vector.config import EngineConfig
+```
+
+Then add to the `SearchFamily` Protocol (after `format_results`, before `make_handler`):
+
+```python
+    def search_description(self, engine_name: str, engine: "EngineConfig") -> str:
         """Compose the LLM-facing description for this engine's search tool
-        from inert config facts (chunker_type, model). Families own this prose;
-        config.yaml holds only a short human summary."""
+        from inert config facts (chunker_type, model) on the passed `engine`.
+        Takes `engine` directly (not via the global settings) so it composes
+        purely from its arguments — no hidden global read, trivially testable.
+        Families own this prose; config.yaml holds only a short human summary."""
         ...
 ```
 
 - [ ] **Step 4: Implement composition helpers + `search_description` in `DocumentFamily`**
 
 In `src/dbs_vector/mcp/families/document.py`, add a module-level helper and the method.
+
+At the top, add a `TYPE_CHECKING` import (alongside the existing imports):
+
+```python
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dbs_vector.config import EngineConfig
+```
 
 At module level (after imports):
 
@@ -896,10 +907,7 @@ def _embeddings_phrase(model: str) -> str:
 Inside `class DocumentFamily`, add:
 
 ```python
-    def search_description(self, engine_name: str) -> str:
-        from dbs_vector.config import settings
-
-        engine = settings.engines[engine_name]
+    def search_description(self, engine_name: str, engine: "EngineConfig") -> str:
         emb = _embeddings_phrase(engine.model)
         return (
             f"Semantic search over Markdown documentation chunks ({emb}). "
@@ -926,13 +934,19 @@ def _sql_embeddings_phrase(model: str) -> str:
             "gemma-bf16": "Gemma embeddings"}.get(model, f"{model} embeddings")
 ```
 
+Add a `TYPE_CHECKING` import at the top (alongside the existing imports):
+
+```python
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dbs_vector.config import EngineConfig
+```
+
 Inside `class SqlFamily` (anywhere among the methods):
 
 ```python
-    def search_description(self, engine_name: str) -> str:
-        from dbs_vector.config import settings
-
-        engine = settings.engines[engine_name]
+    def search_description(self, engine_name: str, engine: "EngineConfig") -> str:
         source = _sql_source_phrase(engine.chunker_type)
         emb = _sql_embeddings_phrase(engine.model)
         return (
@@ -950,10 +964,9 @@ Inside `class SqlFamily` (anywhere among the methods):
             f"use the sibling `browse_{engine_name.replace('-', '_')}` tool."
         )
 
-    def browse_description(self, engine_name: str, allow_raw_queries: bool) -> str:
-        from dbs_vector.config import settings
-
-        engine = settings.engines[engine_name]
+    def browse_description(
+        self, engine_name: str, engine: "EngineConfig", allow_raw_queries: bool
+    ) -> str:
         source = _sql_source_phrase(engine.chunker_type)
         cols = ("id, content_hash, user, host, source, tables, calls, "
                 "execution_time_ms, lock_time_sec, rows_examined, rows_sent, "
@@ -1036,24 +1049,6 @@ def patched(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_register_browse_tools_only_sql_engines(patched):
-    mcp = FastMCP("t")
-    dyn.register_browse_tools(mcp, allow_raw_queries=False)
-    tools = {t.name for t in await mcp.list_tools()}
-    assert "browse_sql_api" in tools
-    assert "browse_md" not in tools          # md is not the sql family
-
-
-@pytest.mark.asyncio
-async def test_register_browse_tools_idempotent(patched):
-    mcp = FastMCP("t")
-    dyn.register_browse_tools(mcp, allow_raw_queries=False)
-    dyn.register_browse_tools(mcp, allow_raw_queries=False)   # no raise
-    tools = {t.name for t in await mcp.list_tools()}
-    assert "browse_sql_api" in tools
-
-
-@pytest.mark.asyncio
 async def test_search_tools_use_family_description(patched):
     mcp = FastMCP("t")
     dyn.register_search_tools(mcp)
@@ -1062,10 +1057,15 @@ async def test_search_tools_use_family_description(patched):
     assert tool.description != "short summary"
 ```
 
+The browse *registration* tests live in Task 7 (they require `make_browse_handler`,
+implemented there), keeping every Task-6 commit green. Note `patched` monkeypatches
+`dyn.settings`; the description methods take `engine` as an argument (Task 5), so
+they compose from the patched engine objects with no separate global read.
+
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/unit/test_register_browse_tools.py -v`
-Expected: FAIL — `AttributeError: module ... has no attribute 'register_browse_tools'`, and the description test fails (still uses `engine.description`).
+Run: `uv run pytest tests/unit/test_register_browse_tools.py::test_search_tools_use_family_description -v`
+Expected: FAIL — the description still comes from `engine.description` ("short summary"), so the `min_time` assertion fails.
 
 - [ ] **Step 3: Switch `register_search_tools` to the family description**
 
@@ -1084,11 +1084,12 @@ In `src/dbs_vector/mcp/dynamic_tools.py`, in `register_search_tools`, change the
 to:
 
 ```python
+        engine = settings.engines[engine_name]
         handler = family.make_handler(engine_name)
         mcp.add_tool(
             handler,
             name=tool_name,
-            description=family.search_description(engine_name),
+            description=family.search_description(engine_name, engine),
         )
 ```
 
@@ -1111,7 +1112,7 @@ def register_browse_tools(mcp: FastMCP, allow_raw_queries: bool) -> None:
     registrations: dict[str, tuple[str, str]] = mcp_any._dbs_vector_registrations
 
     seen: dict[str, str] = {}
-    resolved: list[tuple[str, str, str]] = []
+    resolved: list[tuple[str, str, str, Any]] = []
     for engine_name, engine in settings.engines.items():
         if engine.resolved_family != "sql":
             continue
@@ -1128,9 +1129,9 @@ def register_browse_tools(mcp: FastMCP, allow_raw_queries: bool) -> None:
         seen[tool_name] = engine_name
         family_key = engine.resolved_family
         FamilyRegistry.get(family_key)
-        resolved.append((engine_name, tool_name, family_key))
+        resolved.append((engine_name, tool_name, family_key, engine))
 
-    for engine_name, tool_name, family_key in resolved:
+    for engine_name, tool_name, family_key, engine in resolved:
         family = FamilyRegistry.get(family_key)
         prior = registrations.get(tool_name)
         if prior is not None:
@@ -1144,17 +1145,17 @@ def register_browse_tools(mcp: FastMCP, allow_raw_queries: bool) -> None:
         mcp.add_tool(
             handler,
             name=tool_name,
-            description=family.browse_description(engine_name, allow_raw_queries),
+            description=family.browse_description(engine_name, engine, allow_raw_queries),
         )
         registrations[tool_name] = (engine_name, family_key)
 ```
 
-Note: `make_browse_handler` is implemented in Task 7; this task's tests stub the SQL engine but only assert *registration* — so add a minimal placeholder to `SqlFamily` now if Task 7 has not run yet. To keep tasks independent, implement Task 7 before running this task's `register_browse_tools` tools-listing tests, OR add the real `make_browse_handler` here. **Run Task 7 immediately after Task 6** (they are paired). The `test_search_tools_use_family_description` test passes independently.
+Note: `register_browse_tools` calls `family.make_browse_handler`, implemented in Task 7. That's fine — no test committed in *this* task exercises that path (the browse-registration tests are in Task 7). The code is committed here; its tests run green in Task 7. **Run Task 7 immediately after Task 6** (they are paired).
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [ ] **Step 5: Run the committed test to verify it passes**
 
 Run: `uv run pytest tests/unit/test_register_browse_tools.py::test_search_tools_use_family_description -v`
-Expected: PASS. (The `browse_*` registration tests pass once Task 7 adds `make_browse_handler`.)
+Expected: PASS — the only test in this file so far; it asserts the search tool description now comes from the family.
 
 - [ ] **Step 6: Commit**
 
@@ -1370,28 +1371,133 @@ Add the handler factory inside `class SqlFamily`:
 Run: `uv run pytest tests/unit/test_browse_mcp_handler.py -v`
 Expected: PASS (all four).
 
-- [ ] **Step 5: Run the paired Task-6 browse registration tests**
+- [ ] **Step 5: Add the browse-registration tests (now that `make_browse_handler` exists)**
 
-Run: `uv run pytest tests/unit/test_register_browse_tools.py -v`
-Expected: PASS (now that `make_browse_handler` exists).
+Append to `tests/unit/test_register_browse_tools.py`:
 
-- [ ] **Step 6: Commit**
+```python
+@pytest.mark.asyncio
+async def test_register_browse_tools_only_sql_engines(patched):
+    mcp = FastMCP("t")
+    dyn.register_browse_tools(mcp, allow_raw_queries=False)
+    tools = {t.name for t in await mcp.list_tools()}
+    assert "browse_sql_api" in tools
+    assert "browse_md" not in tools          # md is not the sql family
+
+
+@pytest.mark.asyncio
+async def test_register_browse_tools_idempotent(patched):
+    mcp = FastMCP("t")
+    dyn.register_browse_tools(mcp, allow_raw_queries=False)
+    dyn.register_browse_tools(mcp, allow_raw_queries=False)   # no raise
+    tools = {t.name for t in await mcp.list_tools()}
+    assert "browse_sql_api" in tools
+```
+
+- [ ] **Step 6: Run the browse handler + registration tests**
+
+Run: `uv run pytest tests/unit/test_browse_mcp_handler.py tests/unit/test_register_browse_tools.py -v`
+Expected: PASS (handler tests + both registration tests now that `make_browse_handler` exists).
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/dbs_vector/mcp/families/sql.py tests/unit/test_browse_mcp_handler.py
+git add src/dbs_vector/mcp/families/sql.py tests/unit/test_browse_mcp_handler.py tests/unit/test_register_browse_tools.py
 git commit -m "feat(browse): SqlFamily.make_browse_handler + format_browse with error sanitization"
 ```
 
 ---
 
-## Task 8: Server flag plumbing + CLI `browse` command
+## Task 8: Store-only bootstrap + CLI `browse` command + server flag
+
+`browse` needs only the store — never the embedder or chunker. The existing
+`build_dependencies` unconditionally constructs `MLXEmbedder` (`bootstrap.py:45`)
+and a chunker (`:55`), so reusing it for the CLI would pay the full model-load
+cost and could fail for MLX/model reasons on a browse-only invocation. This task
+adds a store-only factory first, then wires the CLI command to it. (The MCP path
+already reuses the pre-loaded `_services[engine].vector_store`, so it needs no
+embedder either.)
 
 **Files:**
+- Modify: `src/dbs_vector/services/bootstrap.py` (add `build_store`)
 - Modify: `src/dbs_vector/mcp/server.py`
-- Modify: `src/dbs_vector/cli.py` (the `mcp` command ~209-237, and a new `browse` command after `search` ~206)
-- Test: `tests/unit/test_cli_browse.py` (new)
+- Modify: `src/dbs_vector/cli.py` (a `_build_store` wrapper, a new `browse` command after `search` ~206, and `--allow-raw-queries` on the `mcp` command ~209-237)
+- Test: `tests/unit/test_build_store.py` (new), `tests/unit/test_cli_browse.py` (new)
 
-- [ ] **Step 1: Write failing tests for the CLI `browse` command**
+- [ ] **Step 1: Write a failing test that `build_store` constructs NO embedder**
+
+Create `tests/unit/test_build_store.py`:
+
+```python
+import dbs_vector.services.bootstrap as boot
+
+
+def test_build_store_does_not_construct_embedder(monkeypatch, tmp_path):
+    calls = {"embedder": 0, "store": 0}
+
+    def _fake_embedder(*a, **k):
+        calls["embedder"] += 1
+        raise AssertionError("build_store must NOT construct an embedder")
+
+    captured = {}
+
+    class _FakeStore:
+        def __init__(self, **kwargs):
+            calls["store"] += 1
+            captured.update(kwargs)
+
+    monkeypatch.setattr(boot, "MLXEmbedder", _fake_embedder)
+    monkeypatch.setattr(boot, "LanceDBStore", _FakeStore)
+
+    store = boot.build_store("sql-api")     # sql-api must exist in config.yaml
+
+    assert calls["embedder"] == 0
+    assert calls["store"] == 1
+    assert captured["table_name"] == "query_vault"
+    assert isinstance(store, _FakeStore)
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `uv run pytest tests/unit/test_build_store.py -v`
+Expected: FAIL — `AttributeError: module 'dbs_vector.services.bootstrap' has no attribute 'build_store'`.
+
+- [ ] **Step 3: Implement `build_store`**
+
+In `src/dbs_vector/services/bootstrap.py`, add after `build_dependencies`:
+
+```python
+def build_store(engine_name: str) -> LanceDBStore:
+    """Resolve ONLY the vector store for an engine — no embedder, no chunker.
+
+    For read paths (browse) that never embed. Avoids MLX model load and the
+    cost/failure modes of constructing a chunker. The mapper (hence the table
+    schema) and vector_dimension come from the engine's model contract.
+    """
+    if engine_name not in settings.engines:
+        raise ValueError(
+            f"Unknown engine: '{engine_name}'. "
+            f"Check {os.environ.get('DBS_CONFIG_FILE', 'config.yaml')}."
+        )
+    engine = settings.engines[engine_name]
+    contract = ModelRegistry.get(engine.model)
+    MapperClass = ComponentRegistry.get_mapper(engine.mapper_type)
+    mapper = MapperClass(vector_dimension=contract.vector_dimension)
+    return LanceDBStore(
+        db_path=settings.db_path,
+        table_name=engine.table_name,
+        vector_dimension=contract.vector_dimension,
+        mapper=mapper,
+        nprobes=settings.nprobes,
+    )
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `uv run pytest tests/unit/test_build_store.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Write failing tests for the CLI `browse` command**
 
 Create `tests/unit/test_cli_browse.py`:
 
@@ -1413,22 +1519,14 @@ class _FakeStore:
         return pa.table({"id": ["A", "B"], "calls": [10, 5]})
 
 
-class _FakeDeps:
-    store = _FakeStore()
-    embedder = None
-
-
 @pytest.fixture
 def patched(monkeypatch):
-    monkeypatch.setattr(cli_mod.settings, "engines",
-                        {"sql-api": object(), "md": object()}, raising=False)
-    # mark sql-api as sql-family, md as document
     class _E:
         def __init__(self, fam):
             self.resolved_family = fam
     monkeypatch.setattr(cli_mod.settings, "engines",
                         {"sql-api": _E("sql"), "md": _E("document")}, raising=False)
-    monkeypatch.setattr(cli_mod, "_build_dependencies", lambda name: _FakeDeps())
+    monkeypatch.setattr(cli_mod, "_build_store", lambda name: _FakeStore())
 
 
 def test_browse_table_output(patched):
@@ -1452,12 +1550,12 @@ def test_browse_rejects_non_sql_engine(patched):
     assert "sql" in res.stdout.lower()
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 6: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/test_cli_browse.py -v`
 Expected: FAIL — no `browse` command (`exit_code == 2`, "No such command").
 
-- [ ] **Step 3: Add the CLI `browse` command + a table renderer**
+- [ ] **Step 7: Add the CLI `browse` command + a table renderer**
 
 In `src/dbs_vector/services/browse.py`, add a plain-text table renderer (used by the CLI):
 
@@ -1489,8 +1587,27 @@ def result_to_table(result: BrowseResult) -> str:
 In `src/dbs_vector/cli.py`, add the imports near the top (with the other service imports):
 
 ```python
+from dbs_vector.services.bootstrap import build_store
 from dbs_vector.services.browse import BrowseService, result_to_json, result_to_table
 ```
+
+Add a `_build_store` CLI wrapper next to `_build_dependencies` (mirrors its
+schema-mismatch → typer.Exit handling):
+
+```python
+def _build_store(engine_name: str) -> Any:
+    """CLI-facing store-only builder: converts schema-mismatch to a typer exit."""
+    try:
+        return build_store(engine_name)
+    except ValueError as e:
+        if "Schema mismatch" in str(e):
+            typer.echo(f"\n[!] Database Error: {e}", err=True)
+            raise typer.Exit(code=1) from e
+        raise
+```
+
+(Add `from typing import Any` to the imports if not already present — `cli.py`
+currently imports only `Annotated` from `typing`.)
 
 Add the new command after the `search` command (after line ~206):
 
@@ -1529,9 +1646,9 @@ def browse(
         )
         raise typer.Exit(code=1)
 
-    deps = _build_dependencies(engine_name)
+    store = _build_store(engine_name)
     frame_alias = engine_name.replace("-", "_")
-    service = BrowseService(deps.store, frame_alias)
+    service = BrowseService(store, frame_alias)
     try:
         result = service.run_sql(sql)
     except Exception as e:
@@ -1544,12 +1661,12 @@ def browse(
         typer.echo(result_to_table(result))
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 8: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_cli_browse.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Wire `--allow-raw-queries` into the server**
+- [ ] **Step 9: Wire `--allow-raw-queries` into the server**
 
 In `src/dbs_vector/mcp/server.py`, change the imports and `start_stdio_server`:
 
@@ -1586,16 +1703,16 @@ and change the call (line ~234) from `start_stdio_server()` to:
         start_stdio_server(allow_raw_queries=allow_raw_queries)
 ```
 
-- [ ] **Step 6: Verify server wiring imports cleanly**
+- [ ] **Step 10: Verify server wiring imports cleanly**
 
 Run: `uv run python -c "from dbs_vector.mcp.server import start_stdio_server; from dbs_vector.cli import app; print('ok')"`
 Expected: prints `ok` (no import/syntax errors).
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
-git add src/dbs_vector/mcp/server.py src/dbs_vector/cli.py src/dbs_vector/services/browse.py tests/unit/test_cli_browse.py
-git commit -m "feat(browse): CLI browse command + --allow-raw-queries server flag"
+git add src/dbs_vector/services/bootstrap.py src/dbs_vector/mcp/server.py src/dbs_vector/cli.py src/dbs_vector/services/browse.py tests/unit/test_build_store.py tests/unit/test_cli_browse.py
+git commit -m "feat(browse): store-only bootstrap + CLI browse command + --allow-raw-queries flag"
 ```
 
 ---
@@ -1759,7 +1876,12 @@ git commit -m "test(browse): fix description-regression assertions; green suite"
 
 ## Self-Review (completed during planning)
 
-**Spec coverage:** scan port (T1), polars execution core + run_sql (T2), build_and_run with bound-value filters + curated aggregates + validation + injection guard (T3), verb naming (T4), family-owned descriptions incl. raw_query gating (T5), browse registrar + search-description switch (T6), MCP handler with error sanitization (T7), server flag + CLI command + uncapped export (T8), config shortening (T9), integration incl. checkout_latest (T10), validation sweep (T11). All spec sections map to a task.
+**Spec coverage:** scan port (T1), polars execution core + run_sql (T2), build_and_run with bound-value filters + curated aggregates + validation + injection guard (T3), verb naming (T4), family-owned descriptions incl. raw_query gating (T5), browse registrar + search-description switch (T6), MCP handler with error sanitization (T7), store-only bootstrap + CLI command + uncapped export + server flag (T8), config shortening (T9), integration incl. checkout_latest (T10), validation sweep (T11). All spec sections map to a task.
+
+**Review fixes applied:**
+- **Embedder-free CLI:** Task 8 adds `build_store()` (store only — no `MLXEmbedder`, no chunker) and a `_build_store` CLI wrapper, with a test asserting no embedder is constructed. CLI `browse` no longer pays model-load cost or risks MLX failures. (MCP already reuses the pre-loaded store.)
+- **Descriptions take `engine`:** `search_description(engine_name, engine)` and `browse_description(engine_name, engine, allow_raw_queries)` receive the `EngineConfig` from the registrar (which already holds it) instead of re-reading the global `settings`. Tests pass a constructed `EngineConfig` — no global-state monkeypatch mismatch.
+- **Green commits:** the browse-*registration* tests moved to Task 7 (where `make_browse_handler` exists); Task 6 commits only the search-description test, which passes immediately.
 
 **Deviations from spec prose (intentional, verified):**
 - Grouped all-null `SUM` → `0.0` (not `NULL`); only `NULLIF` div-by-zero → `NULL`. Tests assert the real behavior. The formatter still renders `None` → `n/a`.
@@ -1768,4 +1890,4 @@ git commit -m "test(browse): fix description-regression assertions; green suite"
 
 **Placeholder scan:** none — every code step is complete.
 
-**Type consistency:** `BrowseService(store, frame_alias)`, `run_sql(sql)`, `build_and_run(*, filters, group_by, order_by, select, limit, allow_raw_queries)`, `BrowseResult(rows, columns, total_matching, grouped, limit_applied)`, `make_browse_handler(engine_name, allow_raw_queries)`, `browse_description(engine_name, allow_raw_queries)`, `register_browse_tools(mcp, allow_raw_queries)`, `start_stdio_server(allow_raw_queries)`, `normalize_tool_name(engine_name, verb)` — consistent across all tasks.
+**Type consistency:** `BrowseService(store, frame_alias)`, `run_sql(sql)`, `build_and_run(*, filters, group_by, order_by, select, limit, allow_raw_queries)`, `BrowseResult(rows, columns, total_matching, grouped, limit_applied)`, `build_store(engine_name)`, `make_browse_handler(engine_name, allow_raw_queries)`, `search_description(engine_name, engine)`, `browse_description(engine_name, engine, allow_raw_queries)`, `register_browse_tools(mcp, allow_raw_queries)`, `start_stdio_server(allow_raw_queries)`, `normalize_tool_name(engine_name, verb)` — consistent across all tasks.
