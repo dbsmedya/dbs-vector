@@ -25,27 +25,76 @@ from dbs_vector.core.ports import IVectorStore
 # Scalar columns selectable on the MCP path (raw_query gated separately;
 # vector/workflow never present in the frame).
 _SCALAR_COLUMNS = (
-    "id", "content_hash", "user", "host", "source", "tables",
-    "calls", "execution_time_ms", "lock_time_sec",
-    "rows_examined", "rows_sent", "latest_ts", "text",
+    "id",
+    "content_hash",
+    "user",
+    "host",
+    "source",
+    "tables",
+    "calls",
+    "execution_time_ms",
+    "lock_time_sec",
+    "rows_examined",
+    "rows_sent",
+    "latest_ts",
+    "text",
 )
 # Aggregate output names produced in grouped mode.
 _GROUP_AGGREGATES = (
-    "fingerprints", "calls", "execution_time_ms", "lock_time_sec",
-    "rows_examined", "rows_sent", "latest_ts",
-    "avg_ms_per_fingerprint", "avg_ms_per_call",
+    "fingerprints",
+    "calls",
+    "execution_time_ms",
+    "lock_time_sec",
+    "rows_examined",
+    "rows_sent",
+    "latest_ts",
+    "avg_ms_per_fingerprint",
+    "avg_ms_per_call",
 )
+# SQL expression emitted per grouped-aggregate output column. Keys MUST match
+# _GROUP_AGGREGATES so a new aggregate name cannot enter the vocabulary without
+# a corresponding SQL expression (asserted at import).
+_AGG_SQL = {
+    "fingerprints": "COUNT(*) AS fingerprints",
+    "calls": 'SUM("calls") AS calls',
+    "execution_time_ms": 'SUM("execution_time_ms") AS execution_time_ms',
+    "lock_time_sec": 'SUM("lock_time_sec") AS lock_time_sec',
+    "rows_examined": 'SUM("rows_examined") AS rows_examined',
+    "rows_sent": 'SUM("rows_sent") AS rows_sent',
+    "latest_ts": 'MAX("latest_ts") AS latest_ts',
+    "avg_ms_per_fingerprint":
+        'SUM("execution_time_ms")/NULLIF(COUNT(*),0) AS avg_ms_per_fingerprint',
+    "avg_ms_per_call":
+        'SUM("execution_time_ms")/NULLIF(SUM("calls"),0) AS avg_ms_per_call',
+}
+assert set(_AGG_SQL) == set(_GROUP_AGGREGATES), "_AGG_SQL keys must match _GROUP_AGGREGATES"
 # Default non-grouped projection (raw_query appended only when allowed).
 _DEFAULT_SELECT = (
-    "id", "user", "host", "source", "tables", "calls",
-    "execution_time_ms", "lock_time_sec", "rows_examined",
-    "rows_sent", "latest_ts",
+    "id",
+    "user",
+    "host",
+    "source",
+    "tables",
+    "calls",
+    "execution_time_ms",
+    "lock_time_sec",
+    "rows_examined",
+    "rows_sent",
+    "latest_ts",
 )
 # filter param name -> column
-_EQ_FILTERS = {"id": "id", "content_hash": "content_hash", "user": "user",
-               "host": "host", "source": "source"}
-_GE_FILTERS = {"min_calls": "calls", "min_execution_time_ms": "execution_time_ms",
-               "min_lock_time_sec": "lock_time_sec"}
+_EQ_FILTERS = {
+    "id": "id",
+    "content_hash": "content_hash",
+    "user": "user",
+    "host": "host",
+    "source": "source",
+}
+_GE_FILTERS = {
+    "min_calls": "calls",
+    "min_execution_time_ms": "execution_time_ms",
+    "min_lock_time_sec": "lock_time_sec",
+}
 
 
 def _q(ident: str) -> str:
@@ -113,10 +162,12 @@ class BrowseService:
         limit: int,
         allow_raw_queries: bool = False,
     ) -> BrowseResult:
-        grouped = group_by is not None
+        if limit < 1:
+            raise BrowseValidationError(f"limit must be >= 1, got {limit}.")
         group_cols = self._parse_group_by(group_by)
+        grouped = len(group_cols) > 0
         sql = self._build_sql(
-            filters=filters, group_by=group_by, order_by=order_by,
+            group_cols=group_cols, order_by=order_by,
             select=select, allow_raw_queries=allow_raw_queries,
         )
         frame = self._filtered_frame(filters, group_cols)
@@ -154,7 +205,8 @@ class BrowseService:
             )
         if col == "tables":
             raise BrowseValidationError(
-                "Cannot order_by the list column 'tables'; group by it via group_by=tables."
+                "Cannot order_by the list column 'tables'; choose an aggregate "
+                "such as 'fingerprints', or a scalar column."
             )
         if col not in valid:
             raise BrowseValidationError(
@@ -168,33 +220,16 @@ class BrowseService:
     def _build_sql(
         self,
         *,
-        filters: dict[str, Any],
-        group_by: str | None,
+        group_cols: list[str],
         order_by: str,
         select: str | None,
         allow_raw_queries: bool,
     ) -> str:
-        group_cols = self._parse_group_by(group_by)
         if group_cols:
             return self._build_grouped_sql(group_cols, order_by, select)
         return self._build_flat_sql(order_by, select, allow_raw_queries)
 
-    def _build_grouped_sql(
-        self, group_cols: list[str], order_by: str, select: str | None
-    ) -> str:
-        agg_sql = {
-            "fingerprints": "COUNT(*) AS fingerprints",
-            "calls": 'SUM("calls") AS calls',
-            "execution_time_ms": 'SUM("execution_time_ms") AS execution_time_ms',
-            "lock_time_sec": 'SUM("lock_time_sec") AS lock_time_sec',
-            "rows_examined": 'SUM("rows_examined") AS rows_examined',
-            "rows_sent": 'SUM("rows_sent") AS rows_sent',
-            "latest_ts": 'MAX("latest_ts") AS latest_ts',
-            "avg_ms_per_fingerprint":
-                'SUM("execution_time_ms")/NULLIF(COUNT(*),0) AS avg_ms_per_fingerprint',
-            "avg_ms_per_call":
-                'SUM("execution_time_ms")/NULLIF(SUM("calls"),0) AS avg_ms_per_call',
-        }
+    def _build_grouped_sql(self, group_cols: list[str], order_by: str, select: str | None) -> str:
         available = set(group_cols) | set(_GROUP_AGGREGATES)
         if select is not None:
             chosen = [c.strip() for c in select.split(",") if c.strip()]
@@ -209,18 +244,16 @@ class BrowseService:
         else:
             out_group = list(group_cols)
             out_agg = list(_GROUP_AGGREGATES)
-        select_terms = [_q(c) for c in out_group] + [agg_sql[c] for c in out_agg]
-        col, direction = self._parse_order_by(order_by, available)
-        frame = "data"
+        output_cols = set(out_group) | set(out_agg)
+        col, direction = self._parse_order_by(order_by, output_cols)
+        select_terms = [_q(c) for c in out_group] + [_AGG_SQL[c] for c in out_agg]
         return (
-            f"SELECT {', '.join(select_terms)} FROM {frame} "
+            f"SELECT {', '.join(select_terms)} FROM data "
             f"GROUP BY {', '.join(_q(c) for c in group_cols)} "
             f"ORDER BY {_q(col)} {direction} NULLS LAST"
         )
 
-    def _build_flat_sql(
-        self, order_by: str, select: str | None, allow_raw_queries: bool
-    ) -> str:
+    def _build_flat_sql(self, order_by: str, select: str | None, allow_raw_queries: bool) -> str:
         selectable = self._selectable(allow_raw_queries)
         if select is not None:
             chosen = [c.strip() for c in select.split(",") if c.strip()]
@@ -242,9 +275,7 @@ class BrowseService:
             f"ORDER BY {_q(col)} {direction} NULLS LAST"
         )
 
-    def _filtered_frame(
-        self, filters: dict[str, Any], group_cols: list[str]
-    ) -> pl.DataFrame:
+    def _filtered_frame(self, filters: dict[str, Any], group_cols: list[str]) -> pl.DataFrame:
         from dbs_vector.core.models import _normalize_table_name
 
         df = pl.from_arrow(self.store.scan())
