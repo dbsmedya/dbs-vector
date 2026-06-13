@@ -3,16 +3,15 @@
 import asyncio
 from typing import TYPE_CHECKING, Any
 
-from dbs_vector.mcp.families.base import RESPONSE_BUDGET_BYTES, render_with_budget
+from dbs_vector.mcp.families.base import (
+    RESPONSE_BUDGET_BYTES,
+    embeddings_phrase,
+    render_with_budget,
+)
 from dbs_vector.services.search import SearchService
 
 if TYPE_CHECKING:
     from dbs_vector.config import EngineConfig
-
-
-def _embeddings_phrase(model: str) -> str:
-    return {"granite-r2": "Granite embeddings",
-            "gemma-bf16": "Gemma embeddings"}.get(model, f"{model} embeddings")
 
 
 class DocumentFamily:
@@ -59,7 +58,7 @@ class DocumentFamily:
         )
 
     def search_description(self, engine_name: str, engine: "EngineConfig") -> str:
-        emb = _embeddings_phrase(engine.model)
+        emb = embeddings_phrase(engine.model)
         return (
             f"Semantic search over Markdown documentation chunks ({emb}). "
             f"Returns the top-K most similar passages, ranked by cosine "

@@ -19,6 +19,7 @@ def test_sql_search_description_keeps_filter_docs_and_source_phrase():
     assert "API" in d            # source phrase from chunker_type="api"
     assert "Gemma" in d          # embeddings phrase from model
     assert "Showing" in d        # N-of-M note
+    assert "browse_sql_api" in d   # sibling-tool pointer
 
 
 def test_sql_search_description_duckdb_granite_phrases():

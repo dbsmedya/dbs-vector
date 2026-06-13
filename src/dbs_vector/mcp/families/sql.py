@@ -4,7 +4,12 @@ import asyncio
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from dbs_vector.mcp.families.base import RESPONSE_BUDGET_BYTES, render_with_budget
+from dbs_vector.core.naming import normalize_tool_name
+from dbs_vector.mcp.families.base import (
+    RESPONSE_BUDGET_BYTES,
+    embeddings_phrase,
+    render_with_budget,
+)
 from dbs_vector.services.search import SearchService
 
 if TYPE_CHECKING:
@@ -55,11 +60,6 @@ def _sql_source_phrase(chunker_type: str) -> str:
     return {"api": "a remote slow-log API",
             "duckdb": "a local DuckDB slow-query log"}.get(
         chunker_type, "a SQL slow-query log")
-
-
-def _sql_embeddings_phrase(model: str) -> str:
-    return {"granite-r2": "Granite embeddings",
-            "gemma-bf16": "Gemma embeddings"}.get(model, f"{model} embeddings")
 
 
 class SqlFamily:
@@ -170,7 +170,8 @@ class SqlFamily:
 
     def search_description(self, engine_name: str, engine: "EngineConfig") -> str:
         source = _sql_source_phrase(engine.chunker_type)
-        emb = _sql_embeddings_phrase(engine.model)
+        emb = embeddings_phrase(engine.model)
+        browse_tool = normalize_tool_name(engine_name, verb="browse")
         return (
             f"Semantic search over slow-query fingerprints from {source} "
             f"({emb}). Returns up to `limit` results ranked by cosine "
@@ -183,7 +184,7 @@ class SqlFamily:
             f"'Showing N of M results that matched your filters' so callers "
             f"can tell when results are similarity-truncated. For ranking by "
             f"a scalar column, aggregation, or point lookup (no query string) "
-            f"use the sibling `browse_{engine_name.replace('-', '_')}` tool."
+            f"use the sibling `{browse_tool}` tool."
         )
 
     def browse_description(

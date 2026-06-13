@@ -17,6 +17,12 @@ def _byte_len(value: str) -> int:
     return len(value.encode("utf-8"))
 
 
+def embeddings_phrase(model: str) -> str:
+    """Human label for an embedding model key, shared across families."""
+    return {"granite-r2": "Granite embeddings",
+            "gemma-bf16": "Gemma embeddings"}.get(model, f"{model} embeddings")
+
+
 def render_with_budget(
     header: str,
     blocks: Iterable[str],
