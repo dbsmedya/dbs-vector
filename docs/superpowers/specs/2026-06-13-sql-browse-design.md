@@ -73,11 +73,25 @@ There are **two independent concerns**, handled by two independent mechanisms:
 structured-only MCP surface.** The MCP never accepts raw SQL or a raw predicate
 string; it accepts typed filters + shape params that the builder compiles. The
 builder hard-codes `FROM t` / `FROM t_by_table`, emits no function calls, and
-validates every identifier against a fixed column vocabulary. So `read_csv(...)`
-and any non-`SELECT` are *unconstructable* on the MCP — not policed, structurally
-absent. (This is precisely why the MCP filter surface is **typed params** and not
-a raw `where` string: a raw predicate fragment would let `WHERE id IN (SELECT x
-FROM read_csv('/secret'))` through, reopening the hole.)
+validates every identifier (group/order/select columns) against a fixed column
+vocabulary. (This is why the MCP filter surface is **typed params** and not a raw
+`where` string: a raw predicate fragment would let `WHERE id IN (SELECT x FROM
+read_csv('/secret'))` through, reopening the hole.)
+
+**Filter *values* are never interpolated into SQL — they are bound as polars
+expressions.** This is the load-bearing detail: if a string value like `user =
+"x' OR 1=1 UNION SELECT 1 FROM read_csv('/secret')--"` were string-formatted into
+a SQL `WHERE`, it would break out of the literal and reopen the file-read hole,
+and no quoting/escaping helper is trustworthy enough to bet the security boundary
+on. So the builder does **not** build a `WHERE` string at all. It applies every
+value filter through the **polars expression API** on the frame *before* it is
+registered in the `SQLContext` — `df.filter(pl.col("user") == value)`, `pl.col(
+"calls") >= n`, `pl.col("tables").list.contains(table)` — where each value is a
+bound native Python object that polars treats as opaque data, never as SQL. The
+SQL string the builder then emits over the pre-filtered frame contains **only**
+allowlisted identifiers, the curated aggregate function names, and the `asc`/`desc`
+direction token — zero user-supplied literal values. Injection is therefore
+*structurally impossible on the value path too*, not escaping-dependent.
 
 **2. Verbatim query *values* (PII) — gated by `--allow-raw-queries`.** The
 `raw_query` column is the captured production SQL *with real literal values*:
@@ -213,13 +227,15 @@ async def handler(
 ) -> str: ...
 ```
 
-The handler **builds a SQL string** from these params (quoting identifiers, ANDing
-the filters into a `WHERE`, choosing `t` vs `t_by_table`, emitting the curated
-aggregate set for grouped mode) and runs it through the shared executor. Because
-the builder only ever emits a builder-controlled `SELECT`, neither `read_csv` nor
-any non-`SELECT` can appear. When `--allow-raw-queries` is off, `select=raw_query`
-is rejected and `raw_query` is omitted from the advertised columns; when on, it is
-accepted and advertised. The tool **description** (family template, see
+The handler **applies the value filters as bound polars expressions on the frame**
+(never as SQL text — see Trust & exposure model), then **builds a SQL string** for
+the analytical shape only (quoting identifiers, choosing `t` vs `t_by_table`,
+emitting the curated aggregate set for grouped mode) and runs it over the
+pre-filtered frame. Because the emitted SQL is builder-controlled and carries no
+user values, neither `read_csv` nor any non-`SELECT` nor a literal break-out can
+appear. When `--allow-raw-queries` is off, `select=raw_query` is rejected and
+`raw_query` is omitted from the advertised columns; when on, it is accepted and
+advertised. The tool **description** (family template, see
 Description Ownership) documents the columns, the group-by-table-via-`t_by_table`
 rule, the `"user"` quoting gotcha, and that `browse` ranks by the chosen column,
 not similarity — no query string.
@@ -337,32 +353,40 @@ class BrowseService:
         # structured path — MCP; caps to `limit` rows
 ```
 
-Both share a private `_execute(sql) -> pl.DataFrame`:
+Both share a private `_execute(sql, df) -> pl.DataFrame` over a prepared frame:
 
-1. `arrow = store.scan()` → `pl.from_arrow(arrow)` as `df`.
-2. Register frames: `{frame_alias: df, "t": df, "t_by_table": df.explode("tables")}`.
-3. `result = pl.SQLContext(frames).execute(sql, eager=True)` — polars raises on
-   bad SQL (unknown column, unquoted `user`, etc.); the message is caught upstream
-   and surfaced to the caller verbatim. **No read-only guard** — mutation is
-   impossible (in-memory frames) and the CLI is the operator's own shell.
+1. Register frames: `{frame_alias: df, "t": df, "t_by_table": df.explode("tables")}`.
+2. `result = pl.SQLContext(frames).execute(sql, eager=True)` — polars raises on
+   bad SQL (unknown column, unquoted `user`, etc.). **No read-only guard** —
+   mutation is impossible (in-memory frames).
 
-`run_sql` (CLI): `result = _execute(sql)`; return
-`BrowseResult(rows=all rows, columns, total_matching=result.height, grouped=False,
-limit_applied=False)`. **No cap** — every produced row is returned, so `SELECT *
-FROM t` is a full export. The raw path does not parse the SQL, so it reports
-`grouped=False` and the header reads "Showing N rows" regardless of any `GROUP BY`
-the author wrote; the operator bounds output with their own `LIMIT`.
+`run_sql` (CLI): `df = pl.from_arrow(store.scan())`; `result = _execute(sql, df)`;
+return `BrowseResult(rows=all rows, columns, total_matching=result.height,
+grouped=False, limit_applied=False)`. **No cap** — every produced row is returned,
+so `SELECT * FROM t` is a full export. The raw path does not parse the SQL, so it
+reports `grouped=False` and the header reads "Showing N rows" regardless of any
+`GROUP BY` the author wrote; the operator bounds output with their own `LIMIT`.
+Polars errors propagate to the CLI caller and are printed verbatim (operator's own
+shell — full disclosure is fine here; contrast the MCP, Error Handling).
 
-`build_and_run` (MCP): validate the typed filters and shape params against the
-column / aggregate vocabulary (friendly errors: unknown column, `order_by tables`,
-grouped `select` naming a raw field, **`select raw_query` when `allow_raw_queries`
-is false**), **build the SQL string** (quoting all identifiers, ANDing filters
-into `WHERE`, choosing `t`/`t_by_table`, emitting the grouped aggregate set,
-`NULLS LAST`, `NULLIF`), `result = _execute(sql)`, then cap:
-`total_matching = result.height`, `rows = result.head(limit)`,
-`limit_applied = total_matching > limit`, `grouped` = whether `group_by` was
-given. The builder emits **no `LIMIT`** and **no raw SQL** — it is the only thing
-that ever feeds the MCP path.
+`build_and_run` (MCP):
+
+1. **Validate** the typed filters and shape params against the column / aggregate
+   vocabulary — raising a typed `BrowseValidationError` with a friendly message
+   (unknown column, `order_by tables`, grouped `select` naming a raw field,
+   `select raw_query` when `allow_raw_queries` is false). These messages are
+   author-controlled and safe to return to the LLM verbatim.
+2. `df = pl.from_arrow(store.scan())`, then **apply value filters as bound polars
+   expressions** — `df.filter(pl.col(c) == value)`, `>= n`,
+   `pl.col("tables").list.contains(table)` — so no user value ever enters the SQL
+   string (see Trust & exposure model). Explode for `group_by=tables`.
+3. **Build the analytical SQL** over the pre-filtered frame from allowlisted
+   identifiers only (quoted), choosing `t`/`t_by_table`, emitting the grouped
+   aggregate set, `NULLS LAST`, `NULLIF`. **No `LIMIT`**, **no raw SQL**, **no
+   literal values**.
+4. `result = _execute(sql, filtered_df)`, then cap: `total_matching =
+   result.height`, `rows = result.head(limit)`, `limit_applied = total_matching >
+   limit`, `grouped` = whether `group_by` was given.
 
 **`LIMIT` is never injected into SQL** (either path). Results materialize in full
 (cheap at corpus scale); the MCP cap is a post-execution `.head(limit)`, the CLI
@@ -419,9 +443,11 @@ captured in the handler closure and the registrar argument.
      shared-`checkout_latest`-handle discipline as the search handler).
   3. Renders via `format_browse(BrowseResult)` reusing `render_with_budget` for
      the MCP byte budget (compact table).
-  4. Catches exceptions (polars error, bad params, disallowed column) and returns
-     the message as the tool result string so the LLM self-corrects — never
-     raises.
+  4. Never raises. A `BrowseValidationError` is returned verbatim (safe,
+     author-controlled — lets the LLM self-correct); any other exception
+     (polars/LanceDB/Arrow) is **logged server-side** and returned as a generic
+     `"browse execution failed (see server logs)"` string so no path/schema/SQL
+     detail reaches the model (see Error Handling).
 - `browse_description(engine_name, allow_raw_queries)` — family template +
   injected columns; advertises `raw_query` **only when the flag is on**.
 
@@ -483,17 +509,29 @@ raw-query gate is a server CLI flag, not config).
 
 ## Error Handling
 
-- **polars execution error** (bad column, syntax, unquoted `user`, etc.) →
-  caught, the polars message returned verbatim so the caller can fix it. MCP:
-  returned as tool text; CLI: `typer.echo` + `Exit(1)`. (No read-only guard
-  exists — mutation is impossible and the CLI is the operator's own shell.)
-- **Bad MCP structured params** (unknown column/filter, `order_by tables`, grouped
-  `select` naming a raw field) → validated before building SQL; friendly message.
-- **MCP `select raw_query` when `--allow-raw-queries` is off** → the `raw_query`
-  column is absent from the vocabulary; rejected with "raw query text is not
-  exposed; start the server with --allow-raw-queries". CLI is unaffected.
-- **Non-SQL engine** → rejected up front (browse is SQL-family only).
-- **Empty result** → "0 rows" message, not an error.
+Two error classes, treated differently — and differently again per surface:
+
+- **`BrowseValidationError` (author-controlled, safe to disclose).** Raised by the
+  MCP builder's own validation: unknown column/filter, `order_by tables`, grouped
+  `select` naming a raw per-fingerprint field, and `select raw_query` when
+  `--allow-raw-queries` is off ("raw query text is not exposed; start the server
+  with --allow-raw-queries"). These carry no infrastructure detail and are
+  returned to the LLM **verbatim** so it can self-correct. Also the up-front
+  rejections: **non-SQL engine** (with the available-SQL-engines list).
+- **Infrastructure / execution exceptions (polars / LanceDB / Arrow).** May embed
+  local file paths, schema internals, or generated SQL.
+  - **MCP: sanitize.** The full exception is **logged server-side** (`logger`, for
+    the operator) but the tool returns only a **generic, controlled** string —
+    e.g. `"browse execution failed (see server logs)"` — never the raw exception
+    text. This prevents path/schema/SQL disclosure to a possibly-remote model. The
+    handler still never raises (returns the generic string as the tool result).
+  - **CLI: verbatim.** The polars/LanceDB message is printed in full via
+    `typer.echo` + `Exit(1)` — the operator's own shell, full disclosure is the
+    desired behavior. (Because MCP value filters are bound, not interpolated, a
+    bad *value* on the MCP can't even produce a polars error — it just matches no
+    rows; most MCP-path exceptions would be genuine infrastructure faults.)
+- **Empty result** → "0 rows" message, not an error (both surfaces).
+- **No read-only guard** anywhere — mutation is impossible (in-memory frames).
 
 ## Testing Strategy
 
@@ -505,19 +543,32 @@ raw-query gate is a server CLI flag, not config).
     in-memory — assert `DROP TABLE t` does not affect a subsequent `store.scan`).
   - `build_and_run` cap: `result.head(limit)` truncates with `limit_applied` set
     while `total_matching` reports the full count.
-  - `build_and_run`: typed filters → expected `WHERE`; params → expected SQL; no
-    `LIMIT` emitted; grouped aggregate set incl. `avg_ms_per_call` =
-    `SUM(exec)/NULLIF(SUM(calls),0)`; **all-NULL group and zero-denominator
-    average yield `NULL`, rendered `n/a` in table / `null` in JSON**; NULLs-last
-    ordering; `total_matching` = groups (grouped) vs rows (raw);
-    `t_by_table` selected for `group_by=tables` / `table=` filter; rejections
-    (unknown column, `order_by tables`, grouped `select id`); `"user"` quoted.
+  - `build_and_run`: value filters apply as bound polars expressions and reduce
+    the row set correctly; the emitted SQL string contains **no literal values**
+    (assert on the generated SQL); no `LIMIT` emitted; grouped aggregate set incl.
+    `avg_ms_per_call` = `SUM(exec)/NULLIF(SUM(calls),0)`; **all-NULL group and
+    zero-denominator average yield `NULL`, rendered `n/a` in table / `null` in
+    JSON**; NULLs-last ordering; `total_matching` = groups (grouped) vs rows
+    (capped via `head(limit)`); `t_by_table` selected for `group_by=tables` /
+    `table=` filter; rejections (unknown column, `order_by tables`, grouped
+    `select id`) raise `BrowseValidationError`; `"user"` quoted as an identifier.
+  - **Injection regression (critical):** filter values containing quotes,
+    comments, and subquery fragments — `user="x' OR 1=1--"`,
+    `host="'; DROP TABLE t;--"`, `source="x') UNION SELECT 1 FROM
+    read_csv('/etc/passwd')--"` — are treated as **opaque literal data**: they
+    match the row whose column equals that exact string (here, none), never
+    execute, and `read_csv` never runs. Assert the result is empty and the
+    generated SQL contains none of the injected text.
   - raw-query gate: with `allow_raw_queries=False`, `select=raw_query` rejected and
     `browse_description` omits `raw_query`; with `True`, `raw_query` selectable and
     advertised; CLI `run_sql("SELECT raw_query …")` works regardless.
-- **Unit (MCP)** — `make_browse_handler` formatting, byte-budget truncation,
-  polars/param errors → error-string-not-exception, store sourced from
-  `_services[engine].vector_store`.
+- **Unit (MCP)** — `make_browse_handler` formatting, byte-budget truncation, store
+  sourced from `_services[engine].vector_store`, never raises. **Error
+  sanitization:** a `BrowseValidationError` is returned verbatim; an injected
+  infrastructure exception (e.g. a polars/LanceDB error carrying a file path) is
+  returned as the generic `"browse execution failed…"` string — assert the path /
+  schema / SQL text does **not** appear in the tool result, and that the full
+  detail was logged.
 - **Integration (`tests/integration/`)** — real tmpdir LanceDB seeded with a few
   `SqlChunk`s; `LanceDBStore.scan` projects out `vector`, sees `checkout_latest`
   updates; raw `run_sql` point lookup; grouped `build_and_run` by user and by
