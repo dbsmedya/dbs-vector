@@ -7,7 +7,7 @@ from dbs_vector.services.browse import (
     BrowseError,
     BrowseResult,
     BrowseService,
-    BrowseValidationError,  # noqa: F401 — verify it is exported
+    BrowseValidationError,
 )
 
 
@@ -80,3 +80,130 @@ def test_run_sql_t_by_table_explodes():
 def test_run_sql_bad_column_raises_browse_error():
     with pytest.raises(BrowseError):
         _svc().run_sql("SELECT nonexistent_col FROM t")
+
+
+def test_build_and_run_grouped_aggregates_by_user():
+    result = _svc().build_and_run(
+        filters={}, group_by="user", order_by="execution_time_ms:desc",
+        select=None, limit=10,
+    )
+    assert result.grouped is True
+    # one row per distinct user incl. the null group
+    assert result.total_matching == 3
+    cols = result.columns
+    for expected in ["fingerprints", "calls", "execution_time_ms",
+                     "avg_ms_per_fingerprint", "avg_ms_per_call", "latest_ts"]:
+        assert expected in cols
+    top = result.rows[0]
+    assert top["user"] == "alice"
+    assert top["fingerprints"] == 1
+    assert top["execution_time_ms"] == 100.0
+
+
+def test_build_and_run_caps_to_limit_but_reports_total():
+    result = _svc().build_and_run(
+        filters={}, group_by="user", order_by="execution_time_ms:desc",
+        select=None, limit=1,
+    )
+    assert result.total_matching == 3
+    assert len(result.rows) == 1
+    assert result.limit_applied is True
+
+
+def test_build_and_run_filter_values_are_bound_not_interpolated():
+    svc = _svc()
+    sql = svc._build_sql(
+        filters={"user": "alice"}, group_by=None,
+        order_by="execution_time_ms:desc", select=None, allow_raw_queries=False,
+    )
+    # the value 'alice' must NOT appear in the generated SQL string
+    assert "alice" not in sql
+
+
+def test_build_and_run_injection_value_is_inert():
+    svc = _svc()
+    payload = "x') UNION SELECT 1 FROM read_csv('/etc/passwd')--"
+    result = svc.build_and_run(
+        filters={"source": payload}, group_by=None,
+        order_by="execution_time_ms:desc", select=None, limit=10,
+    )
+    assert result.rows == []                 # matches no row; never executes
+    sql = svc._build_sql(
+        filters={"source": payload}, group_by=None,
+        order_by="execution_time_ms:desc", select=None, allow_raw_queries=False,
+    )
+    assert "read_csv" not in sql and "passwd" not in sql
+
+
+def test_build_and_run_div_by_zero_average_is_null():
+    # craft a frame whose only group has SUM(calls)=0 → NULLIF → null
+    tbl = pa.table({
+        "id": ["A"], "content_hash": ["h"], "text": ["x"], "raw_query": ["x"],
+        "source": ["db1"], "user": ["alice"], "host": ["h"],
+        "tables": [["orders"]], "calls": [0], "execution_time_ms": [10.0],
+        "lock_time_sec": [None], "rows_examined": [1], "rows_sent": [1],
+        "latest_ts": [datetime(2026, 1, 1, tzinfo=UTC)],
+    })
+    svc = BrowseService(FakeStore(tbl), frame_alias="sql_api")
+    result = svc.build_and_run(
+        filters={}, group_by="user", order_by="execution_time_ms:desc",
+        select=None, limit=10,
+    )
+    assert result.rows[0]["avg_ms_per_call"] is None    # rendered n/a downstream
+
+
+def test_build_and_run_group_by_tables_uses_exploded_frame():
+    result = _svc().build_and_run(
+        filters={}, group_by="tables", order_by="fingerprints:desc",
+        select=None, limit=10,
+    )
+    counts = {r["tables"]: r["fingerprints"] for r in result.rows}
+    assert counts.get("orders") == 2
+
+
+def test_build_and_run_table_filter_uses_list_contains():
+    result = _svc().build_and_run(
+        filters={"table": "orders"}, group_by=None,
+        order_by="calls:desc", select=None, limit=10,
+    )
+    assert sorted(r["id"] for r in result.rows) == ["A", "B"]
+
+
+def test_build_and_run_rejects_unknown_column():
+    with pytest.raises(BrowseValidationError):
+        _svc().build_and_run(
+            filters={}, group_by="nonsense", order_by="execution_time_ms:desc",
+            select=None, limit=10,
+        )
+
+
+def test_build_and_run_rejects_order_by_tables_scalar():
+    with pytest.raises(BrowseValidationError):
+        _svc().build_and_run(
+            filters={}, group_by=None, order_by="tables:desc",
+            select=None, limit=10,
+        )
+
+
+def test_build_and_run_rejects_grouped_select_of_raw_field():
+    with pytest.raises(BrowseValidationError):
+        _svc().build_and_run(
+            filters={}, group_by="user", order_by="execution_time_ms:desc",
+            select="id", limit=10,
+        )
+
+
+def test_build_and_run_raw_query_gated_off():
+    with pytest.raises(BrowseValidationError):
+        _svc().build_and_run(
+            filters={}, group_by=None, order_by="execution_time_ms:desc",
+            select="id,raw_query", limit=10, allow_raw_queries=False,
+        )
+
+
+def test_build_and_run_raw_query_allowed_on():
+    result = _svc().build_and_run(
+        filters={}, group_by=None, order_by="execution_time_ms:desc",
+        select="id,raw_query", limit=10, allow_raw_queries=True,
+    )
+    assert "raw_query" in result.columns
