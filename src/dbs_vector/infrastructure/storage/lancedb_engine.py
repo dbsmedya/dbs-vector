@@ -283,3 +283,18 @@ class LanceDBStore:
 
         where_clause = " AND ".join(predicates)
         return self.table.count_rows(filter=where_clause)
+
+    def scan(self, columns: list[str] | None = None) -> Any:
+        """Read all rows as a pyarrow.Table, projecting out vector/workflow.
+
+        Mirrors get_existing_hashes' column-projected query (avoids
+        materialising the embedding vector) but selects the full analytical
+        column set. checkout_latest() first so a long-lived MCP server sees
+        rows committed by a separate ingest process.
+        """
+        self.table.checkout_latest()
+        if columns is None:
+            columns = [c for c in self.schema.names if c not in ("vector", "workflow")]
+        if len(self.table) == 0:
+            return self.table.search().select(columns).limit(1).to_arrow().slice(0, 0)
+        return self.table.search().select(columns).to_arrow()

@@ -96,6 +96,16 @@ class IVectorStore(Protocol):
         """Count rows that survive the same prefilter set used by `search`."""
         ...
 
+    def scan(self, columns: list[str] | None = None) -> Any:
+        """Read ALL rows as a pyarrow.Table for in-process analytical SQL.
+
+        `columns=None` projects every column EXCEPT the embedding `vector`
+        and `workflow`. Implementations MUST call checkout_latest() first
+        (like search()/count_matching()) so the read sees the latest version.
+        No vector query, no row cap.
+        """
+        ...
+
 
 class IContentFilter(Protocol):
     """Decides whether to skip a whole file or drop a single block."""
