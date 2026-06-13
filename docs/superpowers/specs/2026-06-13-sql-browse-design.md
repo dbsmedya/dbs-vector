@@ -136,7 +136,7 @@ applies to all SQL engines, and so `EngineConfig` gains **no** new field.
 # Heaviest users by total execution time  (note: "user" must be quoted)
 dbs-vector browse --type sql-api \
   --sql 'SELECT "user", host, COUNT(*) AS fingerprints, SUM(execution_time_ms) AS total_ms
-         FROM t GROUP BY "user", host ORDER BY total_ms DESC' --limit 10
+         FROM t GROUP BY "user", host ORDER BY total_ms DESC LIMIT 10'
 
 # Point lookup
 dbs-vector browse --type sql-api --sql "SELECT * FROM t WHERE id = '93FEDEB240C723E3'"
@@ -144,6 +144,9 @@ dbs-vector browse --type sql-api --sql "SELECT * FROM t WHERE id = '93FEDEB240C7
 # Everything touching a table — use the exploded frame
 dbs-vector browse --type sql-api \
   --sql "SELECT id, calls FROM t_by_table WHERE tables = 'orders' ORDER BY calls DESC"
+
+# Full export — unbounded; pipe --json to a file
+dbs-vector browse --type sql-api --sql "SELECT * FROM t" --json > dump.json
 ```
 
 Options (intentionally small):
@@ -152,15 +155,15 @@ Options (intentionally small):
 |------|------|---------|---------|
 | `--type/-t` | str | required (must be a SQL engine) | Engine; rejected if not SQL-family. |
 | `--sql` | str | required | A SQL `SELECT`, polars SQL dialect. |
-| `--limit/-n` | int | 10 | Display cap (post-execution head); see Architecture. |
 | `--json` | bool | False | Emit rows as JSON instead of a table. |
 
 `--type/-t` matches `ingest` / `search`. A non-SQL engine is rejected with the
 list of available SQL engines. The CLI imposes no read-only guard (there is
-nothing to guard — see Trust & exposure model) and no column restrictions. If a
-result exceeds `--limit`, only the first `--limit` rows are printed with a
-"Showing N of M" note; the operator's own `LIMIT`, if any, is applied first by
-polars (see Architecture).
+nothing to guard — see Trust & exposure model), no column restrictions, and **no
+row cap** — it returns every row the SQL produces. The operator bounds output
+themselves with `LIMIT` in the SQL; `SELECT * FROM t` is a full export (pair with
+`--json` to dump the table). Only the **MCP** applies a row cap (its `limit`
+param), because structured params have no other way to bound output.
 
 **Frames available in `FROM`:**
 
@@ -327,14 +330,14 @@ class BrowseService:
     def __init__(self, store: IVectorStore, frame_alias: str) -> None: ...
         # frame_alias = engine name, dashes→underscores (e.g. "sql_api")
 
-    def run_sql(self, sql: str, *, display_cap: int) -> BrowseResult: ...
-        # raw path — CLI only
+    def run_sql(self, sql: str) -> BrowseResult: ...
+        # raw path — CLI only; returns ALL rows (no cap)
     def build_and_run(self, *, filters: dict, group_by, order_by, select, limit,
                       allow_raw_queries: bool = False) -> BrowseResult: ...
-        # structured path — MCP
+        # structured path — MCP; caps to `limit` rows
 ```
 
-`run_sql` (CLI):
+Both share a private `_execute(sql) -> pl.DataFrame`:
 
 1. `arrow = store.scan()` → `pl.from_arrow(arrow)` as `df`.
 2. Register frames: `{frame_alias: df, "t": df, "t_by_table": df.explode("tables")}`.
@@ -342,29 +345,31 @@ class BrowseService:
    bad SQL (unknown column, unquoted `user`, etc.); the message is caught upstream
    and surfaced to the caller verbatim. **No read-only guard** — mutation is
    impossible (in-memory frames) and the CLI is the operator's own shell.
-4. `total = result.height`; `rows = result.head(display_cap)`;
-   `limit_applied = total > display_cap`.
-5. Return `BrowseResult(rows, columns, total_matching=total, grouped=False,
-   limit_applied)`. The raw path does not parse the SQL, so it reports `grouped=
-   False` and the header reads "Showing N of M rows" regardless of any `GROUP BY`
-   the author wrote; only `build_and_run` sets `grouped=True`.
 
-**`LIMIT` is never injected into SQL.** The result is materialized in full (cheap
-at corpus scale), `total_matching = result.height`, and `display_cap` is applied
-as a post-execution `.head()`. This removes all SQL rewriting (and thus any need
-for `sqlglot` or dialect round-tripping). A raw query's own `LIMIT` is honored by
-polars and simply lowers `height`.
+`run_sql` (CLI): `result = _execute(sql)`; return
+`BrowseResult(rows=all rows, columns, total_matching=result.height, grouped=False,
+limit_applied=False)`. **No cap** — every produced row is returned, so `SELECT *
+FROM t` is a full export. The raw path does not parse the SQL, so it reports
+`grouped=False` and the header reads "Showing N rows" regardless of any `GROUP BY`
+the author wrote; the operator bounds output with their own `LIMIT`.
 
-`build_and_run` (MCP structured): validate the typed filters and shape params
-against the column / aggregate vocabulary (friendly errors: unknown column,
-`order_by tables`, grouped `select` naming a raw field, **`select raw_query` when
-`allow_raw_queries` is false**), **build the SQL string** (quoting all
-identifiers, ANDing filters into `WHERE`, choosing `t`/`t_by_table`, emitting the
-grouped aggregate set, `NULLS LAST`, `NULLIF`), then call the same executor as
-`run_sql` with `display_cap=limit`, setting `grouped` from whether `group_by` was
+`build_and_run` (MCP): validate the typed filters and shape params against the
+column / aggregate vocabulary (friendly errors: unknown column, `order_by tables`,
+grouped `select` naming a raw field, **`select raw_query` when `allow_raw_queries`
+is false**), **build the SQL string** (quoting all identifiers, ANDing filters
+into `WHERE`, choosing `t`/`t_by_table`, emitting the grouped aggregate set,
+`NULLS LAST`, `NULLIF`), `result = _execute(sql)`, then cap:
+`total_matching = result.height`, `rows = result.head(limit)`,
+`limit_applied = total_matching > limit`, `grouped` = whether `group_by` was
 given. The builder emits **no `LIMIT`** and **no raw SQL** — it is the only thing
-that ever feeds the MCP path. All of step-1-onward is pure polars/Arrow compute →
-directly unit-tested with a fake `scan`.
+that ever feeds the MCP path.
+
+**`LIMIT` is never injected into SQL** (either path). Results materialize in full
+(cheap at corpus scale); the MCP cap is a post-execution `.head(limit)`, the CLI
+applies no cap. This removes all SQL rewriting (and any need for `sqlglot` or
+dialect round-tripping). A raw query's own `LIMIT` is honored by polars and simply
+lowers `height`. All of step-1-onward is pure polars/Arrow compute → directly
+unit-tested with a fake `scan`.
 
 `BrowseResult`: `rows: list[dict]`, `columns: list[str]`, `total_matching: int`,
 `grouped: bool`, `limit_applied: bool`. `latest_ts` serializes to ISO 8601 in the
@@ -424,9 +429,8 @@ captured in the handler closure and the registrar argument.
 
 New `@app.command() def browse(...)`: resolve engine, reject non-SQL with the
 available-SQL-engines list, build `BrowseService` (no embedder), call
-`run_sql(sql, display_cap=limit)`, print a table or `--json`. No column
-restrictions and no flag — the CLI is always full power; `--limit` (default 10)
-controls the display cap only.
+`run_sql(sql)`, print a table or `--json`. No column restrictions, no row cap, no
+flag — the CLI is always full power and returns every produced row.
 
 ## Description Ownership (config cleanup)
 
@@ -495,10 +499,12 @@ raw-query gate is a server CLI flag, not config).
 
 - **Unit (`tests/unit/test_browse_service.py`)** — against a fake `IVectorStore.scan`
   returning an in-memory Arrow table:
-  - `run_sql`: a `SELECT` executes; `total_matching = result.height`;
-    `result.head(display_cap)` truncates with `limit_applied` set; a query's own
-    `LIMIT` lowers `height`; mutation is a non-issue (frames are in-memory —
-    assert `DROP TABLE t` does not affect a subsequent `store.scan`).
+  - `run_sql`: a `SELECT` executes; **all rows returned, no cap**
+    (`total_matching = len(rows) = result.height`, `limit_applied=False`); a
+    query's own `LIMIT` lowers `height`; mutation is a non-issue (frames are
+    in-memory — assert `DROP TABLE t` does not affect a subsequent `store.scan`).
+  - `build_and_run` cap: `result.head(limit)` truncates with `limit_applied` set
+    while `total_matching` reports the full count.
   - `build_and_run`: typed filters → expected `WHERE`; params → expected SQL; no
     `LIMIT` emitted; grouped aggregate set incl. `avg_ms_per_call` =
     `SUM(exec)/NULLIF(SUM(calls),0)`; **all-NULL group and zero-denominator
@@ -523,10 +529,10 @@ raw-query gate is a server CLI flag, not config).
 
 ## Defaults Summary
 
-- CLI: `--sql` required; full power; `--limit` display cap default **10**
-  (configurable; head, with a "Showing N of M" note).
+- CLI: `--sql` required; full power; **no row cap** — returns every produced row
+  (`SELECT * FROM t` is a full export). Operator bounds output via SQL `LIMIT`.
 - MCP: `order_by` default `execution_time_ms:desc` (NULLS LAST); `limit` default
-  `10` (display head).
+  `10` (post-execution head — the only place a cap applies).
 - MCP is structured-only (no raw SQL / raw `where` in any flag state) → `read_csv`
   and non-`SELECT` unconstructable.
 - `--allow-raw-queries` default **off**: gates the verbatim `raw_query` PII column
