@@ -278,7 +278,8 @@ def mcp(
         typer.Option(
             "--allow-raw-queries",
             help="Expose the verbatim raw_query column (literal PII values) to "
-            "browse MCP tools. Default off - enable only for a trusted local model.",
+            "browse and search MCP tools (search honours it via include_raw). "
+            "Default off - enable only for a trusted local model.",
         ),
     ] = False,
 ) -> None:
