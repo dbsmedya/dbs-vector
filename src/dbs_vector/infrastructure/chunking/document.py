@@ -12,6 +12,24 @@ _LIST_MARKER = re.compile(r"^(\s*)([-*+]|\d+[.)])\s")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 
 
+def _chunk_content_hash(file_hash: str, index: int) -> str:
+    """Per-chunk content hash for a document chunk.
+
+    ``content_hash`` carries two jobs at once and they must not collide:
+
+    * Chunk 0 keeps the RAW file hash so ``IngestionService``'s file-level
+      short-circuit (``if file_hash in existing_hashes``) still recognises an
+      already-indexed file and skips it on re-ingest.
+    * Chunks 1..N get a suffixed hash so the chunk-level dedup (which also keys
+      on ``content_hash``) does NOT treat them as duplicates of chunk 0 and
+      collapse a multi-chunk file down to its first chunk.
+
+    Stable across runs: identical file content -> identical ``file_hash`` ->
+    identical per-chunk hashes, so an unchanged file still re-dedups cleanly.
+    """
+    return file_hash if index == 0 else f"{file_hash}_{index}"
+
+
 @dataclass
 class _Block:
     node_type: str  # "heading" | "section" | "code" | "list" | "table"
@@ -110,7 +128,7 @@ class DocumentChunker:
                 id=f"{document.filepath}_chunk_{i}",
                 text=s.text,
                 source=document.filepath,
-                content_hash=document.content_hash,
+                content_hash=_chunk_content_hash(document.content_hash, i),
                 node_type=s.node_type,
                 parent_scope=s.parent_scope,
                 line_range=s.line_range,
@@ -386,5 +404,5 @@ class DocumentChunker:
                 id=f"{document.filepath}_chunk_{i}",
                 text=text,
                 source=document.filepath,
-                content_hash=document.content_hash,
+                content_hash=_chunk_content_hash(document.content_hash, i),
             )
