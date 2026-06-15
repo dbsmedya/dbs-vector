@@ -120,9 +120,14 @@ class SearchFamily(Protocol):
         Families own this prose; config.yaml holds only a short human summary."""
         ...
 
-    def make_handler(self, engine_name: str) -> Any:
+    def make_handler(self, engine_name: str, allow_raw_queries: bool = False) -> Any:
         """Build a per-engine async handler whose explicit signature FastMCP
-        will introspect for the tool schema."""
+        will introspect for the tool schema.
+
+        `allow_raw_queries` is the server-level egress flag (from
+        --allow-raw-queries). SQL families honour it to gate verbatim
+        `raw_query`; families with no raw payload accept and ignore it.
+        Defaults to False so a forgotten wiring fails closed."""
         ...
 
 

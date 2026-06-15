@@ -252,7 +252,7 @@ class SqlFamily:
             f"average a DBA usually reads)."
         )
 
-    def make_handler(self, engine_name: str) -> Any:
+    def make_handler(self, engine_name: str, allow_raw_queries: bool = False) -> Any:
         family = self  # closure capture
 
         async def handler(
@@ -305,8 +305,12 @@ class SqlFamily:
                     return r, t
 
                 results, total = await asyncio.to_thread(_search_then_count)
+                # Verbatim raw_query leaves the process ONLY when the server was
+                # started with --allow-raw-queries. include_raw=True is silently
+                # downgraded otherwise — the same lock browse already fits.
+                effective_include_raw = include_raw and allow_raw_queries
                 return family.format_results(
-                    results, query, total_matching=total, include_raw=include_raw
+                    results, query, total_matching=total, include_raw=effective_include_raw
                 )
             except Exception as e:
                 return f"Search execution failed: {e}"

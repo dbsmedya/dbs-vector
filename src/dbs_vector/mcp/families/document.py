@@ -65,7 +65,9 @@ class DocumentFamily:
             f"similarity — not by recency or size."
         )
 
-    def make_handler(self, engine_name: str) -> Any:
+    def make_handler(self, engine_name: str, allow_raw_queries: bool = False) -> Any:
+        # documents have no raw_query; the egress flag is accepted for
+        # SearchFamily Protocol parity and intentionally ignored.
         family = self  # closure capture
 
         async def handler(

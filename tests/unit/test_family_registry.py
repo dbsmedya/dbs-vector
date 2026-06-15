@@ -21,7 +21,7 @@ class _StubFamily:
     def format_results(self, results: list[Any], query: str) -> str:
         return ""
 
-    def make_handler(self, engine_name: str) -> Any:
+    def make_handler(self, engine_name: str, allow_raw_queries: bool = False) -> Any:
         async def handler() -> str:
             return ""
 

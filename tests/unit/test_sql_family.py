@@ -491,11 +491,46 @@ async def test_make_handler_passes_include_raw_to_formatter(monkeypatch):
     monkeypatch.setattr(state_mod, "_services", {"sql-test": service})
 
     fam = SqlFamily()
-    handler = fam.make_handler("sql-test")
+    handler = fam.make_handler("sql-test", allow_raw_queries=True)
     out = await handler(query="q", include_raw=True)
 
     assert "Raw SQL:" in out
     assert "SELECT count(1) as count FROM MagentoOrders" in out
+
+
+@pytest.mark.asyncio
+async def test_make_handler_gates_raw_off_even_when_include_raw_true(monkeypatch):
+    """allow_raw_queries=False downgrades include_raw=True: no raw SQL leaks."""
+    import dbs_vector.mcp.state as state_mod
+
+    service = MagicMock()
+    service.execute_query.return_value = [_make_full_sql_result()]
+    service.count_matching.return_value = 1
+    monkeypatch.setattr(state_mod, "_services", {"sql-test": service})
+
+    fam = SqlFamily()
+    handler = fam.make_handler("sql-test", allow_raw_queries=False)
+    out = await handler(query="q", include_raw=True)
+
+    assert "Raw SQL:" not in out
+    assert "SELECT count(1) as count FROM MagentoOrders" not in out
+
+
+@pytest.mark.asyncio
+async def test_make_handler_no_raw_when_flag_on_but_include_raw_false(monkeypatch):
+    """include_raw=False suppresses raw SQL even with the server flag on."""
+    import dbs_vector.mcp.state as state_mod
+
+    service = MagicMock()
+    service.execute_query.return_value = [_make_full_sql_result()]
+    service.count_matching.return_value = 1
+    monkeypatch.setattr(state_mod, "_services", {"sql-test": service})
+
+    fam = SqlFamily()
+    handler = fam.make_handler("sql-test", allow_raw_queries=True)
+    out = await handler(query="q", include_raw=False)
+
+    assert "Raw SQL:" not in out
 
 
 def test_format_results_empty_with_matching_filters_signals_total():
