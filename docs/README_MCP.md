@@ -184,6 +184,7 @@ For the default `config.yaml` shipped with the project:
 | `min_time` | float | no | Minimum cumulative execution time in ms |
 | `min_lock_time` | float | no | Minimum cumulative lock time in seconds |
 | `table_filter` | string | no | Restrict to queries that touch a specific table |
+| `include_raw` | bool | no | Add a `Raw SQL:` block (verbatim query with literal values). Honoured **only** when the server was started with `--allow-raw-queries`; otherwise silently downgraded. See [Raw query exposure](#raw-query-exposure---allow-raw-queries). |
 
 When `table_filter` is set the search bypasses the IVF approximate index
 in favor of an exact flat scan, ensuring no candidate rows are missed
@@ -200,6 +201,44 @@ family, model, description, table name, profile knobs
 and a `loaded` flag indicating whether the runtime service object is
 currently registered. Useful for A/B-testing harnesses and for clients
 that want to enumerate engines programmatically.
+
+---
+
+## Raw query exposure (`--allow-raw-queries`)
+
+SQL fingerprints carry two SQL representations: the normalized `text`
+(literals stripped — what embeddings are built on) and `raw_query`, the
+**verbatim production SQL with real literal values** (PII). Because embeddings
+never touch `raw_query`, whether it leaves the process is a pure egress
+decision, controlled by one **server-level** flag on `dbs-vector mcp`:
+
+```bash
+uv run dbs-vector mcp                       # default: raw_query is NEVER exposed
+uv run dbs-vector mcp --allow-raw-queries   # opt-in: raw_query exposable to the model
+```
+
+- **Initial state: OFF (fail-closed).** Without the flag, no MCP tool emits
+  `raw_query`; the normalized `text` is always available.
+- **`search_<engine>`** — the `include_raw=true` argument adds a `Raw SQL:`
+  block only under `--allow-raw-queries`. With the flag off, `include_raw=true`
+  is **silently downgraded**: the block is omitted and the call still succeeds
+  (no error).
+- **`browse_<engine>`** (one analytical tool per SQL engine; see
+  [README_SQL.md](README_SQL.md)) — `select=raw_query` is **rejected with a
+  validation error** unless the flag is on. The `raw_query` column also appears
+  in the tool's self-description only when the flag is on.
+
+The two surfaces share one lock: verbatim `raw_query` leaves the process only
+under `--allow-raw-queries`. The flag governs the **MCP server only** — the CLI
+`dbs-vector browse --sql ...` path runs on your own terminal and is
+unrestricted. Enable the flag only for a trusted, local model. This is an egress
+setting, not a schema change, so it needs no re-ingest.
+
+To pass it through Claude Desktop / Claude Code, append `"--allow-raw-queries"`
+to the `args` array (Desktop) or the launch command (`claude mcp add ... -- uv
+... run dbs-vector mcp --allow-raw-queries`).
+
+---
 
 ## Migration from legacy tool names
 
@@ -311,13 +350,19 @@ tail -f ~/Library/Logs/Claude/mcp.log
 
 - The MCP server is a `FastMCP` instance (`stateless_http=True`) created
   once in `src/dbs_vector/mcp/server.py`.
-- Tool registration is dynamic: `register_search_tools(mcp)` iterates
-  `settings.engines` and registers one `search_<engine>` tool per engine
-  via the family's `make_handler(engine_name)` factory.
+- Tool registration is dynamic: `register_search_tools(mcp, allow_raw_queries)`
+  iterates `settings.engines` and registers one `search_<engine>` tool per
+  engine via the family's `make_handler(engine_name, allow_raw_queries)`
+  factory; `register_browse_tools(mcp, allow_raw_queries)` registers a
+  `browse_<engine>` tool for each SQL-family engine; and
   `register_discovery_tool(mcp)` adds the `list_engines` tool.
-- Both registration helpers run inside `start_stdio_server()` before
-  `mcp.run()`. They share an idempotency dict (`_dbs_vector_registrations`)
-  attached to the FastMCP instance.
+- All three registration helpers run inside
+  `start_stdio_server(allow_raw_queries=...)` before `mcp.run()`. The
+  `allow_raw_queries` flag (from the CLI `--allow-raw-queries` option) is
+  threaded into both the search and browse registrars, so `raw_query` egress is
+  gated identically on both surfaces. The helpers share an idempotency dict
+  (`_dbs_vector_registrations`) attached to the FastMCP instance, keyed by tool
+  name and recording `(engine, family, allow_raw_queries)`.
 - All engines defined in `config.yaml` are loaded once at startup
   (transport-agnostic — `initialize_services()` is in
   `dbs_vector.mcp.state`). Each `dbs-vector mcp` process loads its own

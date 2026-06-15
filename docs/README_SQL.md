@@ -60,13 +60,10 @@ uv run dbs-vector search "SELECT * FROM users" --type sql --min-time 1000
 
 ---
 
-## Analytical access with `browse` *(planned — not yet shipped)*
+## Analytical access with `browse` *(shipped in v1.0.0)*
 
-> **Status:** designed and approved, **not yet implemented**. This section
-> documents the intended interface from
+> **Status:** shipped. Designed in
 > [`docs/superpowers/specs/2026-06-13-sql-browse-design.md`](superpowers/specs/2026-06-13-sql-browse-design.md).
-> Commands below will not work until the `feat/sql-browse` branch lands. No
-> output is shown because nothing runs yet.
 
 `search` is purely semantic — it embeds a query string and ranks by cosine
 similarity. It deliberately cannot point-look-up a fingerprint by `id`, rank by
@@ -84,7 +81,7 @@ embedder). Two front-ends share one execution core:
 - **MCP — structured params** (`where` / `group_by` / `order_by` / `select` /
   `limit`) that an LLM fills in; the handler compiles them to the same SQL.
 
-### CLI examples *(planned)*
+### CLI examples
 
 ```bash
 # Heaviest users by total execution time  (note: "user" must be quoted)
@@ -109,11 +106,28 @@ alias for `t`.
 Only SQL engines (`sql`, `sql-granite`, `sql-api`, `sql-api-granite`) are
 browsable; a non-SQL engine is rejected with the list of valid ones.
 
-**Privacy note:** `raw_query` (verbatim production SQL with real literal values)
-is **gated on the MCP path** behind a per-engine `expose_raw_query` flag
-(default off), so raw query text is not sent to a remote model unless an operator
-opts in. The normalized fingerprint (`text`) is always available. The CLI is
-unrestricted — it prints to your own terminal.
+### Privacy: `raw_query` and the `--allow-raw-queries` flag
+
+`raw_query` is the **verbatim production SQL with real literal values** (PII).
+Embeddings are computed only on the normalized fingerprint (`text`), never on
+`raw_query`, so exposing it is a pure egress decision — controlled by a single
+**server-level** flag on the MCP server:
+
+```bash
+uv run dbs-vector mcp                       # default: raw_query is NEVER exposed
+uv run dbs-vector mcp --allow-raw-queries   # opt-in: raw_query exposable to the model
+```
+
+- **Initial state: OFF (fail-closed).** Without the flag, no MCP tool emits
+  `raw_query`. The normalized `text` is always available regardless.
+- **`browse_<engine>` (MCP):** `select=raw_query` is rejected with a validation
+  error unless the server was started with `--allow-raw-queries`.
+- **`search_<engine>` (MCP):** the `include_raw=true` argument adds a `Raw SQL:`
+  block only under `--allow-raw-queries`; otherwise it is silently downgraded
+  (the block is omitted and the call still succeeds). Both surfaces share one
+  lock — verbatim `raw_query` leaves the process only under the flag.
+- **CLI `browse --sql` is unrestricted** — it runs on your own terminal, so you
+  can `SELECT raw_query` freely; the flag applies only to the MCP server.
 
 ---
 
@@ -152,8 +166,8 @@ cosine similarity. That is exactly the gap `browse` (above) closes: ranking by a
 scalar column, aggregation, and point-lookup, done directly and correctly.
 
 New triage and index-recommendation skills will be **rebuilt on top of `browse`**
-in a later phase, once it ships. Until then, run the analytical queries directly
-through `browse` (CLI) when the `feat/sql-browse` branch lands.
+in a later phase. Until then, run the analytical queries directly through
+`browse` (CLI), which shipped in v1.0.0.
 
 > The companion Phase 2 workflow (live-schema index recommendation via
 > [`askdba/mysql-mcp-server`](https://github.com/askdba/mysql-mcp-server)) is
