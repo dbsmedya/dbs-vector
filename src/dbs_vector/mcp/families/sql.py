@@ -95,9 +95,9 @@ def format_browse(result: BrowseResult) -> str:
 
 
 def _sql_source_phrase(chunker_type: str) -> str:
-    return {"api": "a remote slow-log API",
-            "duckdb": "a local DuckDB slow-query log"}.get(
-        chunker_type, "a SQL slow-query log")
+    return {"api": "a remote slow-log API", "duckdb": "a local DuckDB slow-query log"}.get(
+        chunker_type, "a SQL slow-query log"
+    )
 
 
 class SqlFamily:
@@ -229,9 +229,11 @@ class SqlFamily:
         self, engine_name: str, engine: "EngineConfig", allow_raw_queries: bool
     ) -> str:
         source = _sql_source_phrase(engine.chunker_type)
-        cols = ("id, content_hash, user, host, source, tables, calls, "
-                "execution_time_ms, lock_time_sec, rows_examined, rows_sent, "
-                "latest_ts, text")
+        cols = (
+            "id, content_hash, user, host, source, tables, calls, "
+            "execution_time_ms, lock_time_sec, rows_examined, rows_sent, "
+            "latest_ts, text"
+        )
         if allow_raw_queries:
             cols += ", raw_query (verbatim production SQL with literal values)"
         return (
@@ -338,8 +340,12 @@ class SqlFamily:
             frame_alias = engine_name.replace("-", "_")
             browse = BrowseService(service.vector_store, frame_alias)
             filters = {
-                "id": id, "content_hash": content_hash, "user": user,
-                "host": host, "source": source, "table": table,
+                "id": id,
+                "content_hash": content_hash,
+                "user": user,
+                "host": host,
+                "source": source,
+                "table": table,
                 "min_calls": min_calls,
                 "min_execution_time_ms": min_execution_time_ms,
                 "min_lock_time_sec": min_lock_time_sec,
@@ -347,16 +353,20 @@ class SqlFamily:
 
             def _run() -> BrowseResult:
                 return browse.build_and_run(
-                    filters=filters, group_by=group_by, order_by=order_by,
-                    select=select, limit=limit, allow_raw_queries=allow_raw_queries,
+                    filters=filters,
+                    group_by=group_by,
+                    order_by=order_by,
+                    select=select,
+                    limit=limit,
+                    allow_raw_queries=allow_raw_queries,
                 )
 
             try:
                 result = await asyncio.to_thread(_run)
                 return format_browse(result)
             except BrowseValidationError as e:
-                return str(e)                       # safe, author-controlled
-            except Exception as e:                  # infra: log full, return generic
+                return str(e)  # safe, author-controlled
+            except Exception as e:  # infra: log full, return generic
                 logger.warning("browse '{}' failed: {}", engine_name, e)
                 return "browse execution failed (see server logs)."
 
