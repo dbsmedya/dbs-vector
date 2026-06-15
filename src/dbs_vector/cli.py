@@ -220,9 +220,7 @@ def search(
 
 @app.command()
 def browse(
-    sql: Annotated[
-        str, typer.Option("--sql", help="A read-only SELECT (polars SQL dialect).")
-    ],
+    sql: Annotated[str, typer.Option("--sql", help="A read-only SELECT (polars SQL dialect).")],
     engine_name: Annotated[
         str, typer.Option("--type", "-t", help="SQL engine to browse (sql, sql-api, ...).")
     ] = "sql-api",
@@ -243,9 +241,7 @@ def browse(
         )
         raise typer.Exit(code=1)
     if settings.engines[engine_name].resolved_family != "sql":
-        sql_engines = [
-            n for n, e in settings.engines.items() if e.resolved_family == "sql"
-        ]
+        sql_engines = [n for n, e in settings.engines.items() if e.resolved_family == "sql"]
         typer.echo(
             f"Error: browse is only available for SQL engines. "
             f"'{engine_name}' is not one. Available SQL engines: {sql_engines}"
