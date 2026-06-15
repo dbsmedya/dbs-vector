@@ -18,14 +18,19 @@ mcp = FastMCP("dbs-vector")
 def start_stdio_server(allow_raw_queries: bool = False) -> None:
     """Initialize services, register all tools, and run stdio MCP.
 
-    Takes no arguments — dbs_vector.config.settings is already populated by
-    the CLI callback's _populate_singleton_from(...) call before this runs.
-    initialize_services(), register_search_tools(mcp), register_browse_tools(mcp),
-    and register_discovery_tool(mcp) all read from the singleton too, so
-    settings ownership is consistent across the lifecycle.
+    `allow_raw_queries` is the sole explicit argument — the server-level
+    raw-egress gate from the CLI's --allow-raw-queries flag. Everything else
+    comes from dbs_vector.config.settings, already populated by the CLI
+    callback's _populate_singleton_from(...) call before this runs.
+    initialize_services(), register_search_tools(mcp, allow_raw_queries),
+    register_browse_tools(mcp, allow_raw_queries), and
+    register_discovery_tool(mcp) all read from the singleton too, so settings
+    ownership is consistent across the lifecycle. The flag now reaches BOTH the
+    search and browse registrars, so verbatim raw_query leaves the process only
+    under --allow-raw-queries regardless of which tool a caller uses.
     """
     initialize_services()
-    register_search_tools(mcp)
+    register_search_tools(mcp, allow_raw_queries=allow_raw_queries)
     register_browse_tools(mcp, allow_raw_queries=allow_raw_queries)
     register_discovery_tool(mcp)
     mcp.run()

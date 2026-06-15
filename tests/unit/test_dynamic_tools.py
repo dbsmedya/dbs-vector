@@ -157,3 +157,37 @@ def test_pre_flight_atomicity_no_partial_registration(fresh_mcp, _clean_settings
     tools = fresh_mcp._tool_manager.list_tools()
     assert tools == []
     assert getattr(fresh_mcp, "_dbs_vector_registrations", {}) == {}
+
+
+def test_register_search_tools_threads_allow_raw_queries(fresh_mcp, _clean_settings, monkeypatch):
+    """The server-level flag reaches each family's make_handler."""
+    from dbs_vector.mcp.families.sql import SqlFamily
+
+    _clean_settings.engines = {"sql": _make_engine("sql")}
+    _clean_settings.profiles = {
+        "p": TuningProfile(max_token_length=2048, chunk_max_chars=0, batch_size=1)
+    }
+
+    captured: dict[str, bool] = {}
+    real = SqlFamily.make_handler
+
+    def spy(self, engine_name, allow_raw_queries=False):
+        captured[engine_name] = allow_raw_queries
+        return real(self, engine_name, allow_raw_queries)
+
+    monkeypatch.setattr(SqlFamily, "make_handler", spy)
+    dyn.register_search_tools(fresh_mcp, allow_raw_queries=True)
+
+    assert captured == {"sql": True}
+
+
+def test_register_search_tools_flag_change_raises(fresh_mcp, _clean_settings):
+    """Re-registering the same tool with a different flag is a stale registration."""
+    _clean_settings.engines = {"sql": _make_engine("sql")}
+    _clean_settings.profiles = {
+        "p": TuningProfile(max_token_length=2048, chunk_max_chars=0, batch_size=1)
+    }
+
+    dyn.register_search_tools(fresh_mcp, allow_raw_queries=False)
+    with pytest.raises(RuntimeError, match="Stale tool registration"):
+        dyn.register_search_tools(fresh_mcp, allow_raw_queries=True)

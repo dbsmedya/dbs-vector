@@ -14,18 +14,25 @@ from dbs_vector.mcp.families.base import BrowseFamily
 from dbs_vector.mcp.families.registry import FamilyRegistry
 
 
-def register_search_tools(mcp: FastMCP) -> None:
+def register_search_tools(mcp: FastMCP, allow_raw_queries: bool = False) -> None:
     """Iterate settings.engines and register one MCP tool per engine.
+
+    `allow_raw_queries` is the server-level egress flag (from
+    --allow-raw-queries); it is threaded into each family's make_handler and
+    recorded in the registration tuple so a second call with a different flag
+    raises instead of silently keeping a stale handler. Mirrors
+    register_browse_tools. Defaults to False (fail-closed).
 
     Reads from the module-level `settings` singleton (already populated by
     the CLI callback via _populate_singleton_from). Tests monkey-patch
     `dbs_vector.mcp.dynamic_tools.settings` for isolation.
 
     Idempotency rules:
-      - Skip if the same (engine_name, family_key) is already registered.
-      - Raise if the same tool name is registered with a DIFFERENT
-        (engine_name, family_key) — settings are expected to be immutable
-        for the lifetime of a FastMCP instance.
+      - Skip if the same (engine_name, family_key, allow_raw_queries) is
+        already registered.
+      - Raise if the same tool name is registered with DIFFERENT settings —
+        settings are expected to be immutable for the lifetime of a FastMCP
+        instance.
 
     Pre-flight failures (raise before any tool is registered):
       - Engine name not matching ENGINE_NAME_PATTERN.
@@ -38,8 +45,8 @@ def register_search_tools(mcp: FastMCP) -> None:
     """
     mcp_any: Any = mcp
     if not hasattr(mcp_any, "_dbs_vector_registrations"):
-        mcp_any._dbs_vector_registrations = {}  # tool_name → (engine_name, family_key)
-    registrations: dict[str, tuple[str, str]] = mcp_any._dbs_vector_registrations
+        mcp_any._dbs_vector_registrations = {}  # tool_name → (engine_name, family_key, allow_raw_queries)
+    registrations: dict[str, tuple[str, str, bool]] = mcp_any._dbs_vector_registrations
 
     # Pre-flight: name pattern + collision + family resolution.
     seen: dict[str, str] = {}
@@ -66,25 +73,25 @@ def register_search_tools(mcp: FastMCP) -> None:
     # Registration phase — every engine has been validated.
     for engine_name, tool_name, family_key in resolved:
         family = FamilyRegistry.get(family_key)
+        current = (engine_name, family_key, allow_raw_queries)
         prior = registrations.get(tool_name)
         if prior is not None:
-            if prior == (engine_name, family_key):
+            if prior == current:
                 continue  # idempotent — same registration
             raise RuntimeError(
-                f"Stale tool registration for '{tool_name}': previously registered "
-                f"as engine={prior[0]} family={prior[1]}, now requested as "
-                f"engine={engine_name} family={family_key}. Reset the FastMCP "
-                f"instance instead of re-registering with different settings."
+                f"Stale tool registration for '{tool_name}': previously "
+                f"{prior}, now {current}. Reset the FastMCP instance instead "
+                f"of re-registering with different settings."
             )
 
         engine = settings.engines[engine_name]
-        handler = family.make_handler(engine_name)
+        handler = family.make_handler(engine_name, allow_raw_queries)
         mcp.add_tool(
             handler,
             name=tool_name,
             description=family.search_description(engine_name, engine),
         )
-        registrations[tool_name] = (engine_name, family_key)
+        registrations[tool_name] = current
 
 
 def register_browse_tools(mcp: FastMCP, allow_raw_queries: bool) -> None:
