@@ -28,6 +28,13 @@ def patched(monkeypatch):
         def __init__(self, fam):
             self.resolved_family = fam
 
+    # The CLI's @app.callback() reloads settings from config.yaml on every invoke
+    # (load_settings + _populate_singleton_from), which would overwrite the engines
+    # we monkeypatch below. config.yaml is gitignored, so it is absent in CI
+    # (engines -> {}); neutralize the reload to keep this a hermetic unit test.
+    monkeypatch.setattr("dbs_vector.config.load_settings", lambda *a, **k: None)
+    monkeypatch.setattr("dbs_vector.config._populate_singleton_from", lambda *a, **k: None)
+
     monkeypatch.setattr(
         cli_mod.settings, "engines", {"sql-api": _E("sql"), "md": _E("document")}, raising=False
     )
