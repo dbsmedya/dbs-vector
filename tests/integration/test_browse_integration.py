@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 import numpy as np
+import pytest
 
 from dbs_vector.infrastructure.storage.lancedb_engine import LanceDBStore
 from dbs_vector.infrastructure.storage.mappers import SqlMapper
@@ -101,8 +102,11 @@ def test_browse_grouped_by_user_end_to_end(tmp_path):
 
     svc = BrowseService(store, frame_alias="sql_api")
     result = svc.build_and_run(
-        filters={}, group_by="user", order_by="execution_time_ms:desc",
-        select=None, limit=10,
+        filters={},
+        group_by="user",
+        order_by="execution_time_ms:desc",
+        select=None,
+        limit=10,
     )
     assert result.grouped is True
     assert result.rows[0]["user"] == "alice"
@@ -116,11 +120,14 @@ def test_browse_grouped_by_table_end_to_end(tmp_path):
 
     svc = BrowseService(store, frame_alias="sql_api")
     result = svc.build_and_run(
-        filters={}, group_by="tables", order_by="fingerprints:desc",
-        select=None, limit=10,
+        filters={},
+        group_by="tables",
+        order_by="fingerprints:desc",
+        select=None,
+        limit=10,
     )
     counts = {r["tables"]: r["fingerprints"] for r in result.rows}
-    assert counts["orders"] == 2          # A and B both touch orders
+    assert counts["orders"] == 2  # A and B both touch orders
 
 
 def test_browse_sees_checkout_latest_updates(tmp_path):
@@ -135,3 +142,24 @@ def test_browse_sees_checkout_latest_updates(tmp_path):
     store2 = _make_store(tmp_path)
     _seed(store2)  # adds A,B again (dup ids ok for count) → table grows
     assert svc.run_sql("SELECT id FROM t").total_matching == 4
+
+
+@pytest.mark.asyncio
+async def test_triage_handler_end_to_end(tmp_path, monkeypatch):
+    import dbs_vector.mcp.state as state
+    from dbs_vector.mcp.families.sql import SqlFamily
+
+    store = _make_store(tmp_path)
+    _seed(store)  # A: calls=10 exec=100 -> impact 1000; B: calls=5 exec=50 -> impact 250
+
+    class _Svc:
+        def __init__(self, s):
+            self.vector_store = s
+
+    monkeypatch.setitem(state._services, "sql-api", _Svc(store))
+    handler = SqlFamily().make_triage_handler("sql-api", allow_raw_queries=False)
+    out = await handler()
+
+    assert "impact_score" in out
+    assert out.index("A") < out.index("B")  # A outranks B by impact_score
+    assert "RAW-A" not in out  # raw_query gated off by default
