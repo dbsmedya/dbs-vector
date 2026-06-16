@@ -149,3 +149,23 @@ class BrowseFamily(Protocol):
     ) -> str:
         """Compose the LLM-facing description for this engine's browse tool."""
         ...
+
+
+@runtime_checkable
+class TriageFamily(Protocol):
+    """A family that additionally exposes a top_impacting triage MCP tool.
+
+    Only SQL-style families implement this. Declared separately so the triage
+    registrar can narrow a SearchFamily to a triage-capable family with
+    isinstance(), exactly as BrowseFamily does for browse.
+    """
+
+    def make_triage_handler(self, engine_name: str, allow_raw_queries: bool = False) -> Any:
+        """Build a per-engine async triage handler for FastMCP."""
+        ...
+
+    def triage_description(
+        self, engine_name: str, engine: "EngineConfig", allow_raw_queries: bool
+    ) -> str:
+        """Compose the LLM-facing description for this engine's triage tool."""
+        ...

@@ -21,6 +21,18 @@ if TYPE_CHECKING:
     from dbs_vector.config import EngineConfig
 
 _RAW_QUERY_DISPLAY_LIMIT = 2_000
+_TRIAGE_SELECT = (
+    "id,tables,calls,execution_time_ms,impact_score,avg_ms_per_call,"
+    "lock_time_sec,rows_examined,rows_sent,selectivity,latest_ts"
+)
+_TRIAGE_ORDER_ALLOWLIST = (
+    "impact_score",
+    "execution_time_ms",
+    "calls",
+    "lock_time_sec",
+    "avg_ms_per_call",
+    "selectivity",
+)
 
 
 def _truncate_raw_query(raw_query: str) -> str:
@@ -85,6 +97,29 @@ def format_browse(result: BrowseResult) -> str:
 
     def _block(row: dict[str, Any]) -> str:
         return " | ".join(f"{col}={_fmt_cell(row.get(col))}" for col in result.columns)
+
+    return render_with_budget(
+        header,
+        (_block(r) for r in result.rows),
+        RESPONSE_BUDGET_BYTES,
+        total=len(result.rows),
+    )
+
+
+def format_triage(result: BrowseResult) -> str:
+    """Render curated triage rows, with raw_query on a paste-friendly block."""
+    if not result.rows:
+        return "0 rows matched."
+    header = f"Showing {len(result.rows)} of {result.total_matching} fingerprints:\n"
+    scalar_cols = [c for c in result.columns if c != "raw_query"]
+    has_raw = "raw_query" in result.columns
+
+    def _block(row: dict[str, Any]) -> str:
+        line = " | ".join(f"{c}={_fmt_cell(row.get(c))}" for c in scalar_cols)
+        if has_raw:
+            raw = _truncate_raw_query(str(row.get("raw_query") or ""))
+            return f"{line}\nRaw SQL:\n{raw}"
+        return line
 
     return render_with_budget(
         header,
@@ -377,5 +412,82 @@ class SqlFamily:
             except Exception as e:  # infra: log full, return generic
                 logger.warning("browse '{}' failed: {}", engine_name, e)
                 return "browse execution failed (see server logs)."
+
+        return handler
+
+    def triage_description(
+        self, engine_name: str, engine: "EngineConfig", allow_raw_queries: bool
+    ) -> str:
+        source = _sql_source_phrase(engine.chunker_type)
+        raw = (
+            " When the server was started with --allow-raw-queries AND "
+            "include_raw=true, a truncated verbatim raw_query exemplar (ready to "
+            "paste into a MySQL EXPLAIN) is appended."
+            if allow_raw_queries
+            else ""
+        )
+        return (
+            f"Triage the highest-impact slow-query fingerprints from {source}. "
+            f"Returns the top `limit` (default 10) ranked by impact_score = "
+            f"calls * execution_time_ms (frequency-weighted 'what is hammering the "
+            f"database'). Columns: id, tables, calls, execution_time_ms, "
+            f"impact_score, avg_ms_per_call, lock_time_sec, rows_examined, "
+            f"rows_sent, selectivity, latest_ts. NOTE: rows_examined/rows_sent are "
+            f"the most-recent call's values (not averages). Optional params: "
+            f"`table` (scope to a table, lowercased match), `min_calls`, "
+            f"`order_by` ('<col>[:asc|:desc]', default impact_score:desc; col one "
+            f"of {', '.join(_TRIAGE_ORDER_ALLOWLIST)}), `include_raw`.{raw}"
+        )
+
+    def make_triage_handler(self, engine_name: str, allow_raw_queries: bool = False) -> Any:
+        async def handler(
+            limit: int = 10,
+            table: str | None = None,
+            order_by: str = "impact_score:desc",
+            min_calls: int | None = None,
+            include_raw: bool = False,
+        ) -> str:
+            from loguru import logger
+
+            from dbs_vector.mcp.state import _services
+
+            service = _services.get(engine_name)
+            if service is None:
+                return f"Error: search service '{engine_name}' is not initialized."
+
+            col = order_by.partition(":")[0].strip()
+            if col not in _TRIAGE_ORDER_ALLOWLIST:
+                return (
+                    f"order_by must be one of {', '.join(_TRIAGE_ORDER_ALLOWLIST)}; "
+                    f"got '{col}'."
+                )
+
+            select = _TRIAGE_SELECT
+            # Silent downgrade (search-style): raw exemplar only under the flag.
+            if include_raw and allow_raw_queries:
+                select += ",raw_query"
+
+            frame_alias = engine_name.replace("-", "_")
+            browse = BrowseService(service.vector_store, frame_alias)
+            filters = {"table": table, "min_calls": min_calls}
+
+            def _run() -> BrowseResult:
+                return browse.build_and_run(
+                    filters=filters,
+                    group_by=None,
+                    order_by=order_by,
+                    select=select,
+                    limit=limit,
+                    allow_raw_queries=allow_raw_queries,
+                )
+
+            try:
+                result = await asyncio.to_thread(_run)
+                return format_triage(result)
+            except BrowseValidationError as e:
+                return str(e)  # safe, author-controlled
+            except Exception as e:  # infra: log full, return generic
+                logger.warning("triage '{}' failed: {}", engine_name, e)
+                return "triage execution failed (see server logs)."
 
         return handler
