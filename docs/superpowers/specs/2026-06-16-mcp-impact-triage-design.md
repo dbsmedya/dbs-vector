@@ -268,7 +268,7 @@ def make_triage_handler(self, engine_name: str, allow_raw_queries: bool = False)
 
         try:
             result = await asyncio.to_thread(_run)
-            return format_browse(result)
+            return format_triage(result)  # dedicated formatter (see below)
         except BrowseValidationError as e:
             return str(e)
         except Exception as e:
@@ -282,9 +282,15 @@ Notes:
   rest via `.get(...)` → `None`, so omitted filters are inert.
 - `table` matches the normalized (lowercased) `tables` list — same semantics as `browse`.
 - `include_raw` with the flag off is **silently downgraded** (search posture), not an error
-  — friendlier for a convenience tool. The exemplar is truncated by `format_browse` (B).
+  — friendlier for a convenience tool.
 - `order_by` is restricted to the impact-relevant allowlist; anything else returns a clear
   message rather than ordering by an odd column.
+- **Dedicated `format_triage` formatter** (module-level in `families/sql.py`, beside
+  `format_browse`): renders the curated scalar columns as a compact header line per
+  fingerprint, and the `raw_query` exemplar — when present — on its **own block**
+  (`Raw SQL:\n…`, like `search` does) rather than as an inline `raw_query=<blob>` cell, so a
+  multi-line exemplar is paste-ready for `EXPLAIN`. Long cells are truncated via `_fmt_cell` /
+  `_truncate_raw_query` (Component B) and the whole response stays under the byte budget.
 
 ### C.3 Description — `SqlFamily.triage_description`
 

@@ -256,14 +256,10 @@ In `src/dbs_vector/services/browse.py`, replace `_build_flat_sql` (lines 256-276
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_browse_service.py -v`
-Expected: PASS (all, including the pre-existing browse-service tests).
-
-If `test_flat_selectivity_div_by_zero_is_null` fails with a polars SQL parse error on `NULLIF`, replace the two division expressions in `_FLAT_DERIVED_EXPR` with `CASE WHEN`:
-```python
-    "avg_ms_per_call": 'CASE WHEN "calls" = 0 THEN NULL ELSE "execution_time_ms" / "calls" END',
-    "selectivity": 'CASE WHEN "rows_sent" = 0 THEN NULL ELSE "rows_examined" / "rows_sent" END',
-```
-(`impact_score` needs no guard.) Re-run; the grouped builder already uses `NULLIF`, so this fallback is unlikely to be needed.
+Expected: PASS (all, including the pre-existing browse-service tests). Column-level
+`NULLIF` is confirmed working in the current polars `SQLContext` (verified directly), so
+the `selectivity`/`avg_ms_per_call` divide-by-zero guards return null as intended — no
+`CASE WHEN` fallback is needed.
 
 - [ ] **Step 7: Commit**
 
@@ -324,9 +320,10 @@ with
 
 ```python
             f"columns); `limit` (default 10). Columns: {cols}. Non-grouped mode "
-            f"also offers derived columns (selectable and orderable): "
-            f"impact_score (calls*execution_time_ms), avg_ms_per_call, "
-            f"selectivity (rows_examined/rows_sent). Grouping yields "
+            f"adds two derived columns (selectable and orderable): impact_score "
+            f"(calls*execution_time_ms) and selectivity (rows_examined/rows_sent); "
+            f"avg_ms_per_call (per-fingerprint execution_time_ms/calls) is available "
+            f"in both modes. Grouping yields "
 ```
 
 This keeps `raw_query` in the base column list (it is not a derived column) and adds the derived-columns clause cleanly before the grouping sentence.
@@ -353,7 +350,7 @@ Add a narrow `TriageFamily` Protocol (so the registrar can `isinstance`-narrow) 
 
 **Files:**
 - Modify: `src/dbs_vector/mcp/families/base.py` (add `TriageFamily` after `BrowseFamily`, line 152)
-- Modify: `src/dbs_vector/mcp/families/sql.py` (add constants + `make_triage_handler` + `triage_description` on `SqlFamily`)
+- Modify: `src/dbs_vector/mcp/families/sql.py` (add constants + module-level `format_triage` + `make_triage_handler` + `triage_description` on `SqlFamily`)
 - Test: `tests/unit/test_triage_mcp_handler.py` (new)
 
 - [ ] **Step 1: Write the failing tests**
@@ -448,6 +445,7 @@ async def test_triage_raw_query_present_when_allowed(wired):
     handler = SqlFamily().make_triage_handler("sql-api", allow_raw_queries=True)
     out = await handler(include_raw=True)
     assert "RAW-A-SECRET" in out
+    assert "Raw SQL:" in out  # exemplar rendered on its own block, not an inline cell
 
 
 @pytest.mark.asyncio
@@ -455,7 +453,7 @@ async def test_triage_table_filter(wired):
     wired(_FakeStore(_table()))
     handler = SqlFamily().make_triage_handler("sql-api", allow_raw_queries=False)
     out = await handler(table="items")
-    assert "Showing 1 of 1 rows" in out
+    assert "Showing 1 of 1 fingerprints" in out
     assert "items" in out
 
 
@@ -464,7 +462,7 @@ async def test_triage_min_calls_filter(wired):
     wired(_FakeStore(_table()))
     handler = SqlFamily().make_triage_handler("sql-api", allow_raw_queries=False)
     out = await handler(min_calls=8)  # only A (calls=10)
-    assert "Showing 1 of 1 rows" in out
+    assert "Showing 1 of 1 fingerprints" in out
 
 
 @pytest.mark.asyncio
@@ -598,7 +596,7 @@ Then add these two methods inside `class SqlFamily` (e.g. after `make_browse_han
 
             try:
                 result = await asyncio.to_thread(_run)
-                return format_browse(result)
+                return format_triage(result)
             except BrowseValidationError as e:
                 return str(e)  # safe, author-controlled
             except Exception as e:  # infra: log full, return generic
@@ -608,12 +606,45 @@ Then add these two methods inside `class SqlFamily` (e.g. after `make_browse_han
         return handler
 ```
 
-(`asyncio`, `BrowseService`, `BrowseResult`, `BrowseValidationError`, `format_browse`, `_sql_source_phrase`, and the `EngineConfig` TYPE_CHECKING import are already present at the top of `families/sql.py`.)
+Also add this module-level function near `format_browse` (after line 94 in `families/sql.py`). Unlike browse's compact `col=val | col=val` row, the triage formatter puts the `raw_query` exemplar on its **own block** so multi-line SQL is paste-ready for `EXPLAIN`:
+
+```python
+def format_triage(result: BrowseResult) -> str:
+    """Render a triage result under the MCP byte budget: curated scalar columns on
+    a header line per fingerprint, and the raw_query exemplar (when present) on its
+    OWN block for clean EXPLAIN paste. Long cells are truncated via _fmt_cell /
+    _truncate_raw_query.
+
+    raw_query is in result.columns ONLY when gated in upstream (--allow-raw-queries
+    + include_raw); this formatter never re-checks the flag (matches format_browse).
+    """
+    if not result.rows:
+        return "0 rows matched."
+    header = f"Showing {len(result.rows)} of {result.total_matching} fingerprints:\n"
+    scalar_cols = [c for c in result.columns if c != "raw_query"]
+    has_raw = "raw_query" in result.columns
+
+    def _block(row: dict[str, Any]) -> str:
+        line = " | ".join(f"{c}={_fmt_cell(row.get(c))}" for c in scalar_cols)
+        if has_raw:
+            raw = _truncate_raw_query(str(row.get("raw_query") or ""))
+            return f"{line}\nRaw SQL:\n{raw}"
+        return line
+
+    return render_with_budget(
+        header,
+        (_block(r) for r in result.rows),
+        RESPONSE_BUDGET_BYTES,
+        total=len(result.rows),
+    )
+```
+
+(`format_triage` is the new function added here. `asyncio`, `BrowseService`, `BrowseResult`, `BrowseValidationError`, `format_browse`, `_fmt_cell`, `_truncate_raw_query`, `render_with_budget`, `RESPONSE_BUDGET_BYTES`, `_sql_source_phrase`, `Any`, and the `EngineConfig` TYPE_CHECKING import are all already present at the top of `families/sql.py`.)
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_triage_mcp_handler.py -v`
-Expected: PASS (all 9 tests).
+Expected: PASS (all 8 tests).
 
 - [ ] **Step 6: Commit**
 
@@ -860,10 +891,12 @@ async def test_triage_handler_end_to_end(tmp_path, monkeypatch):
 
 Add `import pytest` to the top of the file if it is not already imported.
 
-- [ ] **Step 2: Run the test to verify it fails (then passes)**
+- [ ] **Step 2: Run the test (it passes immediately — this is a regression guard, not red-green TDD)**
+
+This task adds no production code; Tasks 2 and 4 already provide everything it exercises, so the test passes as soon as it is written. Run it to confirm the end-to-end path over the real store.
 
 Run: `uv run pytest tests/integration/test_browse_integration.py::test_triage_handler_end_to_end -v`
-Expected: PASS once Tasks 2 and 4 are in place (this task adds no new production code — it is an end-to-end guard over the real store). If run before Tasks 2/4, it fails with an import/`BrowseValidationError`.
+Expected: PASS.
 
 - [ ] **Step 3: Run the full integration suite**
 
