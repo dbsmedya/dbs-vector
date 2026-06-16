@@ -71,8 +71,8 @@ def _fmt_cell(value: Any) -> str:
     if isinstance(value, int) and not isinstance(value, bool):
         return f"{value:,}"
     if isinstance(value, list):
-        return ", ".join(str(v) for v in value) if value else "n/a"
-    return str(value)
+        return _truncate_raw_query(", ".join(str(v) for v in value)) if value else "n/a"
+    return _truncate_raw_query(str(value))
 
 
 def format_browse(result: BrowseResult) -> str:
