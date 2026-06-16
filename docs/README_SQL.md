@@ -62,8 +62,8 @@ uv run dbs-vector search "SELECT * FROM users" --type sql --min-time 1000
 
 ## Analytical access with `browse` *(shipped in v1.0.0)*
 
-> **Status:** shipped. Designed in
-> [`docs/superpowers/specs/2026-06-13-sql-browse-design.md`](superpowers/specs/2026-06-13-sql-browse-design.md).
+> **Status:** shipped. See [`README_MCP.md`](README_MCP.md) for the full per-tool
+> reference and the bundled `find-impacting-queries` skill.
 
 `search` is purely semantic — it embeds a query string and ranks by cosine
 similarity. It deliberately cannot point-look-up a fingerprint by `id`, rank by
@@ -177,7 +177,6 @@ in a later phase. Until then, run the analytical queries directly through
 
 ### Further reading
 
-- [`docs/superpowers/specs/2026-06-13-sql-browse-design.md`](superpowers/specs/2026-06-13-sql-browse-design.md) — `browse` design spec
-- [`README_MCP.md`](README_MCP.md) — MCP installation and tool naming
+- [`README_MCP.md`](README_MCP.md) — MCP installation, tool naming, triage tools, and the bundled diagnostic skills
 - [`README_REMOTE_SQL_API.md`](README_REMOTE_SQL_API.md) — ingestion via remote slow-log API
 - [`README_EMBEDDINGS.md`](README_EMBEDDINGS.md) — embedding model details

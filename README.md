@@ -16,7 +16,7 @@ It enables lightning-fast, hybrid (Vector + Full-Text) search across your local 
 *   **Code-Aware Chunking**: Intelligently splits documentation and code, respecting markdown fences so that code blocks are indexed as atomic units.
 *   **Production Robustness**: Features dynamic `IVF_PQ` indexing, Rust-level predicate pushdown (metadata filtering), and dataset compaction for delta-updates.
 *   **Remote SQL API Ingestion**: `ApiChunker` pulls pre-aggregated slow-query records from any networked backend over HTTP, replacing local files with a paginated REST API — no changes to the embedding or storage layers.
-*   **Dynamic MCP Tools**: `dbs-vector mcp` exposes one stdio MCP tool per configured engine, so Gemma, Granite, SQL, and future engines become available from `config.yaml`.
+*   **Dynamic MCP Tools**: `dbs-vector mcp` exposes one stdio MCP tool per configured engine from `config.yaml`; SQL engines additionally get an analytical `browse_` tool and an impact-triage `top_impacting_` tool for slow-query diagnosis.
 
 ## 🚀 Installation
 
@@ -125,24 +125,27 @@ uv run dbs-vector mcp
 
 Each configured engine registers a tool named `search_<engine_name>` with dashes replaced by underscores, for example `search_md`, `search_sql`, and `search_md_granite`. Use the `list_engines` tool to inspect loaded engines, model contracts, profiles, and table names.
 
+**SQL engines get two additional analytical tools.** `browse_<engine>` provides non-semantic access — point-lookup by `id`, ranking by a scalar column (`calls`, `execution_time_ms`) with no query string, and grouping/aggregation ("which table or user burns the most DB time"), plus derived `impact_score` and `selectivity` columns. `top_impacting_<engine>` is a one-call **impact triage** that returns the heaviest slow-query fingerprints ranked by `impact_score = calls × execution_time_ms`, each with a paste-ready exemplar SQL for `EXPLAIN`. Verbatim production SQL (`raw_query`, possibly PII) is exposed only when the server is launched with `--allow-raw-queries` (fail-closed by default). See the MCP documentation for the full per-tool reference.
+
 For setup instructions, see:
 👉 **[MCP Server Documentation](docs/README_MCP.md)**
 
-### Bundled Claude Skills — *being rebuilt*
+### Bundled Claude Skills
 
-`dbs-vector` previously shipped two Claude Skills under `skills/`
-(`slow-query-triage` and `locking-query-triage`) for slow-log triage.
-**Both have been removed.** They were built on semantic-search
-*workarounds* — coercing a ranking out of the similarity-only `search`
-verb via filter parameters — which the new analytical `browse` verb
-replaces with direct ranking, aggregation, and point-lookup.
+`dbs-vector` ships two read-only SQL-performance skills under `skills/` that
+combine its slow-query MCP tools with a live MySQL MCP (e.g. `mysql-mcp-server`):
 
-New triage and index-recommendation skills will be **rebuilt on top of
-`browse`** in a later phase. See
-[`docs/README_SQL.md`](docs/README_SQL.md#analytical-access-with-browse-planned--not-yet-shipped)
-for the planned `browse` interface and
-[`docs/superpowers/specs/2026-06-13-sql-browse-design.md`](docs/superpowers/specs/2026-06-13-sql-browse-design.md)
-for the design spec.
+*   **`find-impacting-queries`** — finds and diagnoses the costliest queries:
+    a one-call `top_impacting_<engine>` triage → live `EXPLAIN` + `list_indexes`
+    + `table_size` → an index recommendation, an *already-optimal / contention*
+    verdict, or a *rewrite-candidate* handoff. Index-first; no business
+    knowledge required.
+*   **`query-rewrite`** — the handoff partner: rewrites a query when an index
+    won't help (full-table aggregates, `SELECT *` + deep pagination, redundant
+    joins, ORM noise), interviewing the domain owner first so a rewrite never
+    silently changes results.
+
+See **[MCP Server Documentation](docs/README_MCP.md#diagnostic-skills-find-impacting-queries--query-rewrite)** for the end-to-end workflow.
 
 ## 🏗 Architecture & Roadmap
 
