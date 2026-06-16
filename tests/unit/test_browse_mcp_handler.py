@@ -6,9 +6,9 @@ import pytest
 import dbs_vector.mcp.state as state
 from dbs_vector.mcp.families.sql import (
     _RAW_QUERY_DISPLAY_LIMIT,
+    SqlFamily,
     _fmt_cell,
     format_browse,
-    SqlFamily,
 )
 from dbs_vector.services.browse import BrowseResult
 

@@ -457,10 +457,7 @@ class SqlFamily:
 
             col = order_by.partition(":")[0].strip()
             if col not in _TRIAGE_ORDER_ALLOWLIST:
-                return (
-                    f"order_by must be one of {', '.join(_TRIAGE_ORDER_ALLOWLIST)}; "
-                    f"got '{col}'."
-                )
+                return f"order_by must be one of {', '.join(_TRIAGE_ORDER_ALLOWLIST)}; got '{col}'."
 
             select = _TRIAGE_SELECT
             # Silent downgrade (search-style): raw exemplar only under the flag.
