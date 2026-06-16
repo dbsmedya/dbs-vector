@@ -65,7 +65,18 @@ rm -rf .mypy_cache .pytest_cache .ruff_cache .coverage htmlcov dist build
 find . -type d -name '__pycache__' -exec rm -rf {} +
 """
 check = ["format", "lint", "typecheck", "test"]
-github-release-test = ["check"]
+# Reproduces CI locally: hide gitignored runtime config (config.yaml) so the
+# checks see exactly what a clean GitHub checkout sees, then restore it. In CI
+# config.yaml is absent, so the hide is a no-op — this stays the CI entrypoint.
+github-release-test.help = "Run `check` as CI sees it (config.yaml hidden, then restored)."
+github-release-test.shell = """
+restore() { [ -f config.yaml.release-test-hidden ] && mv config.yaml.release-test-hidden config.yaml; }
+trap restore EXIT
+[ -f config.yaml ] && mv config.yaml config.yaml.release-test-hidden
+uv run poe check
+rc=$?
+exit "$rc"
+"""
 
 [tool.ruff]
 line-length = 100
