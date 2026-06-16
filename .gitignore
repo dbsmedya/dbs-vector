@@ -6,6 +6,7 @@ dist/
 wheels/
 *.egg-info
 .DS_Store
+.mcp.json
 
 # Virtual environments
 .claude
@@ -18,3 +19,4 @@ lancedb_dbs_vector/
 
 # Config
 config.yaml
+
