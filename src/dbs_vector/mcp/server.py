@@ -9,7 +9,11 @@ inside start_stdio_server() before the mcp.run() loop begins.
 from mcp.server.fastmcp import FastMCP
 
 from dbs_vector.mcp.discovery import register_discovery_tool
-from dbs_vector.mcp.dynamic_tools import register_browse_tools, register_search_tools
+from dbs_vector.mcp.dynamic_tools import (
+    register_browse_tools,
+    register_search_tools,
+    register_triage_tools,
+)
 from dbs_vector.mcp.state import initialize_services
 
 mcp = FastMCP("dbs-vector")
@@ -32,5 +36,6 @@ def start_stdio_server(allow_raw_queries: bool = False) -> None:
     initialize_services()
     register_search_tools(mcp, allow_raw_queries=allow_raw_queries)
     register_browse_tools(mcp, allow_raw_queries=allow_raw_queries)
+    register_triage_tools(mcp, allow_raw_queries=allow_raw_queries)
     register_discovery_tool(mcp)
     mcp.run()

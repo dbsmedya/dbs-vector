@@ -10,7 +10,7 @@ from mcp.server.fastmcp import FastMCP
 
 from dbs_vector.config import settings
 from dbs_vector.core.naming import ENGINE_NAME_PATTERN, normalize_tool_name
-from dbs_vector.mcp.families.base import BrowseFamily
+from dbs_vector.mcp.families.base import BrowseFamily, TriageFamily
 from dbs_vector.mcp.families.registry import FamilyRegistry
 
 
@@ -149,5 +149,64 @@ def register_browse_tools(mcp: FastMCP, allow_raw_queries: bool) -> None:
             handler,
             name=tool_name,
             description=family.browse_description(engine_name, engine, allow_raw_queries),
+        )
+        registrations[tool_name] = current
+
+
+def register_triage_tools(mcp: FastMCP, allow_raw_queries: bool) -> None:
+    """Register one top_impacting_<engine> tool per SQL-family engine.
+
+    Mirrors register_browse_tools' pre-flight (name pattern, collision, family
+    resolution, idempotency) but registers ONLY engines whose
+    resolved_family == "sql", uses verb="top_impacting" tool names, and sources
+    the description from family.triage_description(engine, allow_raw_queries).
+    """
+    mcp_any: Any = mcp
+    if not hasattr(mcp_any, "_dbs_vector_registrations"):
+        mcp_any._dbs_vector_registrations = {}
+    registrations: dict[str, tuple] = mcp_any._dbs_vector_registrations
+
+    seen: dict[str, str] = {}
+    resolved: list[tuple[str, str, str, Any]] = []
+    for engine_name, engine in settings.engines.items():
+        if engine.resolved_family != "sql":
+            continue
+        if not ENGINE_NAME_PATTERN.match(engine_name):
+            raise ValueError(
+                f"Engine name '{engine_name}' must match {ENGINE_NAME_PATTERN.pattern}."
+            )
+        tool_name = normalize_tool_name(engine_name, verb="top_impacting")
+        if tool_name in seen:
+            raise ValueError(
+                f"MCP tool name collision: '{seen[tool_name]}' and '{engine_name}' "
+                f"both normalize to '{tool_name}'."
+            )
+        seen[tool_name] = engine_name
+        family_key = engine.resolved_family
+        FamilyRegistry.get(family_key)
+        resolved.append((engine_name, tool_name, family_key, engine))
+
+    for engine_name, tool_name, family_key, engine in resolved:
+        family = FamilyRegistry.get(family_key)
+        if not isinstance(family, TriageFamily):
+            raise RuntimeError(
+                f"Family '{family_key}' for engine '{engine_name}' does not "
+                f"support triage (missing make_triage_handler/triage_description)."
+            )
+        prior = registrations.get(tool_name)
+        current = (engine_name, family_key, allow_raw_queries)
+        if prior is not None:
+            if prior == current:
+                continue
+            raise RuntimeError(
+                f"Stale triage tool registration for '{tool_name}': previously "
+                f"{prior}, now {current}. Reset the FastMCP instance instead of "
+                f"re-registering with different settings."
+            )
+        handler = family.make_triage_handler(engine_name, allow_raw_queries)
+        mcp.add_tool(
+            handler,
+            name=tool_name,
+            description=family.triage_description(engine_name, engine, allow_raw_queries),
         )
         registrations[tool_name] = current
