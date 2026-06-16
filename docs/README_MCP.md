@@ -149,20 +149,29 @@ team needs Cursor support, you can wrap stdio with an external bridge
 
 ## Tools Provided
 
-`dbs-vector` registers one MCP tool per engine in `config.yaml`, plus
-one `list_engines` discovery tool. Tool names follow the pattern
-`search_<engine_name>` with dashes (`-`) replaced by underscores.
+`dbs-vector` registers tools dynamically from `config.yaml`, plus one
+`list_engines` discovery tool. Tool names follow `<verb>_<engine_name>`
+with dashes (`-`) replaced by underscores. Each **document** engine gets a
+`search_` tool; each **SQL** engine gets three — `search_` (semantic),
+`browse_` (analytical), and `top_impacting_` (triage).
 
 For the default `config.yaml` shipped with the project:
 
-| Tool name | Engine | Family | Description |
-|-----------|--------|--------|-------------|
-| `search_md` | `md` | document | Markdown & Prose Document Engine (Gemma) |
-| `search_sql` | `sql` | sql | SQL Slow Query Log Engine (Gemma) |
-| `search_md_granite` | `md-granite` | document | Markdown & Prose (Granite, long context) |
-| `search_sql_granite` | `sql-granite` | sql | SQL Slow Query Log (Granite) |
-| `search_sql_api_granite` | `sql-api-granite` | sql | Remote slow query log API (Granite) |
-| `list_engines` | — | — | Lists configured engines and tuning profiles |
+| Engine | Family | Tools |
+|--------|--------|-------|
+| `md` | document | `search_md` |
+| `md-granite` | document | `search_md_granite` |
+| `sql` | sql | `search_sql`, `browse_sql`, `top_impacting_sql` |
+| `sql-api` | sql | `search_sql_api`, `browse_sql_api`, `top_impacting_sql_api` |
+| `sql-granite` | sql | `search_sql_granite`, `browse_sql_granite`, `top_impacting_sql_granite` |
+| `sql-api-granite` | sql | `search_sql_api_granite`, `browse_sql_api_granite`, `top_impacting_sql_api_granite` |
+| — | — | `list_engines` |
+
+The three SQL verbs are complementary: **`search_`** ranks by semantic
+similarity to a query string, **`browse_`** ranks analytically by any column
+you choose (see [README_SQL.md](README_SQL.md)), and **`top_impacting_`** is
+a one-call triage returning the highest-impact fingerprints ready for
+diagnosis (below).
 
 ### Search tools (per family)
 
@@ -192,6 +201,28 @@ from unscanned IVF partitions. Combined with `min_lock_time > 0` this
 answers focused investigation questions like "show me all queries that
 lock `dt_customer_performance_report` rows" — the filter narrows the
 universe; the embedding only ranks within it.
+
+### `top_impacting_<engine>` — impact triage (SQL family)
+
+A one-call triage that returns the highest-impact slow-query fingerprints
+ranked by **`impact_score = calls × execution_time_ms`** (frequency-weighted
+"what is hammering the database"). Unlike `search_` it needs no query string;
+unlike `browse_` it pre-selects the columns a tuning investigation needs and
+(under the raw-query flag) appends a paste-ready exemplar for `EXPLAIN`.
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `limit` | int | no | Top-N to return (default 10) |
+| `table` | string | no | Scope to one table (lowercased match against the `tables` list) |
+| `order_by` | string | no | `<col>[:asc\|:desc]`, default `impact_score:desc`; col ∈ `impact_score, execution_time_ms, calls, lock_time_sec, avg_ms_per_call, selectivity` |
+| `min_calls` | int | no | Drop fingerprints below this call count |
+| `include_raw` | bool | no | Append a `Raw SQL:` exemplar block. Honoured **only** under `--allow-raw-queries`; otherwise silently downgraded. |
+
+Each row carries: `id, tables, calls, execution_time_ms, impact_score,
+avg_ms_per_call, lock_time_sec, rows_examined, rows_sent, selectivity,
+latest_ts`. Note `rows_examined`/`rows_sent` are the **most-recent call's**
+values (not averages or sums); `execution_time_ms` is cumulative. `raw_query`
+and any long cell are truncated at ~2,000 chars for transport safety.
 
 ### `list_engines`
 
@@ -227,8 +258,11 @@ uv run dbs-vector mcp --allow-raw-queries   # opt-in: raw_query exposable to the
   [README_SQL.md](README_SQL.md)) — `select=raw_query` is **rejected with a
   validation error** unless the flag is on. The `raw_query` column also appears
   in the tool's self-description only when the flag is on.
+- **`top_impacting_<engine>`** — `include_raw=true` appends the exemplar block
+  only under the flag; otherwise **silently downgraded** (same contract as
+  `search_`).
 
-The two surfaces share one lock: verbatim `raw_query` leaves the process only
+All three surfaces share one lock: verbatim `raw_query` leaves the process only
 under `--allow-raw-queries`. The flag governs the **MCP server only** — the CLI
 `dbs-vector browse --sql ...` path runs on your own terminal and is
 unrestricted. Enable the flag only for a trusted, local model. This is an egress
@@ -237,6 +271,47 @@ setting, not a schema change, so it needs no re-ingest.
 To pass it through Claude Desktop / Claude Code, append `"--allow-raw-queries"`
 to the `args` array (Desktop) or the launch command (`claude mcp add ... -- uv
 ... run dbs-vector mcp --allow-raw-queries`).
+
+---
+
+## Diagnostic skills: find-impacting-queries + query-rewrite
+
+Two bundled skills (under `skills/`) turn these tools into an end-to-end SQL
+performance workflow. They pair `dbs-vector` — which says *which* queries hurt —
+with a live **MySQL MCP** such as `mysql-mcp-server`, which says *why* (via
+`EXPLAIN` / `list_indexes` / `table_size`). Everything is **read-only**: the
+skills emit only `SELECT`/`SHOW`/`EXPLAIN` and hand index/rewrite suggestions to
+a human.
+
+### `find-impacting-queries`
+Finds and diagnoses the costliest queries, index-first:
+
+1. **Triage (one call):** `top_impacting_<engine>(include_raw=true)` →
+   impact-ranked fingerprints with paste-ready exemplar SQL, `avg_ms_per_call`,
+   and `selectivity` inline. Scope with `table=`.
+2. **Validate live:** `EXPLAIN` each exemplar against the MySQL MCP, plus
+   `list_indexes` / `table_size`.
+3. **Classify:** every query lands in one of three outcomes —
+   **INDEX FIX** (a concrete `CREATE INDEX`, the main deliverable),
+   **ALREADY OPTIMAL / CONTENTION** (right index already used; the lever is
+   call-rate, caching, or lock contention), or **REWRITE CANDIDATE** (no index
+   helps → hand off).
+
+### `query-rewrite`
+Takes a **REWRITE CANDIDATE** and rewrites it for performance when an index
+won't help (full-table aggregates, `SELECT *` + deep pagination, redundant
+joins, ORM noise). Because a safe rewrite depends on business meaning the SQL
+text doesn't carry, it **interviews the domain owner first**, then proposes
+semantically-equivalent rewrites with a before/after plan and a
+result-equivalence check for the human to run.
+
+> Enable `--allow-raw-queries` for these skills so the exemplar SQL (with real
+> literals) is available to `EXPLAIN`. Use a trusted, local model — `raw_query`
+> may contain PII. See [Raw query exposure](#raw-query-exposure---allow-raw-queries).
+
+The full workflow — the EXPLAIN field guide, the corpus↔live re-casing fallback,
+and the friction notes — lives in `skills/find-impacting-queries/` and
+`skills/query-rewrite/`.
 
 ---
 
@@ -354,13 +429,15 @@ tail -f ~/Library/Logs/Claude/mcp.log
   iterates `settings.engines` and registers one `search_<engine>` tool per
   engine via the family's `make_handler(engine_name, allow_raw_queries)`
   factory; `register_browse_tools(mcp, allow_raw_queries)` registers a
-  `browse_<engine>` tool for each SQL-family engine; and
+  `browse_<engine>` tool for each SQL-family engine;
+  `register_triage_tools(mcp, allow_raw_queries)` registers a
+  `top_impacting_<engine>` tool for each SQL-family engine; and
   `register_discovery_tool(mcp)` adds the `list_engines` tool.
-- All three registration helpers run inside
+- All four registration helpers run inside
   `start_stdio_server(allow_raw_queries=...)` before `mcp.run()`. The
   `allow_raw_queries` flag (from the CLI `--allow-raw-queries` option) is
-  threaded into both the search and browse registrars, so `raw_query` egress is
-  gated identically on both surfaces. The helpers share an idempotency dict
+  threaded into the search, browse, and triage registrars, so `raw_query` egress
+  is gated identically across all three surfaces. The helpers share an idempotency dict
   (`_dbs_vector_registrations`) attached to the FastMCP instance, keyed by tool
   name and recording `(engine, family, allow_raw_queries)`.
 - All engines defined in `config.yaml` are loaded once at startup
