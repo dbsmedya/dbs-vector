@@ -30,7 +30,7 @@ def test_build_store_does_not_construct_embedder(monkeypatch):
         mock_settings.db_path = "./test.db"
         mock_settings.nprobes = 10
 
-        store = boot.build_store("sql-api")     # sql-api exists in config.yaml
+        store = boot.build_store("sql-api")  # sql-api exists in config.yaml
 
     assert calls["embedder"] == 0
     assert calls["store"] == 1
@@ -40,5 +40,6 @@ def test_build_store_does_not_construct_embedder(monkeypatch):
 
 def test_build_store_unknown_engine_raises():
     import pytest
+
     with pytest.raises(ValueError, match="Unknown engine"):
         boot.build_store("does-not-exist")

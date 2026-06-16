@@ -467,7 +467,7 @@ wheels = [
 
 [[package]]
 name = "dbs-vector"
-version = "0.9.5"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "lancedb" },
