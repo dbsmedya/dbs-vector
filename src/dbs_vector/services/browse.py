@@ -66,6 +66,14 @@ _AGG_SQL = {
     "avg_ms_per_call": 'SUM("execution_time_ms")/NULLIF(SUM("calls"),0) AS avg_ms_per_call',
 }
 assert set(_AGG_SQL) == set(_GROUP_AGGREGATES), "_AGG_SQL keys must match _GROUP_AGGREGATES"
+# Flat-mode derived columns: bare SQL expressions over per-fingerprint rows.
+# Selectable AND orderable in non-grouped browse. Keys are the output names;
+# values omit the "AS name" so the same expression works in ORDER BY.
+_FLAT_DERIVED_EXPR = {
+    "impact_score": '"calls" * "execution_time_ms"',
+    "avg_ms_per_call": '"execution_time_ms" / NULLIF("calls", 0)',
+    "selectivity": '"rows_examined" / NULLIF("rows_sent", 0)',
+}
 # Default non-grouped projection (raw_query appended only when allowed).
 _DEFAULT_SELECT = (
     "id",
@@ -215,7 +223,11 @@ class BrowseService:
         return col, direction.upper()
 
     def _selectable(self, allow_raw_queries: bool) -> tuple[str, ...]:
-        return _SCALAR_COLUMNS + (("raw_query",) if allow_raw_queries else ())
+        return (
+            _SCALAR_COLUMNS
+            + tuple(_FLAT_DERIVED_EXPR)
+            + (("raw_query",) if allow_raw_queries else ())
+        )
 
     def _build_sql(
         self,
@@ -270,9 +282,14 @@ class BrowseService:
         else:
             chosen = list(_DEFAULT_SELECT)
         col, direction = self._parse_order_by(order_by, set(selectable))
+        select_terms = [
+            f"{_FLAT_DERIVED_EXPR[c]} AS {_q(c)}" if c in _FLAT_DERIVED_EXPR else _q(c)
+            for c in chosen
+        ]
+        order_term = _FLAT_DERIVED_EXPR[col] if col in _FLAT_DERIVED_EXPR else _q(col)
         return (
-            f"SELECT {', '.join(_q(c) for c in chosen)} FROM data "
-            f"ORDER BY {_q(col)} {direction} NULLS LAST"
+            f"SELECT {', '.join(select_terms)} FROM data "
+            f"ORDER BY {order_term} {direction} NULLS LAST"
         )
 
     def _filtered_frame(self, filters: dict[str, Any], group_cols: list[str]) -> pl.DataFrame:
@@ -333,7 +350,5 @@ def result_to_table(result: BrowseResult) -> str:
     widths = {c: max(len(c), *(len(cell(r.get(c))) for r in result.rows)) for c in cols}
     head = " | ".join(c.ljust(widths[c]) for c in cols)
     sep = "-+-".join("-" * widths[c] for c in cols)
-    body = "\n".join(
-        " | ".join(cell(r.get(c)).ljust(widths[c]) for c in cols) for r in result.rows
-    )
+    body = "\n".join(" | ".join(cell(r.get(c)).ljust(widths[c]) for c in cols) for r in result.rows)
     return f"{head}\n{sep}\n{body}\n({result.total_matching} rows)"

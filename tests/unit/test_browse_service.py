@@ -124,27 +124,35 @@ def test_build_and_run_caps_to_limit_but_reports_total():
 
 def test_build_and_run_filter_binds_value_correctly():
     result = _svc().build_and_run(
-        filters={"user": "alice"}, group_by=None,
-        order_by="execution_time_ms:desc", select=None, limit=10,
+        filters={"user": "alice"},
+        group_by=None,
+        order_by="execution_time_ms:desc",
+        select=None,
+        limit=10,
     )
-    assert [r["id"] for r in result.rows] == ["A"]   # only alice's row
+    assert [r["id"] for r in result.rows] == ["A"]  # only alice's row
 
 
 def test_build_and_run_injection_value_is_inert():
     payload = "x') UNION SELECT 1 FROM read_csv('/etc/passwd')--"
     result = _svc().build_and_run(
-        filters={"source": payload}, group_by=None,
-        order_by="execution_time_ms:desc", select=None, limit=10,
+        filters={"source": payload},
+        group_by=None,
+        order_by="execution_time_ms:desc",
+        select=None,
+        limit=10,
     )
-    assert result.rows == []          # treated as opaque data; no read_csv, no error
+    assert result.rows == []  # treated as opaque data; no read_csv, no error
 
 
 def test_build_sql_carries_no_user_values():
     # _build_sql has no parameter through which a filter value could enter;
     # the emitted SQL is built solely from allowlisted identifiers + aggregates.
     sql = _svc()._build_sql(
-        group_cols=[], order_by="execution_time_ms:desc",
-        select=None, allow_raw_queries=False,
+        group_cols=[],
+        order_by="execution_time_ms:desc",
+        select=None,
+        allow_raw_queries=False,
     )
     assert "FROM data" in sql and "ORDER BY" in sql
     assert "read_csv" not in sql
@@ -263,35 +271,117 @@ def test_build_and_run_raw_query_allowed_on():
 
 def test_build_and_run_empty_group_by_string_is_not_grouped():
     result = _svc().build_and_run(
-        filters={}, group_by="", order_by="execution_time_ms:desc",
-        select=None, limit=10,
+        filters={},
+        group_by="",
+        order_by="execution_time_ms:desc",
+        select=None,
+        limit=10,
     )
     assert result.grouped is False
-    assert result.total_matching == 3        # flat rows, not aggregated
+    assert result.total_matching == 3  # flat rows, not aggregated
 
 
 def test_build_and_run_grouped_order_by_excluded_select_raises():
     with pytest.raises(BrowseValidationError):
         _svc().build_and_run(
-            filters={}, group_by="user", select="fingerprints",
-            order_by="calls:desc", limit=10,    # calls not in the select projection
+            filters={},
+            group_by="user",
+            select="fingerprints",
+            order_by="calls:desc",
+            limit=10,  # calls not in the select projection
         )
 
 
 def test_build_and_run_rejects_non_positive_limit():
     with pytest.raises(BrowseValidationError):
         _svc().build_and_run(
-            filters={}, group_by=None, order_by="execution_time_ms:desc",
-            select=None, limit=0,
+            filters={},
+            group_by=None,
+            order_by="execution_time_ms:desc",
+            select=None,
+            limit=0,
         )
 
 
 def test_build_and_run_empty_store_returns_no_rows():
-    empty = _table().slice(0, 0)             # correct schema, zero rows
+    empty = _table().slice(0, 0)  # correct schema, zero rows
     svc = BrowseService(FakeStore(empty), frame_alias="sql_api")
     result = svc.build_and_run(
-        filters={}, group_by=None, order_by="execution_time_ms:desc",
-        select=None, limit=10,
+        filters={},
+        group_by=None,
+        order_by="execution_time_ms:desc",
+        select=None,
+        limit=10,
     )
     assert result.rows == []
     assert result.total_matching == 0
+
+
+def test_flat_select_derived_columns():
+    result = _svc().build_and_run(
+        filters={},
+        group_by=None,
+        order_by="impact_score:desc",
+        select="id,impact_score,avg_ms_per_call,selectivity",
+        limit=10,
+    )
+    assert "impact_score" in result.columns
+    top = result.rows[0]
+    # row A: calls=10, exec=100 -> impact=1000, avg=10; examined=50,sent=5 -> sel=10
+    assert top["id"] == "A"
+    assert top["impact_score"] == 1000.0
+    assert top["avg_ms_per_call"] == 10.0
+    assert top["selectivity"] == 10.0
+
+
+def test_flat_order_by_impact_score_without_selecting_it():
+    result = _svc().build_and_run(
+        filters={},
+        group_by=None,
+        order_by="impact_score:desc",
+        select="id",  # impact_score NOT in the projection
+        limit=10,
+    )
+    # impacts: A=1000, B=250, C=25 -> descending order A,B,C
+    assert [r["id"] for r in result.rows] == ["A", "B", "C"]
+
+
+def test_flat_select_rejects_unknown_derived():
+    with pytest.raises(BrowseValidationError):
+        _svc().build_and_run(
+            filters={},
+            group_by=None,
+            order_by="execution_time_ms:desc",
+            select="id,bogus_score",
+            limit=10,
+        )
+
+
+def test_flat_selectivity_div_by_zero_is_null():
+    tbl = pa.table(
+        {
+            "id": ["A"],
+            "content_hash": ["h"],
+            "text": ["x"],
+            "raw_query": ["x"],
+            "source": ["db1"],
+            "user": ["alice"],
+            "host": ["h"],
+            "tables": [["orders"]],
+            "calls": [10],
+            "execution_time_ms": [100.0],
+            "lock_time_sec": [None],
+            "rows_examined": [50],
+            "rows_sent": [0],  # division by zero -> NULLIF -> null
+            "latest_ts": [datetime(2026, 1, 1, tzinfo=UTC)],
+        }
+    )
+    svc = BrowseService(FakeStore(tbl), frame_alias="sql_api")
+    result = svc.build_and_run(
+        filters={},
+        group_by=None,
+        order_by="execution_time_ms:desc",
+        select="id,selectivity",
+        limit=10,
+    )
+    assert result.rows[0]["selectivity"] is None
