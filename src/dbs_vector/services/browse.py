@@ -311,11 +311,15 @@ class BrowseService:
                 exprs.append(pl.col(column) >= value)
         table = filters.get("table")
         if table is not None:
-            normalized = _normalize_table_name(str(table))
+            needle = _normalize_table_name(str(table))
             if explode:
-                exprs.append(pl.col("tables") == normalized)
+                normalized_col = pl.col("tables").str.to_lowercase().str.split(".").list.last()
+                exprs.append(normalized_col == needle)
             else:
-                exprs.append(pl.col("tables").list.contains(normalized))
+                normalized_list = pl.col("tables").list.eval(
+                    pl.element().str.to_lowercase().str.split(".").list.last()
+                )
+                exprs.append(normalized_list.list.contains(needle))
         if exprs:
             frame = frame.filter(*exprs)
         return frame

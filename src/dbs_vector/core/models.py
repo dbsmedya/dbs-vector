@@ -65,6 +65,11 @@ def _normalize_table_name(name: str) -> str:
     return cleaned.lower()
 
 
+def _clean_table_name(name: str) -> str:
+    """Clean a SQL identifier for storage/display while preserving case."""
+    return name.strip().replace('"', "").replace("`", "")
+
+
 def sql_chunk_from_record(record: Mapping[str, Any]) -> SqlChunk:
     """Build a SqlChunk from a normalized record mapping."""
     text = str(record["text"])
@@ -75,10 +80,10 @@ def sql_chunk_from_record(record: Mapping[str, Any]) -> SqlChunk:
     for table in raw_tables:
         if table is None:
             continue
-        normalized = _normalize_table_name(str(table))
-        if normalized and normalized not in seen:
-            seen.add(normalized)
-            tables.append(normalized)
+        cleaned = _clean_table_name(str(table))
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            tables.append(cleaned)
 
     return SqlChunk(
         id=str(record["id"]),

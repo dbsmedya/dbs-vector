@@ -243,7 +243,7 @@ def run_checks(base_url: str, api_key: str, timeout: int) -> int:
                 "queries_has_data_array", "queries_has_has_more_bool",
                 "queries_has_total_count_numeric",
                 "queries_record_has_required_fields", "queries_required_fields_non_null",
-                "queries_tables_is_list_never_null", "queries_tables_original_is_list_never_null",
+                "queries_tables_is_list_never_null",
                 "queries_latest_ts_iso8601",
                 "queries_text_not_empty_string", "queries_id_non_empty_string",
                 "queries_execution_time_ms_numeric", "queries_calls_is_int",
@@ -270,7 +270,7 @@ def run_checks(base_url: str, api_key: str, timeout: int) -> int:
             if records:
                 rec = records[0]
                 required = ["id", "text", "source", "execution_time_ms",
-                            "calls", "tables", "tables_original", "latest_ts"]
+                            "calls", "tables", "latest_ts"]
                 missing = [f for f in required if f not in rec]
                 s.ok("queries_record_has_required_fields", not missing,
                      f"missing: {missing}")
@@ -280,9 +280,6 @@ def run_checks(base_url: str, api_key: str, timeout: int) -> int:
                 s.ok("queries_tables_is_list_never_null",
                      isinstance(rec.get("tables"), list),
                      f"tables={rec.get('tables')!r}")
-                s.ok("queries_tables_original_is_list_never_null",
-                     isinstance(rec.get("tables_original"), list),
-                     f"tables_original={rec.get('tables_original')!r}")
                 s.ok("queries_latest_ts_iso8601",
                      _parse_ts(rec.get("latest_ts")),
                      f"latest_ts={rec.get('latest_ts')!r}")
@@ -301,7 +298,7 @@ def run_checks(base_url: str, api_key: str, timeout: int) -> int:
             else:
                 for name in [
                     "queries_record_has_required_fields", "queries_required_fields_non_null",
-                    "queries_tables_is_list_never_null", "queries_tables_original_is_list_never_null",
+                    "queries_tables_is_list_never_null",
                     "queries_latest_ts_iso8601",
                     "queries_text_not_empty_string", "queries_id_non_empty_string",
                     "queries_execution_time_ms_numeric", "queries_calls_is_int",

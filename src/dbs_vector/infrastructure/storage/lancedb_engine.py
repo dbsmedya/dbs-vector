@@ -8,6 +8,10 @@ from numpy.typing import NDArray
 
 from dbs_vector.core.ports import IStoreMapper
 
+# Strategy switch only: at or below this many matched ids we prefilter with
+# `id IN (...)`. Above it we use an exact vector-only full-scan fallback.
+_TABLE_FILTER_PREFILTER_CAP = 50_000
+
 
 class LanceDBStore:
     """
@@ -101,6 +105,22 @@ class LanceDBStore:
         tbl = self.table.search().select(["content_hash"]).to_arrow()
         return set(tbl.column("content_hash").to_pylist())
 
+    def _matching_table_ids(self, table_filter: str) -> list[str]:
+        """Row ids whose tables contain table_filter after exact normalization."""
+        from dbs_vector.core.models import _normalize_table_name
+
+        needle = _normalize_table_name(table_filter)
+        if not needle:
+            return []
+
+        rows = self.table.search().select(["id", "tables"]).to_arrow().to_pylist()
+        ids: list[str] = []
+        for row in rows:
+            tables = row.get("tables")
+            if isinstance(tables, list) and needle in {_normalize_table_name(t) for t in tables}:
+                ids.append(row["id"])
+        return ids
+
     def search(
         self,
         query: str,
@@ -129,6 +149,26 @@ class LanceDBStore:
         min_time = kwargs.get("min_time")
         min_lock_time = kwargs.get("min_lock_time")
         table_filter = kwargs.get("table_filter")
+        table_ids: list[str] | None = None
+        oversized = False
+        fetch_limit = limit
+        if table_filter:
+            table_ids = self._matching_table_ids(table_filter)
+            if not table_ids:
+                return []
+            oversized = len(table_ids) > _TABLE_FILTER_PREFILTER_CAP
+            if oversized:
+                # No efficient prefilter for this many ids. Use vector-only
+                # full-scan ranking below; hybrid dedupes after LanceDB applies
+                # limit, so duplicate ids from both legs could hide tail rows.
+                fetch_limit = self.table.count_rows()
+                logger.debug(
+                    "table_filter '{}' matched {} fingerprints (> {} cap); "
+                    "using exact vector-only full-scan ranking fallback.",
+                    table_filter,
+                    len(table_ids),
+                    _TABLE_FILTER_PREFILTER_CAP,
+                )
 
         # When `table_filter` is set the candidate set is highly selective
         # (typically <5% of rows) and lives across IVF partitions the default
@@ -144,15 +184,9 @@ class LanceDBStore:
                 op = op.where(f"execution_time_ms >= {min_time}", prefilter=True)
             if min_lock_time is not None:
                 op = op.where(f"lock_time_sec >= {min_lock_time}", prefilter=True)
-            if table_filter:
-                from dbs_vector.core.models import _normalize_table_name
-
-                normalized = _normalize_table_name(table_filter)
-                safe_table = normalized.replace("'", "''")
-                op = op.where(
-                    f"array_has(tables, '{safe_table}')",
-                    prefilter=True,
-                )
+            if table_ids is not None and not oversized:
+                quoted = ", ".join("'" + i.replace("'", "''") + "'" for i in table_ids)
+                op = op.where(f"id IN ({quoted})", prefilter=True)
             return op
 
         def _build_vector() -> Any:
@@ -166,7 +200,7 @@ class LanceDBStore:
                 op = op.bypass_vector_index()
             else:
                 op = op.nprobes(self.nprobes)
-            return op.limit(limit)
+            return op.limit(fetch_limit)
 
         def _build_hybrid() -> Any:
             op = self.table.search(query_type="hybrid").vector(query_vector).text(query)
@@ -175,12 +209,15 @@ class LanceDBStore:
                 op = op.bypass_vector_index()
             else:
                 op = op.nprobes(self.nprobes)
-            return op.limit(limit)
+            return op.limit(fetch_limit)
 
         # Hybrid requires an FTS index. Once we learn it is unavailable, skip
         # the build+raise on every subsequent query; the cache is reset wherever
         # the FTS index can change (create_indices / clear).
-        if self._hybrid_ok is False:
+        # Oversized table_filter uses vector-only: hybrid dedupes after `limit`,
+        # which could drop the lowest-ranked unique matching rows from a
+        # limit=count_rows() fetch. Vector-only returns one row per id.
+        if self._hybrid_ok is False or oversized:
             search_op = _build_vector()
             results_df = search_op.to_polars()
         else:
@@ -241,7 +278,9 @@ class LanceDBStore:
                     continue
             if normalized_table:
                 tables = row.get("tables")
-                if not isinstance(tables, list) or normalized_table not in tables:
+                if not isinstance(tables, list) or normalized_table not in {
+                    _normalize_table_name(t) for t in tables
+                }:
                     continue
             rel = row.get("_relevance_score")
             dist = row.get("_distance")
@@ -249,19 +288,22 @@ class LanceDBStore:
             distance = float(dist) if isinstance(dist, float) else None
             mapped_results.append(self.mapper.from_polars_row(row, score=score, distance=distance))
 
-        return mapped_results
+        return mapped_results[:limit]
 
     def count_matching(
         self,
         source_filter: str | None = None,
         **kwargs: Any,
     ) -> int:
-        """Count rows matching the same prefilters used by search."""
+        """Count rows matching the same filters used by search."""
         self.table.checkout_latest()
 
         min_time = kwargs.get("min_time")
         min_lock_time = kwargs.get("min_lock_time")
         table_filter = kwargs.get("table_filter")
+
+        if table_filter:
+            return self._count_matching_scan(source_filter, min_time, min_lock_time, table_filter)
 
         predicates: list[str] = []
         if source_filter:
@@ -271,18 +313,42 @@ class LanceDBStore:
             predicates.append(f"execution_time_ms >= {min_time}")
         if min_lock_time is not None:
             predicates.append(f"lock_time_sec >= {min_lock_time}")
-        if table_filter:
-            from dbs_vector.core.models import _normalize_table_name
-
-            normalized = _normalize_table_name(table_filter)
-            safe = normalized.replace("'", "''")
-            predicates.append(f"array_has(tables, '{safe}')")
 
         if not predicates:
             return self.table.count_rows()
 
         where_clause = " AND ".join(predicates)
         return self.table.count_rows(filter=where_clause)
+
+    def _count_matching_scan(
+        self,
+        source_filter: str | None,
+        min_time: float | None,
+        min_lock_time: float | None,
+        table_filter: str,
+    ) -> int:
+        """Exact count for table_filter using projected in-memory comparison."""
+        from dbs_vector.core.models import _normalize_table_name
+
+        needle = _normalize_table_name(table_filter)
+        if not needle:
+            return 0
+
+        cols = ["tables", "source", "execution_time_ms", "lock_time_sec"]
+        available = [c for c in cols if c in self.schema.names]
+        rows = self.table.search().select(available).to_arrow().to_pylist()
+        n = 0
+        for row in rows:
+            if source_filter and row.get("source") != source_filter:
+                continue
+            if min_time is not None and (row.get("execution_time_ms") or 0) < min_time:
+                continue
+            if min_lock_time is not None and (row.get("lock_time_sec") or 0) < min_lock_time:
+                continue
+            tables = row.get("tables")
+            if isinstance(tables, list) and needle in {_normalize_table_name(t) for t in tables}:
+                n += 1
+        return n
 
     def scan(self, columns: list[str] | None = None) -> Any:
         """Read all rows as a pyarrow.Table, projecting out vector/workflow.

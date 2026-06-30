@@ -1,14 +1,14 @@
-# dbs-vector Remote SQL API — Contract v1.1
+# dbs-vector Remote SQL API — Contract v1.2
 
 > **Purpose**: This document specifies the HTTP API that a remote server must implement so that
 > dbs-vector's `ApiChunker` can pull, ingest, and optionally query SQL slow-log data over the
 > network. It is written from the perspective of what dbs-vector _needs_, so the implementor of
 > the remote endpoint can build exactly what is consumed — no more, no less.
 
-> **v1.1 (2026-06-13):** adds the **required** `tables_original` field to `/sql/queries`
-> records — original-case, schema-qualified table names so a fingerprint can be replayed
-> against a case-sensitive MySQL server (`lower_case_table_names=0`). Additive (the URL stays
-> `/api/v1`). See §1, §5.2, §11. Enforced by `dbs-vector/scripts/check_remote_api.py`.
+> **v1.2 (2026-06-30):** `tables` now carries original-case, optionally
+> schema-qualified table names directly. dbs-vector stores this one table-name
+> list for display/replay and applies case/schema-insensitive exact matching at
+> query time. The older companion field for original-case names is no longer used.
 
 ---
 
@@ -41,8 +41,7 @@ Every record returned by the API must map to this Pydantic model
 | `source`           | `str`            | no       | Database / schema name                                  |
 | `execution_time_ms`| `float`          | no       | **Cumulative** total execution time across all `calls`  |
 | `calls`            | `int`            | no       | Total number of times this fingerprint was observed     |
-| `tables`           | `list[str]`      | no       | **Normalized** (lowercased, schema-qualified) table names (can be `[]`) |
-| `tables_original`  | `list[str]`      | no       | **Original-case**, schema-qualified table names — same set as `tables`, for replay (v1.1; can be `[]`) |
+| `tables`           | `list[str]`      | no       | **Original-case**, optionally schema-qualified table names (can be `[]`) |
 | `latest_ts`        | `datetime`       | no       | Timestamp of the most recent execution                  |
 | `user`             | `str \| null`    | yes      | DB user that ran the query                              |
 | `host`             | `str \| null`    | yes      | Client host / IP                                        |
@@ -170,7 +169,6 @@ SELECT
     SUM(query_time_sec)*1000 AS execution_time_ms,
     COUNT(*)                AS calls,
     arg_max(tables)          AS tables,
-    arg_max(tables_original) AS tables_original,
     MAX(ts)                  AS latest_ts,
     arg_max(user)           AS user,
     arg_max(host)           AS host,
@@ -210,8 +208,7 @@ will send hashes across multiple requests.
       "source": "production",
       "execution_time_ms": 84230.5,
       "calls": 14872,
-      "tables": ["users"],
-      "tables_original": ["Users"],
+      "tables": ["Users"],
       "latest_ts": "2026-03-04T22:15:30Z",
       "user": "app_ro",
       "host": "10.0.1.22",
@@ -233,15 +230,13 @@ will send hashes across multiple requests.
 | `has_more`     | Whether more pages exist                                                   |
 | `total_count`  | Total matching records (for progress reporting); may be approximate        |
 
-#### `tables` vs `tables_original` (v1.1)
+#### `tables` case and matching
 
-`tables` is **normalized** (lowercased, schema-qualified) — the matching/dedup key dbs-vector
-filters on. `tables_original` carries the **original case** of the same tables (e.g.
-`Orders`, not `orders`) so a fingerprint can be replayed against a case-sensitive
-MySQL server. The two describe the **same set** of tables; treat them as **set-equivalent, not
-positionally 1:1** — both are independent `arg_max` aggregates, and during a backfill window
-historical rows may carry a null `tables_original`. Recover the pairing by lowercasing an
-original-case name (it equals the corresponding normalized entry).
+`tables` carries the original table names returned by the source database (for example,
+`Orders` or `TryOTODyn.Orders`, not a lowercased copy). dbs-vector stores and displays that
+single list. `table_filter` matching is case- and schema-insensitive whole-name equality:
+both the filter value and each stored table name are normalized at query time, then compared
+exactly.
 
 #### Cursor design (server implementation guide)
 
@@ -584,8 +579,7 @@ paths:
 - [ ] `POST /sql/execute` enforces `timeout_ms` with a hard server cap
 - [ ] All endpoints require `Authorization: Bearer` except `/health`
 - [ ] `latest_ts` is always ISO 8601 UTC (`2026-03-04T22:15:30Z`)
-- [ ] `tables` is always a JSON array (never `null`, may be `[]`) — normalized (lowercased, schema-qualified)
-- [ ] `tables_original` (v1.1) is always a JSON array (never `null`, may be `[]`) — original-case, schema-qualified, same set as `tables`
+- [ ] `tables` is always a JSON array (never `null`, may be `[]`) — original-case, optionally schema-qualified
 - [ ] `id` is stable across runs for the same normalized query fingerprint
 - [ ] `text` contains the **normalized** SQL (parameters replaced with `?` or `$1`)
 - [ ] `execution_time_ms` is the **cumulative sum**, not per-call average

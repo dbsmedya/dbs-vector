@@ -49,7 +49,7 @@ def _make_full_sql_result(**overrides) -> SqlSearchResult:
         "execution_time_ms": 131_758_096.586,
         "calls": 312,
         "content_hash": "h",
-        "tables": ["magentoorders", "deliverycompanysettings"],
+        "tables": ["TryOTODyn.MagentoOrders", "TryOTODyn.DeliveryCompanySettings"],
         "latest_ts": datetime(2026, 5, 21, 14, 51, 44, tzinfo=UTC),
         "user": "s_web_api",
         "host": "10.132.0.26",
@@ -402,7 +402,7 @@ def test_format_results_includes_fingerprint_id():
 def test_format_results_includes_tables_list():
     fam = SqlFamily()
     out = fam.format_results([_make_full_sql_result()], query="q", total_matching=1)
-    assert "Tables: magentoorders, deliverycompanysettings" in out
+    assert "Tables: TryOTODyn.MagentoOrders, TryOTODyn.DeliveryCompanySettings" in out
 
 
 def test_format_results_includes_host_and_user():

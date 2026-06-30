@@ -141,8 +141,9 @@ class SqlFamily:
     Adds three family-specific filters on top of query/limit/source_filter:
       - `min_time`       — minimum cumulative execution_time_ms
       - `min_lock_time`  — minimum cumulative lock_time_sec
-      - `table_filter`   — restrict to queries that touch a specific table
-                           (matches against the `tables` list column)
+      - `table_filter`   — restrict to queries that touch a specific table.
+                           Case- and schema-insensitive, whole-name exact match
+                           (e.g. `magentoorders` matches `TryOTODyn.MagentoOrders`).
     """
 
     name: str = "sql"
@@ -252,8 +253,8 @@ class SqlFamily:
             f"calls. Filters (optional, AND prefilters applied before "
             f"ranking): `min_time` — minimum cumulative execution_time_ms in "
             f"ms; `min_lock_time` — minimum cumulative lock_time_sec in "
-            f"seconds; `table_filter` — restrict to fingerprints whose "
-            f"`tables` list contains the given table. The header reports "
+            f"seconds; `table_filter` — restrict to fingerprints touching the "
+            f"given table (case/schema-insensitive, whole-name exact). The header reports "
             f"'Showing N of M results that matched your filters' so callers "
             f"can tell when results are similarity-truncated. For ranking by "
             f"a scalar column, aggregation, or point lookup (no query string) "
@@ -275,8 +276,10 @@ class SqlFamily:
             f"Analytical (non-semantic) access to slow-query fingerprints from "
             f"{source}. Ranks by the column you choose, NOT by similarity — no "
             f"query string. Parameters: filters `id`, `content_hash`, `user`, "
-            f"`host`, `source`, `table` (matches the `tables` list), "
-            f"`min_calls`, `min_execution_time_ms`, `min_lock_time_sec`; "
+            f"`host`, `source`, `table` (case- and schema-insensitive, "
+            f"whole-name exact match; e.g. `magentoorders` matches "
+            f"`TryOTODyn.MagentoOrders`), `min_calls`, `min_execution_time_ms`, "
+            f"`min_lock_time_sec`; "
             f"`group_by` (comma-separated columns — set to `tables` to group "
             f"by table); `order_by` ('<col>[:asc|:desc]', default "
             f"execution_time_ms:desc); `select` (comma-separated output "
@@ -434,7 +437,8 @@ class SqlFamily:
             f"impact_score, avg_ms_per_call, lock_time_sec, rows_examined, "
             f"rows_sent, selectivity, latest_ts. NOTE: rows_examined/rows_sent are "
             f"the most-recent call's values (not averages). Optional params: "
-            f"`table` (scope to a table, lowercased match), `min_calls`, "
+            f"`table` (case- and schema-insensitive, whole-name exact match; "
+            f"e.g. `magentoorders` matches `TryOTODyn.MagentoOrders`), `min_calls`, "
             f"`order_by` ('<col>[:asc|:desc]', default impact_score:desc; col one "
             f"of {', '.join(_TRIAGE_ORDER_ALLOWLIST)}), `include_raw`.{raw}"
         )

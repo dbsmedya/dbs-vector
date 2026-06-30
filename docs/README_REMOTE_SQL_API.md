@@ -34,16 +34,17 @@ exactly as `DuckDBChunker` does.
 
 ---
 
-## Migration: table-name normalization (2026-05-22)
+## Migration: original-case table names (2026-06-30)
 
-The `tables` column was previously stored with raw SQLGlot artifacts
-(literal `"` chars, schema prefixes, mixed case). As of this change,
-`sql_chunk_from_record` normalizes every entry to lowercase, unquoted,
-last-`.`-segment form (e.g., `'"TryOTODyn.OrderShipment"'` ->
-`'ordershipment'`).
+The `tables` column is now stored and displayed in original, case-sensitive
+form, including any schema prefix (for example, `TryOTODyn.OrderShipment`).
+`sql_chunk_from_record` only strips quotes/backticks and surrounding whitespace.
+Filtering remains case- and schema-insensitive exact whole-name matching at
+query time.
 
 **If you ingested before this change**, the `table_filter` parameter on
-`search_sql_api` will keep returning zero results until you re-ingest:
+`search_sql_api` can match existing lowercased rows, but results will keep
+displaying lowercased table names until you re-ingest:
 
 ```bash
 uv run dbs-vector ingest "https://your-api/api/v1" \
@@ -52,7 +53,8 @@ uv run dbs-vector ingest "https://your-api/api/v1" \
 
 After the rebuild, `table_filter="OrderShipment"`,
 `table_filter="ordershipment"`, and `table_filter="TryOTODyn.OrderShipment"`
-all resolve to the same canonical filter.
+all resolve to the same exact table identity, while results display the
+original table name returned by the API.
 
 ---
 

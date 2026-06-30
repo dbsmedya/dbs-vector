@@ -617,13 +617,12 @@ class TestSearch:
             f"min_lock_time filter not emitted; got where calls: {where_calls}"
         )
 
-    def test_search_table_filter_emits_array_has_and_bypasses_index(self, lancedb_store):
-        """table_filter uses the normalized canonical value and bypasses the
-        IVF index — selective array predicates can otherwise land in unscanned
-        partitions and silently return zero results."""
+    def test_search_table_filter_emits_id_prefilter_and_bypasses_index(self, lancedb_store):
+        """table_filter resolves exact matching ids and bypasses the IVF index."""
         import polars as pl
 
         store, _, mock_table, _ = lancedb_store
+        store._matching_table_ids = MagicMock(return_value=["fp1"])  # type: ignore[method-assign]
         query_vector = np.array([0.1, 0.2, 0.3], dtype=np.float32)
 
         mock_search = MagicMock()
@@ -641,8 +640,8 @@ class TestSearch:
         store.search(query="q", query_vector=query_vector, table_filter="tx_process")
 
         where_calls = [c.args[0] for c in mock_search.where.call_args_list]
-        assert any("array_has(tables, 'tx_process')" in w for w in where_calls), (
-            f"table_filter not emitted with normalized value; got where calls: {where_calls}"
+        assert any("id IN ('fp1')" in w for w in where_calls), (
+            f"table_filter id prefilter not emitted; got where calls: {where_calls}"
         )
         # When table_filter is set, the IVF index must be bypassed.
         mock_search.bypass_vector_index.assert_called()
@@ -702,6 +701,7 @@ class TestSearch:
         import polars as pl
 
         store, _, mock_table, _ = lancedb_store
+        store._matching_table_ids = MagicMock(return_value=["fp1"])  # type: ignore[method-assign]
         query_vector = np.array([0.1, 0.2, 0.3], dtype=np.float32)
 
         call_log: list[str] = []

@@ -192,7 +192,7 @@ diagnosis (below).
 | `source_filter` | string | no | Restrict to a database name |
 | `min_time` | float | no | Minimum cumulative execution time in ms |
 | `min_lock_time` | float | no | Minimum cumulative lock time in seconds |
-| `table_filter` | string | no | Restrict to queries that touch a specific table |
+| `table_filter` | string | no | Restrict to queries that touch a specific table (case/schema-insensitive, whole-name exact match) |
 | `include_raw` | bool | no | Add a `Raw SQL:` block (verbatim query with literal values). Honoured **only** when the server was started with `--allow-raw-queries`; otherwise silently downgraded. See [Raw query exposure](#raw-query-exposure---allow-raw-queries). |
 
 When `table_filter` is set the search bypasses the IVF approximate index
@@ -213,7 +213,7 @@ unlike `browse_` it pre-selects the columns a tuning investigation needs and
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
 | `limit` | int | no | Top-N to return (default 10) |
-| `table` | string | no | Scope to one table (lowercased match against the `tables` list) |
+| `table` | string | no | Scope to one table (case/schema-insensitive, whole-name exact match) |
 | `order_by` | string | no | `<col>[:asc\|:desc]`, default `impact_score:desc`; col ∈ `impact_score, execution_time_ms, calls, lock_time_sec, avg_ms_per_call, selectivity` |
 | `min_calls` | int | no | Drop fingerprints below this call count |
 | `include_raw` | bool | no | Append a `Raw SQL:` exemplar block. Honoured **only** under `--allow-raw-queries`; otherwise silently downgraded. |

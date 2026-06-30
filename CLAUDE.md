@@ -137,6 +137,16 @@ Adding a new engine: see spec
 
 - **Deduplication**: Content hashes (SHA-256 truncated to 16 chars) are computed at the file level and stored per chunk. Ingestion skips chunks whose hash already exists in the store.
 - **Schema evolution**: If `LanceDBStore` detects a schema mismatch on startup, it raises a descriptive `ValueError` that the CLI surfaces with a `--rebuild --force` hint.
+- **Table names**: SQL table names are stored and displayed in original, case-sensitive,
+  schema-qualified form (`TryOTODyn.MagentoOrders`) — one copy, no FTS over table names.
+  `table_filter` is an equality filter that is case- and schema-insensitive whole-name:
+  both the input and each stored name are run through `_normalize_table_name` (lowercase
+  + strip schema) at query time and compared exactly. Search resolves matching ids via
+  an in-memory `(id, tables)` scan and an `id IN (...)` prefilter; above
+  `_TABLE_FILTER_PREFILTER_CAP` it switches to an exact vector-only full-scan ranking
+  fallback. `count_matching` uses the same exact scan; browse/top_impacting normalize
+  in Polars. `_clean_table_name` (quote/backtick strip, case preserved) populates stored
+  data.
 - **Asymmetric embeddings**: `MLXEmbedder` prepends different prefixes for passages (`passage_prefix`) vs queries (`query_prefix`), supporting instruction-tuned models like `embeddinggemma`.
 - **Thread safety**: `MLXEmbedder` uses a per-model `threading.Lock`.
 - **IVF_PQ indexing**: Only created when `total_rows > 256`; partitions scale as `sqrt(total_rows)` capped at 256.
