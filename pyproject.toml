@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dbs-vector"
-version = "1.1.0"
+version = "1.2.0"
 description = "High-performance, local RAG search engine and MCP stdio server for Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -22,6 +22,10 @@ dependencies = [
     "pyyaml>=6.0.3",
     "sqlglot>=27.0.0",
     "tantivy==0.25.1",
+    # Upper bound: transformers 5.13.0 broke AutoTokenizer.register(str, ...) which
+    # mlx-lm 0.31.3 relies on (auto_factory key.__module__ on a str). mlx-lm's own
+    # requirement (transformers>=5.0.0) is unbounded, so cap it here until upstream fixes it.
+    "transformers>=5.0,<5.13",
     "typer>=0.15.1",
     "types-pyyaml>=6.0.12.20260408",
 ]

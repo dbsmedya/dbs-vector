@@ -467,7 +467,7 @@ wheels = [
 
 [[package]]
 name = "dbs-vector"
-version = "1.0.0"
+version = "1.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "lancedb" },
@@ -483,6 +483,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "sqlglot" },
     { name = "tantivy" },
+    { name = "transformers" },
     { name = "typer" },
     { name = "types-pyyaml" },
 ]
@@ -523,6 +524,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "sqlglot", specifier = ">=27.0.0" },
     { name = "tantivy", specifier = "==0.25.1" },
+    { name = "transformers", specifier = ">=5.0,<5.13" },
     { name = "typer", specifier = ">=0.15.1" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20260408" },
 ]
