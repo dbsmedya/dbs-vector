@@ -201,9 +201,7 @@ class WatcherService:
                 continue
             watched.backend.start(roots, self._callback_for(watched.name))
 
-        self._worker = threading.Thread(
-            target=self._loop, name="dbs-vector-watcher", daemon=True
-        )
+        self._worker = threading.Thread(target=self._loop, name="dbs-vector-watcher", daemon=True)
         self._worker.start()
 
     def _callback_for(self, engine: str) -> Callable[[str, str, bool, str | None], None]:

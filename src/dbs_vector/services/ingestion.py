@@ -221,9 +221,7 @@ class IngestionService:
             if not items:
                 continue
             vectors = self.embedder.embed_batch([c.text for c in items])
-            self.vector_store.ingest_chunks(
-                chunks=items, vectors=vectors, workflow=self.workflow
-            )
+            self.vector_store.ingest_chunks(chunks=items, vectors=vectors, workflow=self.workflow)
             total += len(items)
         return total
 

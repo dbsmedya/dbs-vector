@@ -107,9 +107,7 @@ class PathFilter:
         gitignore = root / ".gitignore"
         if gitignore.is_file():
             try:
-                spec = GitIgnoreSpec.from_lines(
-                    gitignore.read_text(encoding="utf-8").splitlines()
-                )
+                spec = GitIgnoreSpec.from_lines(gitignore.read_text(encoding="utf-8").splitlines())
             except (OSError, UnicodeDecodeError, ValueError) as e:
                 logger.warning("Could not parse {}: {}", gitignore, e)
         self._gitignore_cache[key] = spec

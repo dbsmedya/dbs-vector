@@ -76,9 +76,7 @@ class TestActiveRoots:
         assert "unmounted" in caplog.text
 
     def test_all_roots_missing_yields_no_active_roots(self, tmp_path):
-        pf = PathFilter(
-            roots=[str(tmp_path / "gone")], extensions=[".md"], ignore_patterns=[]
-        )
+        pf = PathFilter(roots=[str(tmp_path / "gone")], extensions=[".md"], ignore_patterns=[])
         assert pf.active_roots() == []
         assert list(pf.iter_files()) == []
 
