@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any, Protocol
 
 import numpy as np
@@ -139,4 +139,21 @@ class IChunker(Protocol):
 
     def process(self, document: Any) -> Iterator[Any]:
         """Yields chunks from a raw document or parsed log."""
+        ...
+
+
+# (path, kind, is_directory, dest) — kind is one of
+# "created" | "modified" | "deleted" | "moved"; `dest` is set for moves only.
+WatchCallback = Callable[[str, str, bool, str | None], None]
+
+
+class IWatchBackend(Protocol):
+    """Minimal filesystem-watch port. One instance per watched engine."""
+
+    def start(self, roots: list[str], on_event: WatchCallback) -> None:
+        """Begin recursive observation of `roots`, calling `on_event` per event."""
+        ...
+
+    def stop(self) -> None:
+        """Stop observing and release the backend's threads. Idempotent."""
         ...
