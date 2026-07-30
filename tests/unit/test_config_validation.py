@@ -3,6 +3,7 @@ import textwrap
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from dbs_vector.config import load_settings
 
@@ -389,3 +390,39 @@ def test_non_document_engine_exempt_from_token_budget_rule(write_config):
         engine_overrides={"chunker_type": "duckdb", "mapper_type": "sql"},
     )
     load_settings(cfg, validate=True)  # must not raise
+
+
+def _minimal_engine(**overrides):
+    from dbs_vector.config import EngineConfig
+
+    base = dict(
+        description="d",
+        model="gemma-bf16",
+        mapper_type="document",
+        chunker_type="document",
+        table_name="t",
+        workflow="w",
+        tuning_profile="p",
+    )
+    base.update(overrides)
+    return EngineConfig(**base)
+
+
+class TestSimilarityFloor:
+    def test_default_is_none(self):
+        assert _minimal_engine().similarity_floor is None
+
+    def test_valid_floor_accepted(self):
+        assert _minimal_engine(similarity_floor=0.55).similarity_floor == 0.55
+
+    def test_boundaries_accepted(self):
+        assert _minimal_engine(similarity_floor=-1.0).similarity_floor == -1.0
+        assert _minimal_engine(similarity_floor=1.0).similarity_floor == 1.0
+
+    def test_above_range_rejected(self):
+        with pytest.raises(ValidationError):
+            _minimal_engine(similarity_floor=1.5)
+
+    def test_below_range_rejected(self):
+        with pytest.raises(ValidationError):
+            _minimal_engine(similarity_floor=-1.5)

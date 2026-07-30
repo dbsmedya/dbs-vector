@@ -50,6 +50,12 @@ class EngineConfig(BaseModel):
     passage_prefix: str = ""
     query_prefix: str = ""
 
+    # Engine-level admission floor (policy, not a model property): minimum
+    # exact cosine similarity for the semantic admission channel. None (the
+    # baseline default for every engine) = no floor = today's behavior.
+    # Default values ship with the calibration companion spec.
+    similarity_floor: float | None = Field(default=None, ge=-1.0, le=1.0)
+
     # Per-engine content exclusion (default: exclude nothing):
     exclusion_filters: list[str] = []
 
