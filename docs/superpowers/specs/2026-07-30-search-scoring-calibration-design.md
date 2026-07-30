@@ -30,12 +30,22 @@ the working plan; SQL engines follow the same protocol):
 
 ## 1. Labeled query sets
 
-Per engine, two labeled sets:
+Per engine, **two separately-authored set pairs** — a set used to choose the
+floor cannot also certify it:
 
-- **Relevant** — queries with a known-correct answer in the corpus, held out
-  from any tuning iteration (write the expected source per query before
-  running anything).
-- **Absent** — queries whose correct answer is "nothing here", including
+- **Development set** — inspected freely: distributions, per-query tables,
+  gate audits; the floor is chosen from this set.
+- **Locked evaluation set** — written (with expected sources per relevant
+  query) *before* calibration begins, run **once** after the floor is
+  chosen, and used exclusively for acceptance. If it fails, the floor goes
+  back to development and the evaluation set is considered spent — write a
+  fresh one before the next acceptance attempt.
+
+Each pair contains:
+
+- **Relevant** queries — a known-correct answer exists in the corpus; the
+  expected source is written down before any run.
+- **Absent** queries — the correct answer is "nothing here", including
   **in-domain hard negatives** (topically adjacent to the corpus, not
   risotto-style off-domain softballs) and the issue's measured live cases
   (beehive, narrowboat) as regression anchors.
@@ -48,10 +58,10 @@ actually send:
 - SQL intents for the SQL engines (table names, query-pattern descriptions);
 - short (1–2 token) and long (sentence-plus) forms.
 
-Minimum sizes: ≥ 20 relevant and ≥ 20 absent per engine, of which ≥ 10
-absent are hard negatives. Sets live in the repo under
-`scripts/calibration/<engine>/` as plain text/JSON so reruns are cheap and
-diffs reviewable.
+Minimum sizes per engine: development ≥ 20 relevant + ≥ 20 absent (≥ 10
+hard negatives); locked evaluation ≥ 15 relevant + ≥ 15 absent (≥ 8 hard
+negatives). Sets live in the repo under `scripts/calibration/<engine>/` as
+plain text/JSON so reruns are cheap and diffs reviewable.
 
 Statistical honesty: at these sizes, confidence intervals would be
 decorative. We report raw counts, full per-query similarity tables, and
@@ -64,8 +74,10 @@ add them then.
 
 For a given engine:
 
-- loads the labeled sets, runs unfloored searches (baseline code paths, real
-  model, live corpus);
+- loads the labeled sets, runs unfloored searches via
+  `disable_similarity_floor` (baseline code paths, original candidate-pool
+  size, real model, live corpus) — this is what makes recalibration runs
+  exactly comparable to baseline behavior;
 - prints per-query: top-5 similarities, `retrieved_by`, and whether the
   expected source ranked first (relevant set);
 - prints per-set distribution percentiles and the overlap region;
@@ -75,20 +87,38 @@ For a given engine:
 
 ## 3. Metrics — reported per engine, before/after floor
 
-- **recall@k / precision@k** (k = 1, 5) on the relevant set: does the
-  expected source appear, and how much noise accompanies it.
-- **no-answer precision**: share of absent queries returning empty (the
-  metric this whole effort exists to raise; today it is 0 by construction).
-- **false-negative rate**: share of relevant queries returning empty — the
-  cost side; a floor that empties real questions is worse than no floor.
+Only one expected source is labeled per relevant query, so precision@k over
+unjudged candidates is not computable; rank-of-expected-source metrics are
+used instead.
+
+- **expected-source hit@k (k = 1, 5), rank, and MRR** on the relevant sets:
+  where does the labeled answer land.
+- **absent rejection rate** = absent queries returning empty / all absent
+  queries — the number this effort exists to raise (0 today by
+  construction). This is a specificity-style rate, not a precision.
+- **no-answer precision** = absent queries returning empty / all queries
+  returning empty — how trustworthy an empty response is when an agent
+  sees one.
+- **relevant empty rate** = relevant queries returning empty / all relevant
+  queries — the cost side; a floor that empties real questions is worse
+  than no floor.
 - **lexical-gate audit**: every admission that passed only via the lexical
   gate, and every rejection the gate failed to rescue, listed for reading.
 - **latency**: p50/p95 per search, floored vs. unfloored (oversampling
   triples the per-leg fetch).
 
-Acceptance per engine: recall@k does not regress vs. pre-baseline behavior
-on the relevant set; false-negative rate ≤ 1 query in the relevant set (and
-that query documented); no-answer precision strictly improves.
+Acceptance per engine — measured **once, on the locked evaluation set**:
+
+- expected-source hit@5 does not regress vs. the unfloored baseline run;
+- relevant empty rate ≤ 5% (at most one query at the minimum set size, and
+  that query documented);
+- absent rejection rate ≥ 60%, including 100% of the off-domain anchor
+  queries (risotto-class).
+
+If no floor value satisfies all three, the explicit, recorded outcome is
+**"no safe floor found"**: the engine's `similarity_floor` stays unset and
+the calibration table says so — an unset floor is a valid end state, not a
+failure to finish.
 
 ## 4. Calibration identity
 
@@ -97,7 +127,9 @@ chosen value is recorded (in a `docs/superpowers/calibration.md` table) with:
 
 - engine name, model registry key, passage/query prefixes, chunker type and
   tuning profile;
-- corpus identity: table row count and ingest date;
+- corpus identity: the Lance table version plus a deterministic content
+  digest (sha256 over the sorted `content_hash` column) — row count and
+  ingest date cannot distinguish two different corpora of equal size;
 - script commit hash and run date;
 - the chosen floor and the observed relevant/absent percentile summary.
 
