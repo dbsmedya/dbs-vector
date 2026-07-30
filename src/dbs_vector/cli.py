@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -10,6 +11,7 @@ from dbs_vector.logger import configure_logger
 from dbs_vector.services.bootstrap import EngineDeps, build_dependencies, build_store
 from dbs_vector.services.browse import BrowseService, result_to_json, result_to_table
 from dbs_vector.services.ingestion import IngestionService
+from dbs_vector.services.path_filter import anchor_for
 from dbs_vector.services.search import SearchService
 
 app = typer.Typer(
@@ -69,6 +71,7 @@ def _build_dependencies(
     engine_name: str,
     query_override: str | None = None,
     url_override: str | None = None,
+    roots_override: list[str] | None = None,
 ) -> EngineDeps:
     """CLI-facing wrapper: converts schema-mismatch errors to typer exits."""
     try:
@@ -76,6 +79,7 @@ def _build_dependencies(
             engine_name,
             query_override=query_override,
             url_override=url_override,
+            roots_override=roots_override,
         )
     except ValueError as e:
         if "Schema mismatch" in str(e):
@@ -133,8 +137,12 @@ def ingest(
 
     engine = settings.engines[engine_name]
 
-    # Resolve the path argument. For api-chunker engines, fall back to
-    # api_base_url from config.yaml when no path was supplied.
+    # Resolve the ingestion target. Three shapes:
+    #   - api engines: fall back to api_base_url when no path is given
+    #   - document engines: fall back to the engine's configured `paths:` roots
+    #     (one run over all of them)
+    #   - everything else: a path is required
+    target: str | list[str]
     if path is None:
         if engine.chunker_type == "api":
             if not engine.api_base_url:
@@ -145,14 +153,29 @@ def ingest(
                 )
                 raise typer.Exit(code=1)
             path = engine.api_base_url
+            target = path
+        elif engine.chunker_type == "document":
+            if not engine.paths:
+                typer.echo(
+                    f"Error: engine '{engine_name}' has no `paths:` configured, so "
+                    f"there is nothing to ingest. Add absolute directory roots under "
+                    f"engines.{engine_name}.paths in config.yaml, or pass a path "
+                    f"explicitly.",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+            target = list(engine.paths)
         else:
             typer.echo(
                 f"Error: 'path' argument is required for engine type '{engine_name}' "
                 f"(chunker_type='{engine.chunker_type}'). Only api-chunker engines may "
-                f"omit it (the URL falls back to api_base_url from config.yaml).",
+                f"omit it (the URL falls back to api_base_url from config.yaml), and "
+                f"document engines with `paths:` configured.",
                 err=True,
             )
             raise typer.Exit(code=1)
+    else:
+        target = path
 
     if rebuild and not force:
         typer.confirm(
@@ -160,12 +183,42 @@ def ingest(
             abort=True,
         )
 
-    url_override = path if path.startswith(("http://", "https://")) else None
-    deps = _build_dependencies(engine_name, query_override=query, url_override=url_override)
-    service = IngestionService(
-        deps.chunker, deps.embedder, deps.store, deps.workflow, batch_size=deps.batch_size
+    # An explicit path is its own filtering anchor (directory -> itself; file ->
+    # parent; glob -> longest non-glob prefix; URL -> none). Filtering RULES
+    # still apply: extension gate, ignore_patterns, gitignore, canonical sources.
+    roots_override: list[str] | None = None
+    if engine.chunker_type == "document" and path is not None:
+        anchor = anchor_for(path)
+        roots_override = [anchor] if anchor else []
+        if engine.watch.enabled and anchor is not None:
+            anchor_path = Path(anchor)
+            inside = any(
+                anchor_path == Path(root) or Path(root) in anchor_path.parents
+                for root in engine.paths
+            )
+            if not inside:
+                typer.echo(
+                    f"Note: '{path}' is outside the configured paths for engine "
+                    f"'{engine_name}'. These rows will not be watched or reconciled "
+                    f"and stay until the next --rebuild."
+                )
+
+    url_override = path if path is not None and path.startswith(("http://", "https://")) else None
+    deps = _build_dependencies(
+        engine_name,
+        query_override=query,
+        url_override=url_override,
+        roots_override=roots_override,
     )
-    service.ingest_directory(path, rebuild=rebuild)
+    service = IngestionService(
+        deps.chunker,
+        deps.embedder,
+        deps.store,
+        deps.workflow,
+        batch_size=deps.batch_size,
+        path_filter=deps.path_filter,
+    )
+    service.ingest_directory(target, rebuild=rebuild)
 
 
 @app.command()

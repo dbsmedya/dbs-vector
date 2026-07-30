@@ -270,6 +270,91 @@ class TestIngestCommand:
             "path", rebuild=True
         )
 
+    def test_ingest_without_path_uses_configured_roots(
+        self,
+        mock_settings,
+        mock_embedder,
+        mock_store,
+        mock_chunker,
+        mock_mapper,
+        mock_ingestion_service,
+        tmp_path,
+    ):
+        """No positional path -> ingest every configured root in ONE run."""
+        from dbs_vector.cli import app
+
+        roots = [str(tmp_path / "one"), str(tmp_path / "two")]
+        mock_settings.engines["md"] = mock_settings.engines["md"].model_copy(
+            update={"paths": roots}
+        )
+
+        result = runner.invoke(app, ["ingest", "--type", "md"])
+
+        assert result.exit_code == 0
+        mock_ingestion_service.return_value.ingest_directory.assert_called_once_with(
+            roots, rebuild=False
+        )
+
+    def test_ingest_without_path_and_without_roots_is_a_usage_error(
+        self, mock_settings, mock_embedder, mock_store, mock_chunker, mock_mapper
+    ):
+        from dbs_vector.cli import app
+
+        result = runner.invoke(app, ["ingest", "--type", "md"])
+
+        assert result.exit_code == 1
+        assert "no `paths:` configured" in result.output
+
+    def test_explicit_path_outside_configured_roots_prints_a_notice(
+        self,
+        mock_settings,
+        mock_embedder,
+        mock_store,
+        mock_chunker,
+        mock_mapper,
+        mock_ingestion_service,
+        tmp_path,
+    ):
+        from dbs_vector.cli import app
+        from dbs_vector.config import WatchConfig
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        mock_settings.engines["md"] = mock_settings.engines["md"].model_copy(
+            update={"paths": [str(vault)], "watch": WatchConfig(enabled=True)}
+        )
+
+        result = runner.invoke(app, ["ingest", str(outside), "--type", "md"])
+
+        assert result.exit_code == 0
+        assert "will not be watched" in result.output
+
+    def test_explicit_path_inside_configured_roots_prints_no_notice(
+        self,
+        mock_settings,
+        mock_embedder,
+        mock_store,
+        mock_chunker,
+        mock_mapper,
+        mock_ingestion_service,
+        tmp_path,
+    ):
+        from dbs_vector.cli import app
+        from dbs_vector.config import WatchConfig
+
+        vault = tmp_path / "vault"
+        (vault / "sub").mkdir(parents=True)
+        mock_settings.engines["md"] = mock_settings.engines["md"].model_copy(
+            update={"paths": [str(vault)], "watch": WatchConfig(enabled=True)}
+        )
+
+        result = runner.invoke(app, ["ingest", str(vault / "sub"), "--type", "md"])
+
+        assert result.exit_code == 0
+        assert "will not be watched" not in result.output
+
 
 class TestSearchCommand:
     """Tests for the search command."""
