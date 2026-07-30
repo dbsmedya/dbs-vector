@@ -19,6 +19,8 @@ def mock_settings():
     engine_config.passage_prefix = "P:"
     engine_config.query_prefix = "Q:"
     engine_config.exclusion_filters = []
+    engine_config.paths = []
+    engine_config.ignore_patterns = [".#*", "*~", "*.tmp", ".DS_Store"]
     engine_config.chunker_kwargs.return_value = {"max_chars": 500}
 
     profile = MagicMock()
@@ -186,3 +188,100 @@ def test_non_document_engine_chunker_gets_no_document_kwargs(mock_settings_with_
 
     # chunker_kwargs WAS called (the non-document path uses it)
     sql_engine_config.chunker_kwargs.assert_called_once()
+
+
+def _engine_kwargs(**overrides):
+    from dbs_vector.config import EngineConfig
+
+    base = {
+        "description": "d",
+        "model": "gemma-bf16",
+        "mapper_type": "document",
+        "chunker_type": "document",
+        "table_name": "t",
+        "workflow": "w",
+        "tuning_profile": "p",
+    }
+    base.update(overrides)
+    return EngineConfig(**base)
+
+
+def _install_engines(monkeypatch, engines):
+    from dbs_vector.config import TuningProfile
+    from dbs_vector.services import bootstrap as bootstrap_module
+
+    fake = MagicMock()
+    fake.engines = engines
+    fake.profiles = {
+        "p": TuningProfile(
+            max_token_length=512,
+            chunk_max_chars=1000,
+            batch_size=8,
+            chunk_target_tokens=256,
+            chunk_max_tokens=512,
+        )
+    }
+    fake.db_path = "./unused_db"
+    fake.nprobes = 20
+    monkeypatch.setattr(bootstrap_module, "settings", fake)
+    monkeypatch.setattr(bootstrap_module, "MLXEmbedder", MagicMock())
+    monkeypatch.setattr(bootstrap_module, "LanceDBStore", MagicMock())
+
+
+def _install_document_engine(monkeypatch, **overrides):
+    _install_engines(monkeypatch, {"md": _engine_kwargs(**overrides)})
+
+
+def _install_sql_engine(monkeypatch):
+    _install_engines(
+        monkeypatch,
+        {"sql": _engine_kwargs(mapper_type="sql", chunker_type="sql", table_name="s")},
+    )
+
+
+class TestPathFilterWiring:
+    """bootstrap is the only layer allowed to compose a PathFilter."""
+
+    def test_document_engine_gets_a_path_filter_from_engine_paths(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        from dbs_vector.services import bootstrap as bootstrap_module
+
+        _install_document_engine(monkeypatch, paths=[str(tmp_path)])
+        deps = bootstrap_module.build_dependencies("md")
+
+        assert deps.path_filter is not None
+        assert deps.path_filter.roots == [Path(str(tmp_path))]
+        assert ".md" in deps.path_filter.extensions
+
+    def test_non_document_engine_gets_none(self, monkeypatch):
+        from dbs_vector.services import bootstrap as bootstrap_module
+
+        _install_sql_engine(monkeypatch)
+        deps = bootstrap_module.build_dependencies("sql")
+
+        assert deps.path_filter is None
+
+    def test_roots_override_replaces_configured_paths(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        from dbs_vector.services import bootstrap as bootstrap_module
+
+        _install_document_engine(monkeypatch, paths=[str(tmp_path / "configured")])
+        override = tmp_path / "explicit"
+        override.mkdir()
+        deps = bootstrap_module.build_dependencies("md", roots_override=[str(override)])
+
+        assert deps.path_filter.roots == [Path(str(override))]
+
+    def test_gitignore_exclusion_filter_enables_gitignore_on_the_path_filter(
+        self, tmp_path, monkeypatch
+    ):
+        from dbs_vector.services import bootstrap as bootstrap_module
+
+        _install_document_engine(
+            monkeypatch, paths=[str(tmp_path)], exclusion_filters=["gitignore"]
+        )
+        deps = bootstrap_module.build_dependencies("md")
+
+        assert deps.path_filter.use_gitignore is True

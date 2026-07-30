@@ -18,14 +18,23 @@ class EngineDeps(NamedTuple):
     chunker: Any
     workflow: str
     batch_size: int
+    # PathFilter for document engines; None elsewhere (those code paths are
+    # deliberately untouched in v1). Last field with a default so existing
+    # keyword construction keeps working.
+    path_filter: Any = None
 
 
 def build_dependencies(
     engine_name: str,
     query_override: str | None = None,
     url_override: str | None = None,
+    roots_override: list[str] | None = None,
 ) -> EngineDeps:
-    """Resolve the chunker / mapper / embedder / store stack for an engine."""
+    """Resolve the chunker / mapper / embedder / store / path-filter stack.
+
+    `roots_override` replaces the engine's configured `paths:` for this build
+    only — the CLI uses it to anchor an explicit-path run.
+    """
     if engine_name not in settings.engines:
         raise ValueError(
             f"Unknown engine: '{engine_name}'. "
@@ -59,6 +68,7 @@ def build_dependencies(
     if engine.chunker_type == "document":
         # deferred import: avoids a circular import (config.py uses the same pattern)
         from dbs_vector.infrastructure.chunking.filters import FilterRegistry
+        from dbs_vector.services.path_filter import PathFilter
 
         # Token budgets are passed straight through: validation (config Rule for
         # document engines) guarantees both are > 0, so NO `or <default>` here —
@@ -72,6 +82,12 @@ def build_dependencies(
             length_fn=embedder.count_tokens,
             filters=FilterRegistry.resolve(engine.exclusion_filters),
         )
+        path_filter: Any = PathFilter(
+            roots=roots_override if roots_override is not None else engine.paths,
+            extensions=chunker.supported_extensions,
+            ignore_patterns=engine.ignore_patterns,
+            use_gitignore="gitignore" in engine.exclusion_filters,
+        )
     else:
         chunker = ChunkerClass(
             **engine.chunker_kwargs(
@@ -79,6 +95,7 @@ def build_dependencies(
                 url_override=url_override,
             )
         )
+        path_filter = None
 
     store = LanceDBStore(
         db_path=settings.db_path,
@@ -94,6 +111,7 @@ def build_dependencies(
         chunker=chunker,
         workflow=engine.workflow,
         batch_size=profile.batch_size,
+        path_filter=path_filter,
     )
 
 
