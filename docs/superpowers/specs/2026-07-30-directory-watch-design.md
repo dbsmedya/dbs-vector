@@ -1,6 +1,8 @@
 # Directory Watch — Design Spec
 
-**Date:** 2026-07-30 (amended same day after adversarial ambiguity review)
+**Date:** 2026-07-30 (amended twice: adversarial ambiguity review, then user
+review — source-aware unchanged check, scoped invariant, active-root pruning,
+event coalescing semantics)
 **Branch:** `feat/directory-watch`
 **Status:** Approved design, pre-implementation
 
@@ -16,17 +18,34 @@ live.
 **v1 scope:** engines with `chunker_type: "document"` (md, md-granite).
 The design is engine-generic; other file-based chunkers can be enabled later.
 
-## Hard Rule
+## The Invariant
 
-> **The watcher watches exactly what the engine ingests.**
+> **Within currently configured roots, CLI discovery, watcher events, and
+> reconciliation use the same path filtering.**
 
-CLI ingest, live watch events, and reconciliation all derive their scope from
-one engine-owned list — `paths:` — with the same extension filtering,
-`ignore_patterns`, and `gitignore` filtering. There is no configuration state
-in which search serves files the watcher silently doesn't cover, or the
-watcher ingests something the CLI wouldn't. (Corollary: reconciliation prunes
-files that become *excluded*, not just files that are deleted — see
-Reconciliation step 3.)
+One engine-owned list — `paths:` — with the same extension filtering,
+`ignore_patterns`, and `gitignore` filtering drives all three. Corollary:
+reconciliation prunes files that become *excluded*, not just files that are
+deleted (Reconciliation step 3).
+
+The invariant is deliberately scoped to *currently configured, active roots*.
+Rows outside it — out-of-root CLI ingests (Consequences #3), orphans from
+removed roots (Consequences #4), rows under a root that fails to open
+(Reconciliation) — are unmanaged by design: never re-checked, never pruned.
+
+### Configuration-change rebuild rule
+
+Reconciliation compares content hashes, so it detects *file* changes only. It
+cannot detect that unchanged files need re-chunking or re-embedding after
+changes to the engine's model, prefixes, tuning profile, chunker behavior,
+content exclusion filters — or that rows under a removed root need cleanup.
+The v1 rule, stated in docs and the README:
+
+> **After changing a watched engine's roots, model, profile, chunking, or
+> filtering configuration, run one `ingest --rebuild --force` for that engine
+> before starting the MCP server.**
+
+No config fingerprinting, old-root tracking, or surgical migration in v1.
 
 ## Configuration
 
@@ -42,9 +61,12 @@ engines:
     exclusion_filters: [excalidraw, compressed_json, gitignore]  # gitignore = new built-in
     watch:                                       # NEW, optional
       enabled: true                              # default false
-      debounce_seconds: 3.0                      # per-file, default 3.0
-      reconcile_on_start: true                   # default true
+      debounce_seconds: 3.0                      # per-file; >= 0, default 3.0
 ```
+
+Startup reconciliation is **mandatory** for watched engines in v1 — there is
+no `reconcile_on_start` knob. A watcher that starts without reconciling could
+serve pre-existing divergence indefinitely, silently violating the invariant.
 
 ### New engine-level fields
 
@@ -72,8 +94,8 @@ engines:
 - `enabled: bool = false`
 - `debounce_seconds: float = 3.0` — per-file window; resets on each new event
   for that file, so a save burst coalesces but an unrelated file changed later
-  is not delayed.
-- `reconcile_on_start: bool = true`
+  is not delayed. Must be `>= 0`; `0` means immediate processing (useful for
+  tests and scripted setups).
 
 ### Load-time validation
 
@@ -85,8 +107,11 @@ engines:
   a shared table would let one engine's prune delete another's rows.
   (`sql`/`sql-api` share a table deliberately — they stay unwatched.)
 - `paths:` entries must be absolute; nested/duplicate roots rejected (above).
-- Configured roots that do not exist on disk at watcher startup are a logged
-  error and the root is skipped; the MCP server still serves searches.
+- `debounce_seconds < 0` → config error.
+- Configured roots that do not exist (or cannot be opened) at watcher startup
+  are a logged error; the root is skipped as **inactive** — excluded from
+  watching *and* from reconciliation (see Reconciliation) — and the MCP
+  server still serves searches.
 
 ## CLI behavior
 
@@ -96,9 +121,15 @@ engines:
   at the end. Never a per-root loop — with `--rebuild`, a per-root loop
   would clear the table once per root and keep only the last root's data.
   If `paths:` is missing/empty → usage error: `engine 'md' has no paths
-  configured; pass a path or add paths: to config.yaml`.
-- `dbs-vector ingest "docs/" --type md` → unchanged: the explicit path
-  overrides engine `paths:` for that run. If the engine has
+  configured; pass a path or add paths: to config.yaml`. The no-path
+  fallback is **document-engine-only in v1**; API/duckdb engines keep their
+  existing invocation forms unchanged.
+- `dbs-vector ingest "docs/" --type md` → the explicit path **replaces the
+  roots for that run, not the filtering rules**: `ignore_patterns` and
+  gitignore (via `PathFilter`) apply, and discovered sources are stored as
+  resolved absolute paths. This is a deliberate behavior change from today's
+  explicit-path ingestion (which had no ignore filtering and stored paths
+  as given) — required by the invariant. If the engine has
   `watch.enabled: true` **and** the override root falls outside all
   configured roots, the CLI prints a notice that these rows will not be
   watched or reconciled (see Consequences #3). No notice for unwatched
@@ -133,9 +164,8 @@ Opt-in by listing `gitignore` in the engine's `exclusion_filters`.
 
 ## PathFilter component
 
-Findings from review: `IngestionService` today receives no config and must
-not read the `settings` singleton (DI pattern). A new small component owns
-all path-level scoping:
+`IngestionService` receives no config and must not read the `settings`
+singleton (DI pattern). A new small component owns all path-level scoping:
 
 - **`PathFilter`** (services layer): built in `bootstrap.build_dependencies`
   from the engine config — roots, `ignore_patterns`, gitignore on/off — and
@@ -143,7 +173,7 @@ all path-level scoping:
   `EngineDeps`). It answers one question: *is this path ingestable, and
   under which root?* CLI override paths construct a fresh `PathFilter` for
   the override root with the same engine `ignore_patterns`/gitignore
-  settings. This is the single enforcement point for the Hard Rule's
+  settings. This is the single enforcement point for the invariant's
   filtering; the walk in `ingest_directory` and the watcher's event filter
   both delegate to it.
 
@@ -155,9 +185,9 @@ ingestion orchestration. New dependency: `watchdog` (FSEvents-backed on
 macOS).
 
 ```
-watchdog Observer threads (one per engine's root set)
+watchdog Observer threads (one per engine's active root set)
   → PathFilter (extension, ignore_patterns, gitignore) — path-only, no reads
-  → per-file debounce map {path: due_time}, window resets on each event
+  → per-file debounce map {path: (last_event_kind, due_time)} — last state wins
        ↓ (due)
 single global worker thread (one queue across ALL engines)
   → executes actions sequentially: upsert_file / remove_source / reconcile
@@ -168,7 +198,9 @@ single global worker thread (one queue across ALL engines)
 
 - **Startup:** `start_stdio_server()` starts watchers after
   `initialize_services()` and before `mcp.run()`; stops them in a `finally`.
-  Watchers start only if ≥1 engine has `watch.enabled: true`.
+  Watchers start only if ≥1 engine has `watch.enabled: true`. Startup
+  reconciliation is unconditional for watched engines and runs on the worker
+  thread (server responds to MCP requests immediately).
 - **Dependencies:** each watched engine gets its full stack via the existing
   `build_dependencies()`; the embedder comes from the process-level
   `_MODEL_CACHE`, already resident — no second model load. This deliberately
@@ -181,48 +213,67 @@ single global worker thread (one queue across ALL engines)
   lock; LanceDB reads call `checkout_latest()` (MVCC). Accepted trade-off:
   search embeds serialize behind watcher embed batches on the same model, so
   a large reconcile adds up-to-one-batch latency to concurrent searches.
+- **Shutdown (graceful):** stop observers (no new events) → drain pending
+  due actions → final per-engine maintenance (`create_indices()` +
+  `compact()`) → exit. Abrupt shutdown (kill, crash) is recovered by the
+  mandatory startup reconciliation on next launch.
 - The watcher uses the chunker's `supported_extensions` — same as CLI ingest.
   No separate extension config.
 
-## Upsert model: whole-file replace
+## Upsert model: whole-file replace, source-aware
 
 Chosen over per-chunk hash diffing. Hash scheme (verified against
 `_chunk_content_hash` in `infrastructure/chunking/document.py`): the
 document chunker derives every chunk's `content_hash` from the file-level
 SHA-256 (16-char truncation) — chunk 0 carries the **bare** file hash,
-chunks 1..N carry `{file_hash}_{i}`. The unchanged-check therefore tests the
-bare file hash, which is present in the store iff the file was ingested.
+chunks 1..N carry `{file_hash}_{i}`. A file is "already ingested" iff its
+bare file hash is present **under its own source** — the check is on the
+`(source, bare_hash)` **pair**, never the hash alone. (A global-hash check
+has a correctness hole: edit B.md to duplicate A.md's content and B's hash
+"already exists", so B is skipped and its stale old rows survive every
+subsequent pass.)
 
 `IngestionService.upsert_file(path)` — the exact sequence, which does **not**
 reuse the directory-ingest dedup snapshot:
 
 1. Read + hash the file.
-2. **Unchanged check:** fresh `get_existing_hashes()` call (per action, not
-   cached — see below); bare file hash present → no-op, stop.
-3. `delete_by_source(path)`.
-4. Chunk → embed → `ingest_chunks`, **unconditionally** — no hash-set
+2. **Unchanged check:** fresh `scan(columns=["source", "content_hash"])`
+   (per action, not cached; `scan` guarantees `checkout_latest()`). If the
+   `(source, bare_hash)` pair exists → no-op, stop.
+3. `delete_by_source(path)` — the source's old rows go regardless of what
+   happens next.
+4. **Cross-source dedup check:** if the bare hash exists under a *different*
+   source → stop here. The content is already indexed once; this preserves
+   the existing global deduplication behavior (the file is represented by
+   the other source's rows).
+5. Chunk → embed → `ingest_chunks`, **unconditionally** — no hash-set
    skipping in this path. (Reusing the snapshot-based dedup would see the
    file's own pre-delete hashes and silently skip every chunk.)
 
 `get_existing_hashes()` gains a `checkout_latest()` call (today it is the
-only read path without one — a latent staleness bug this feature would
-expose; fixed as part of this work). Its O(rows) single-column scan per
-action is accepted (ms-scale).
+only read path without one — a latent staleness bug; fixed as part of this
+work, though `upsert_file` itself uses the pair-scan above). The O(rows)
+two-column scan per action is accepted (ms-scale).
 
 - Cost: an edited file re-embeds all its chunks (~5–30 for a typical doc) —
   one batch, sub-second with the resident model.
 - Rejected alternative (per-chunk content hashes): saves partial-edit
   embedding work but breaks the file-level short-circuit, collides on
   identical chunks across files, and forces re-ingesting existing tables.
+- The CLI directory-ingest path keeps its existing global-hash snapshot
+  semantics (the same edit-to-duplicate hole exists there today,
+  pre-existing); for watched engines the mandatory startup reconciliation
+  detects the absent `(source, hash)` pair and repairs it via
+  `upsert_file`.
 
 ### Known limitations (accepted, documented)
 
-- **Identical-content files** dedup to one copy globally (hash-keyed —
-  existing CLI behavior, unchanged). If file A is indexed and identical
-  file B is created, B's upsert is a no-op; if A is then deleted, the
-  content is absent until the **next reconciliation pass** re-ingests it
-  under B's source. Event-driven flow alone does not heal this; reconcile
-  does.
+- **Identical-content files** dedup to one copy globally (existing
+  behavior, unchanged). If file A is indexed and identical file B is
+  created, B's upsert stops at step 4 (zero rows for B); if A is then
+  deleted, the content is absent until the **next reconciliation pass**
+  detects B's missing `(source, hash)` pair and ingests it. Event-driven
+  flow alone does not heal this; reconcile does.
 - **Zero-chunk files** (fully excluded by content filters, or empty) never
   store their hash, so every reconciliation pass re-reads and re-chunks
   them. Harmless, bounded by file count.
@@ -236,37 +287,56 @@ action is accepted (ms-scale).
 | file moved / renamed | `delete_by_source(old)`; if `PathFilter` accepts new path → `upsert_file(new)` |
 | directory created / moved / deleted | schedule a **reconciliation pass** for that engine (FSEvents child-event delivery is unreliable; do not enumerate children from the event) |
 
-**Directory-event coalescing:** at most one pending reconcile per engine,
-debounced with the same `debounce_seconds`. A pending reconcile **absorbs**
-that engine's queued per-file actions (drops them — reconciliation subsumes
-their work). A burst like `git checkout` touching 40 directories yields one
-reconcile, not 40.
+### Coalescing: last state wins
+
+The debounce map keeps **one pending action per path** — a later event for
+the same path replaces the earlier one (and resets the window):
+
+- modify then delete → **remove** (not upsert-then-remove).
+- delete then create → **upsert**.
+- rename → two entries: remove(old path) + evaluate/upsert(new path), each
+  independently subject to later replacement.
+- A **pending reconciliation replaces all earlier per-file actions** for
+  that engine (reconciliation subsumes their work). At most one pending
+  reconcile per engine, debounced with the same `debounce_seconds` — a
+  `git checkout` touching 40 directories yields one reconcile, not 40.
+- Events arriving **while a reconciliation is actively running** are queued
+  normally and processed after it finishes — changes made after the
+  reconciliation's disk/store snapshots are never lost. (`upsert_file` is
+  idempotent, so overlap with what reconcile already did is a cheap no-op.)
 
 ## Reconciliation pass
 
-Runs on the worker thread at startup (`reconcile_on_start: true`) and when
-directory-level events fire. Per engine:
+Runs on the worker thread at startup (mandatory for watched engines) and
+when directory-level events fire. Per engine:
 
-1. **Disk set:** walk engine `paths:` applying `PathFilter` (extension +
-   `ignore_patterns` + gitignore) → map `resolved path → file hash` for
-   ingestable files.
+0. **Active roots only.** A configured root that does not exist or cannot be
+   opened is *inactive*: excluded from the walk **and from pruning**. A
+   missing root must never be interpreted as an empty directory — an
+   unmounted volume would otherwise mass-prune every row under it.
+   Moving or removing a root permanently is a configuration change: update
+   `paths:` and follow the rebuild rule.
+1. **Disk set:** walk the engine's *active* roots applying `PathFilter`
+   (extension + `ignore_patterns` + gitignore) → map
+   `resolved path → bare file hash` for ingestable files.
 2. **Store set:** `scan(columns=["source", "content_hash"])` (existing
    method) → map `source → hashes`.
-3. **Prune:** delete rows whose `source` is under a watched root
+3. **Prune:** delete rows whose `source` is under an **active** root
    (`Path(source).is_relative_to(resolved_root)` — roots are resolved, see
    Configuration) but **not in the step-1 disk set**. This intentionally
    covers more than deletions: files newly matched by `ignore_patterns`,
-   newly gitignored, or with a removed extension are pruned too — the Hard
-   Rule demands the index track what the engine *would ingest today*, not
-   what once existed.
-4. **Ingest:** working from the step-2 map **minus the hashes of rows pruned
-   in step 3**, upsert disk files whose bare file hash is absent. (Without
-   the subtraction, a file renamed while the server was down would be pruned
-   under its old source yet skipped as "already present" — ending with zero
-   rows.)
+   newly gitignored, or with a removed extension are pruned too — the
+   invariant demands the index track what the engine *would ingest today*,
+   not what once existed.
+4. **Ingest:** for each disk file whose `(source, bare_hash)` pair is absent
+   from the step-2 map **minus the rows pruned in step 3**, call
+   `upsert_file` (which re-applies its own live checks, including the
+   cross-source dedup stop). The subtraction matters: a file renamed while
+   the server was down is pruned under its old source in step 3 and must
+   not be skipped as "already present" in step 4.
 
 **Safety:** reconciliation deletes never touch rows whose `source` is outside
-the engine's configured roots (including relative-path sources from older
+the engine's *active* roots (including relative-path sources from older
 ingests — see Path normalization).
 
 ## Path normalization
@@ -302,9 +372,8 @@ exactly, so watch-managed engines need canonical paths:
 
 ## Index maintenance & compaction
 
-Split into two tiers — review verified that `create_indices()` retrains
-IVF_PQ from scratch and rebuilds FTS with `replace=True`, far too heavy per
-save on a real vault:
+Split into two tiers — `create_indices()` retrains IVF_PQ from scratch and
+rebuilds FTS with `replace=True`, far too heavy per save on a real vault:
 
 - **Per drained batch (≥1 write):** `refresh_fts()` only. New rows must
   enter the FTS index to appear in the hybrid search's FTS leg; the vector
@@ -320,13 +389,14 @@ Bursts (vault sync) coalesce into one drain → one FTS refresh.
 - Every per-file action is wrapped: failures are logged (loguru) and never
   kill the worker loop or the MCP server.
 - Non-UTF-8 files are skipped with a warning (existing behavior).
-- Observer threads are daemons; shutdown stops observers and the worker in a
-  `finally` around `mcp.run()`.
+- Observer threads are daemons; graceful shutdown follows the
+  stop-observers → drain → final-maintenance order (Architecture), wrapped
+  in a `finally` around `mcp.run()`.
 
-## Consequences of the Hard Rule (accepted)
+## Consequences of the Invariant (accepted)
 
-1. **No scope divergence, ever.** One list (`paths:`) drives CLI ingest,
-   watch, and reconciliation with identical filtering.
+1. **No scope divergence within active roots.** One list (`paths:`) drives
+   CLI ingest, watch, and reconciliation with identical filtering.
 2. **CLI ingest becomes mostly unnecessary for watched engines.** Startup
    reconciliation is a full delta ingest. CLI ingest remains for initial bulk
    loads, `--rebuild`, and unwatched engines. Do not run CLI ingest against a
@@ -339,35 +409,42 @@ Bursts (vault sync) coalesce into one drain → one FTS refresh.
    CLI prints a notice in this case (watched engines only).
 4. **Shrinking `paths:` orphans rows rather than deleting them.** Deliberate:
    auto-deleting everything outside current roots would turn a config typo
-   into a mass delete. Cleanup of an intentionally removed root is manual
-   (`--rebuild`; a prune command is out of scope for v1).
+   into a mass delete. Cleanup of an intentionally removed root follows the
+   rebuild rule (`--rebuild --force`; a prune command is out of scope).
 5. **`watch.enabled: true` with no `paths:` is a load-time config error**,
    not a runtime surprise. md and md-granite watching the same vault embed
    each change once per engine — the expected price of A/B parity.
 
 ## Testing
 
-- **Unit** (mock-based, no I/O): debounce map with a fake clock; `PathFilter`
-  (extension / `ignore_patterns` basename-and-relative matching / gitignore
-  anchoring and caching); event→action mapping with mock store + ingester;
-  reconciliation diff logic incl. the renamed-while-down case and
-  newly-excluded-file pruning; directory-event coalescing/absorption; config
-  validation rules (absolute paths, nested roots, shared table_name, missing
-  paths).
+- **Unit** (mock-based, no I/O): debounce map with a fake clock, including
+  the three last-state transitions (modify→delete = remove, delete→create =
+  upsert, rename = remove+upsert) and reconcile-absorbs-pending;
+  `PathFilter` (extension / `ignore_patterns` basename-and-relative
+  matching / gitignore anchoring and caching); event→action mapping with
+  mock store + ingester; reconciliation diff logic incl. the
+  renamed-while-down case, newly-excluded-file pruning, and inactive-root
+  exclusion; config validation rules (absolute paths, nested roots, shared
+  table_name, missing paths, negative debounce).
 - **Integration** (tmpdir LanceDB, real chunker/mapper, deterministic fake
   embedder): create/edit/delete/rename files and dispatch events directly
   into the handler (no real timers — hermetic, no sleeps); startup
-  reconciliation end-to-end; identical-content heal-on-reconcile;
+  reconciliation end-to-end; **existing file edited into a duplicate of
+  another file** (the source-aware check: old rows deleted, no new rows,
+  no stale survivors); identical-content heal-on-reconcile;
   `LanceDBStore.delete_by_source` and `refresh_fts`; CLI
   no-path/override/paths-missing/multi-root-rebuild behaviors.
 - One optional smoke test with a real `Observer`, marked slow.
 
-## Out of scope (v1)
+## Out of scope (v1) — explicitly deferred
 
+- Root-move tracking; old-root row migration.
+- Ignore-pattern / filter-diff detection; config fingerprints. (Covered by
+  the documented rebuild rule.)
 - Nested `.gitignore` files; live `.gitignore` tracking.
 - Watch for non-document chunkers (duckdb/api engines).
 - A prune command for orphaned rows.
-- Per-chunk hash diffing.
+- Per-chunk hash diffing / partial-file updates.
 - Any CLI `watch` command — the watcher exists only inside `dbs-vector mcp`.
 
 ## Dependencies
