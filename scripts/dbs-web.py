@@ -177,14 +177,14 @@ def _handle_search(payload: dict[str, object]) -> dict[str, object]:
     if not query:
         return {"results": []}
     try:
-        limit = max(1, int(payload.get("limit") or 20))  # type: ignore[arg-type]
+        limit = min(100, max(1, int(payload.get("limit") or 20)))  # type: ignore[arg-type]
     except (TypeError, ValueError):
         limit = 20
 
     from dbs_vector.services.bootstrap import build_search_service
 
     deps = _get_deps(engine)
-    service = build_search_service(engine, deps=deps)  # type: ignore[attr-defined]
+    service = build_search_service(engine, deps=deps)
     response = service.execute_query(query, limit=limit)
     return {
         "results": [_serialize(r) for r in response.results],
@@ -340,7 +340,7 @@ PAGE = """<!DOCTYPE html>
     <select id="engine" title="engine"></select>
     <input id="query" type="text" placeholder="search query…" autocomplete="off">
     <button id="searchBtn">Search</button>
-    <label class="chk">limit <input id="limit" type="number" min="1" max="1000" value="20" style="width:64px"></label>
+    <label class="chk">limit <input id="limit" type="number" min="1" max="100" value="20" style="width:64px"></label>
     <span style="width:1px;height:22px;background:var(--bd)"></span>
     <input id="source" type="text" placeholder="server path to ingest…" autocomplete="off">
     <label class="chk"><input id="rebuild" type="checkbox"> Full rebuild</label>
