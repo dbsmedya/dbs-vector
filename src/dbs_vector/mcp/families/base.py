@@ -25,6 +25,16 @@ def embeddings_phrase(model: str) -> str:
     )
 
 
+def floor_clause(engine: "EngineConfig") -> str:
+    """Engine-floor sentence shared by every family's search_description."""
+    floor = engine.similarity_floor
+    return (
+        f"This engine has a configured admission floor of {floor:g}; "
+        if floor is not None
+        else "This engine has no configured admission floor; "
+    )
+
+
 def render_with_budget(
     header: str,
     blocks: Iterable[str],

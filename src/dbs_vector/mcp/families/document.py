@@ -7,6 +7,7 @@ from dbs_vector.core.models import SearchResponse
 from dbs_vector.mcp.families.base import (
     RESPONSE_BUDGET_BYTES,
     embeddings_phrase,
+    floor_clause,
     render_with_budget,
 )
 from dbs_vector.services.search import (
@@ -73,12 +74,7 @@ class DocumentFamily:
 
     def search_description(self, engine_name: str, engine: "EngineConfig") -> str:
         emb = embeddings_phrase(engine.model)
-        floor = engine.similarity_floor
-        floor_clause = (
-            f"This engine has a configured admission floor of {floor:g}; "
-            if floor is not None
-            else "This engine has no configured admission floor; "
-        )
+        floor = floor_clause(engine)
         return (
             f"Hybrid semantic + full-text search over Markdown documentation "
             f"chunks ({emb}). Each result carries `similarity`: exact cosine "
@@ -89,7 +85,7 @@ class DocumentFamily:
             f"display order may disagree with similarity order. `retrieved_by` "
             f"reports only which retrieval channel(s) returned the row "
             f"(vector, fts, or both) — not evidence the match is correct. "
-            f"{floor_clause}`min_similarity` sets a per-call floor and "
+            f"{floor}`min_similarity` sets a per-call floor and "
             f"`disable_similarity_floor=true` disables admission filtering "
             f"entirely (exact unfloored baseline). An empty response means no "
             f"inspected candidate passed admission — a low-confidence signal "

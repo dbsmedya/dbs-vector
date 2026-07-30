@@ -488,8 +488,9 @@ class TestSearch:
     def test_search_reads_relevance_score_for_hybrid(self, lancedb_store):
         """Hybrid search rows carry _relevance_score, not _distance.
 
-        The mapper must receive the relevance score as `score` (not None),
-        and is_fts_match must be False for genuine hybrid hits.
+        The mapper must receive the relevance score as `rrf_score` (not
+        `score`), and `retrieved_by` is classified from the `_distance`/
+        `_score` null pattern (distance non-null + score null -> "vector").
         """
         import polars as pl
 

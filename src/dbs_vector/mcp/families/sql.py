@@ -9,6 +9,7 @@ from dbs_vector.core.naming import normalize_tool_name
 from dbs_vector.mcp.families.base import (
     RESPONSE_BUDGET_BYTES,
     embeddings_phrase,
+    floor_clause,
     render_with_budget,
 )
 from dbs_vector.services.browse import (
@@ -261,12 +262,7 @@ class SqlFamily:
         source = _sql_source_phrase(engine.chunker_type)
         emb = embeddings_phrase(engine.model)
         browse_tool = normalize_tool_name(engine_name, verb="browse")
-        floor = engine.similarity_floor
-        floor_clause = (
-            f"This engine has a configured admission floor of {floor:g}; "
-            if floor is not None
-            else "This engine has no configured admission floor; "
-        )
+        floor = floor_clause(engine)
         return (
             f"Hybrid semantic + full-text search over slow-query fingerprints "
             f"from {source} ({emb}). Each result carries `similarity`: exact "
@@ -278,7 +274,7 @@ class SqlFamily:
             f"order — NOT by execution_time_ms or calls. `retrieved_by` "
             f"reports only which retrieval channel(s) returned the row "
             f"(vector, fts, or both) — not evidence the match is correct. "
-            f"{floor_clause}`min_similarity` sets a per-call floor and "
+            f"{floor}`min_similarity` sets a per-call floor and "
             f"`disable_similarity_floor=true` disables admission filtering "
             f"entirely (exact unfloored baseline). An empty response means no "
             f"inspected candidate passed admission — a low-confidence signal "

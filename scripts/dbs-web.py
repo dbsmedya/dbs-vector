@@ -175,7 +175,7 @@ def _handle_search(payload: dict[str, object]) -> dict[str, object]:
         raise ValueError(f"Unknown engine: {engine!r}")
     query = str(payload.get("query") or "").strip()
     if not query:
-        return {"results": []}
+        return {"results": [], "floor": None, "inspected": 0, "best_rejected": None}
     try:
         limit = min(100, max(1, int(payload.get("limit") or 20)))  # type: ignore[arg-type]
     except (TypeError, ValueError):
