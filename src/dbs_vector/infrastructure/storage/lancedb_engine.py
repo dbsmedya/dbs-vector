@@ -96,9 +96,31 @@ class LanceDBStore:
         # FTS index may now exist (or have been replaced) — allow hybrid retry.
         self._hybrid_ok = None
 
+    def refresh_fts(self) -> None:
+        """Rebuild ONLY the Tantivy FTS index (no IVF_PQ work).
+
+        Called on the watcher's 60s timer so newly written rows reach the FTS
+        leg of hybrid search within a minute. The vector leg finds them
+        immediately without any index work.
+        """
+        try:
+            self.table.create_fts_index("text", replace=True)
+        except Exception as e:  # noqa: BLE001 — must never kill the watcher worker
+            logger.warning("FTS refresh failed for '{}': {}", self.table_name, e)
+        # The index may now exist or have been replaced — allow hybrid retry.
+        self._hybrid_ok = None
+
+    def delete_by_source(self, source: str) -> None:
+        """Delete every row for one source path (predicate delete)."""
+        safe = source.replace("'", "''")
+        self.table.delete(f"source = '{safe}'")
+
     def get_existing_hashes(self) -> set[str]:
         """Returns all existing content hashes, projecting a single column
         via LanceDB's query builder to avoid materialising the vector column."""
+        # Same freshness contract as search()/count_matching()/scan(): a
+        # long-lived process must see rows committed elsewhere.
+        self.table.checkout_latest()
         if len(self.table) == 0:
             return set()
 

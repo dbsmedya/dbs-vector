@@ -866,3 +866,60 @@ class TestSearch:
             f"Expected hybrid retried after version bump, calls: {mock_table.search.call_args_list}"
         )
         assert store._hybrid_ok is True
+
+
+class TestDeleteBySource:
+    """Tests for source-scoped predicate deletes."""
+
+    def test_delete_by_source_issues_equality_predicate(self, lancedb_store):
+        store, _mock_db, mock_table, _mock_lancedb = lancedb_store
+
+        store.delete_by_source("/vault/notes/a.md")
+
+        mock_table.delete.assert_called_once_with("source = '/vault/notes/a.md'")
+
+    def test_delete_by_source_escapes_single_quotes(self, lancedb_store):
+        store, _mock_db, mock_table, _mock_lancedb = lancedb_store
+
+        store.delete_by_source("/vault/it's here.md")
+
+        mock_table.delete.assert_called_once_with("source = '/vault/it''s here.md'")
+
+
+class TestRefreshFts:
+    """Tests for the FTS-only index refresh."""
+
+    def test_refresh_fts_replaces_only_the_text_index(self, lancedb_store):
+        store, _mock_db, mock_table, _mock_lancedb = lancedb_store
+
+        store.refresh_fts()
+
+        mock_table.create_fts_index.assert_called_once_with("text", replace=True)
+        # FTS-only: never touches the vector index.
+        mock_table.create_index.assert_not_called()
+
+    def test_refresh_fts_resets_the_hybrid_cache(self, lancedb_store):
+        store, _mock_db, mock_table, _mock_lancedb = lancedb_store
+        store._hybrid_ok = False
+
+        store.refresh_fts()
+
+        assert store._hybrid_ok is None
+
+    def test_refresh_fts_swallows_backend_failure(self, lancedb_store):
+        store, _mock_db, mock_table, _mock_lancedb = lancedb_store
+        mock_table.create_fts_index.side_effect = RuntimeError("tantivy missing")
+
+        store.refresh_fts()  # must not raise — the watcher worker survives
+
+
+class TestGetExistingHashesFreshness:
+    """get_existing_hashes must see rows committed by another process."""
+
+    def test_get_existing_hashes_checks_out_latest(self, lancedb_store):
+        store, _mock_db, mock_table, _mock_lancedb = lancedb_store
+        mock_table.__len__.return_value = 0
+
+        store.get_existing_hashes()
+
+        mock_table.checkout_latest.assert_called_once()

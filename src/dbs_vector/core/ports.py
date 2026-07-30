@@ -77,6 +77,18 @@ class IVectorStore(Protocol):
         """Returns a set of all unique content hashes currently in the store."""
         ...
 
+    def delete_by_source(self, source: str) -> None:
+        """Delete every row whose `source` column equals `source`.
+
+        Whole-file replace primitive for the watcher: no row count is
+        returned (a pre-count scan per event is not worth it).
+        """
+        ...
+
+    def refresh_fts(self) -> None:
+        """Rebuild ONLY the full-text index. No vector index work."""
+        ...
+
     def search(
         self,
         query: str,
