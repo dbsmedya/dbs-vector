@@ -24,6 +24,8 @@ def test_sql_search_description_keeps_filter_docs_and_source_phrase():
     assert "Gemma" in d  # embeddings phrase from model
     assert "Showing" in d  # N-of-M note
     assert "browse_sql_api" in d  # sibling-tool pointer
+    assert "exact cosine" in d  # honest similarity semantics
+    assert "min_similarity" in d
 
 
 def test_sql_search_description_duckdb_granite_phrases():
@@ -45,6 +47,8 @@ def test_document_search_description_similarity_clause():
         ),
     )
     assert "similarity" in d.lower()
+    assert "exact cosine" in d
+    assert "min_similarity" in d
 
 
 def test_browse_description_off_omits_raw_query():

@@ -256,11 +256,28 @@ def search(
     min_time: Annotated[
         float | None, typer.Option("--min-time", help="(SQL Only) Minimum execution time in ms.")
     ] = None,
+    min_similarity: Annotated[
+        float | None,
+        typer.Option(
+            "--min-similarity",
+            help="Admission floor: only return results with cosine similarity >= this "
+            "value (or all query terms verbatim). Overrides the engine's configured floor.",
+        ),
+    ] = None,
+    no_similarity_floor: Annotated[
+        bool,
+        typer.Option(
+            "--no-similarity-floor",
+            help="Disable admission filtering entirely (exact unfloored baseline: "
+            "no floor AND the original candidate-pool size).",
+        ),
+    ] = False,
     json_output: Annotated[
         bool,
         typer.Option(
             "--json",
-            help="Emit full results (score, source, full text, metadata) as JSON to stdout.",
+            help="Emit the full envelope (floor, inspected, best_rejected, results with "
+            "similarity/retrieved_by/rrf_score) as JSON to stdout.",
         ),
     ] = False,
 ) -> None:
@@ -277,9 +294,19 @@ def search(
     if min_time is not None and settings.engines[engine_name].resolved_family == "sql":
         extra_filters["min_time"] = min_time
 
-    response = service.execute_query(
-        query, source_filter=filter_source, limit=limit, extra_filters=extra_filters
-    )
+    try:
+        response = service.execute_query(
+            query,
+            source_filter=filter_source,
+            limit=limit,
+            extra_filters=extra_filters,
+            min_similarity=min_similarity,
+            disable_similarity_floor=no_similarity_floor,
+        )
+    except ValueError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1) from e
+
     if json_output:
         typer.echo(service.results_to_json(response))
     else:

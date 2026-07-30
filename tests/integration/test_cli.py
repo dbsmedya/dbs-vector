@@ -446,6 +446,55 @@ class TestSearchCommand:
         # min_time should not be in extra_filters for md engine
         assert call_args[1]["extra_filters"] == {}
 
+    def test_search_forwards_similarity_flags(
+        self,
+        mock_settings,
+        mock_embedder,
+        mock_store,
+        mock_chunker,
+        mock_mapper,
+        mock_search_service,
+    ):
+        """--min-similarity and --no-similarity-floor forward to execute_query."""
+        from dbs_vector.cli import app
+
+        result = runner.invoke(app, ["search", "query", "--min-similarity", "0.4"])
+
+        assert result.exit_code == 0
+        call_args = mock_search_service.return_value.execute_query.call_args
+        assert call_args[1]["min_similarity"] == 0.4
+        assert call_args[1]["disable_similarity_floor"] is False
+
+        result = runner.invoke(app, ["search", "query", "--no-similarity-floor"])
+
+        assert result.exit_code == 0
+        call_args = mock_search_service.return_value.execute_query.call_args
+        assert call_args[1]["min_similarity"] is None
+        assert call_args[1]["disable_similarity_floor"] is True
+
+    def test_search_reports_value_error_cleanly(
+        self,
+        mock_settings,
+        mock_embedder,
+        mock_store,
+        mock_chunker,
+        mock_mapper,
+        mock_search_service,
+    ):
+        """A ValueError from execute_query (e.g. out-of-range --limit) becomes
+        a clean CLI error message, not an uncaught traceback."""
+        from dbs_vector.cli import app
+
+        mock_search_service.return_value.execute_query.side_effect = ValueError(
+            "limit must be within [1, 100]; got 200"
+        )
+
+        result = runner.invoke(app, ["search", "query", "--limit", "200"])
+
+        assert result.exit_code == 1
+        assert "Error:" in result.output
+        assert "limit must be within" in result.output
+
     def test_search_unknown_engine(self, mock_settings):
         """Test search with unknown engine type."""
         from dbs_vector.cli import app

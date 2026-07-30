@@ -16,7 +16,12 @@ from dbs_vector.services.browse import (
     BrowseService,
     BrowseValidationError,
 )
-from dbs_vector.services.search import SearchService, retrieved_by_label
+from dbs_vector.services.search import (
+    SearchService,
+    admission_phrase,
+    format_admission_empty,
+    retrieved_by_label,
+)
 
 if TYPE_CHECKING:
     from dbs_vector.config import EngineConfig
@@ -162,7 +167,14 @@ class SqlFamily:
             value = family_kwargs.get(key)
             if value is not None:
                 extra_filters[key] = value
-        return service.execute_query(query, source_filter, limit, extra_filters=extra_filters)
+        return service.execute_query(
+            query,
+            source_filter,
+            limit,
+            extra_filters=extra_filters,
+            min_similarity=family_kwargs.get("min_similarity"),
+            disable_similarity_floor=bool(family_kwargs.get("disable_similarity_floor", False)),
+        )
 
     def format_results(
         self,
@@ -173,6 +185,8 @@ class SqlFamily:
     ) -> str:
         results = response.results
         if not results:
+            if response.floor is not None and response.inspected > 0:
+                return format_admission_empty(query, response)
             if total_matching > 0:
                 return (
                     f"No results found for query: '{query}'. "
@@ -181,6 +195,10 @@ class SqlFamily:
                     f"try broadening the query or relaxing filters.)"
                 )
             return f"No results found for query: '{query}'"
+
+        suffix = (
+            "" if response.floor is None else f", admission: {admission_phrase(response.floor)}"
+        )
 
         if len(results) > total_matching:
             from loguru import logger
@@ -195,7 +213,7 @@ class SqlFamily:
             )
             header = (
                 f"Showing {len(results)} results for '{query}' "
-                f"(ranked by similarity). WARNING: count_matching reported "
+                f"(hybrid-ranked{suffix}). WARNING: count_matching reported "
                 f"only {total_matching} rows would match the same filters — "
                 f"this is a filter/count mismatch; see server logs.\n"
             )
@@ -203,7 +221,7 @@ class SqlFamily:
             header = (
                 f"Showing {len(results)} of {total_matching} results "
                 f"that matched your filters for '{query}' "
-                f"(ranked by similarity):\n"
+                f"(hybrid-ranked{suffix}):\n"
             )
 
         def _block(res: Any) -> str:
@@ -243,19 +261,37 @@ class SqlFamily:
         source = _sql_source_phrase(engine.chunker_type)
         emb = embeddings_phrase(engine.model)
         browse_tool = normalize_tool_name(engine_name, verb="browse")
+        floor = engine.similarity_floor
+        floor_clause = (
+            f"This engine has a configured admission floor of {floor:g}; "
+            if floor is not None
+            else "This engine has no configured admission floor; "
+        )
         return (
-            f"Semantic search over slow-query fingerprints from {source} "
-            f"({emb}). Returns up to `limit` results ranked by cosine "
-            f"similarity to the query string — NOT by execution_time_ms or "
-            f"calls. Filters (optional, AND prefilters applied before "
-            f"ranking): `min_time` — minimum cumulative execution_time_ms in "
-            f"ms; `min_lock_time` — minimum cumulative lock_time_sec in "
-            f"seconds; `table_filter` — restrict to fingerprints touching the "
-            f"given table (case/schema-insensitive, whole-name exact). The header reports "
-            f"'Showing N of M results that matched your filters' so callers "
-            f"can tell when results are similarity-truncated. For ranking by "
-            f"a scalar column, aggregation, or point lookup (no query string) "
-            f"use the sibling `{browse_tool}` tool."
+            f"Hybrid semantic + full-text search over slow-query fingerprints "
+            f"from {source} ({emb}). Each result carries `similarity`: exact "
+            f"cosine similarity in [-1, 1] between query and fingerprint "
+            f"embeddings — a consistent geometric scale, NOT a calibrated "
+            f"probability of relevance; comparisons are meaningful only "
+            f"within this engine/configuration. Results are ordered by hybrid "
+            f"rank fusion, so display order may disagree with similarity "
+            f"order — NOT by execution_time_ms or calls. `retrieved_by` "
+            f"reports only which retrieval channel(s) returned the row "
+            f"(vector, fts, or both) — not evidence the match is correct. "
+            f"{floor_clause}`min_similarity` sets a per-call floor and "
+            f"`disable_similarity_floor=true` disables admission filtering "
+            f"entirely (exact unfloored baseline). An empty response means no "
+            f"inspected candidate passed admission — a low-confidence signal "
+            f"for this attempt, NOT proof the corpus lacks relevant content. "
+            f"Filters (optional, AND prefilters applied before ranking): "
+            f"`min_time` — minimum cumulative execution_time_ms in ms; "
+            f"`min_lock_time` — minimum cumulative lock_time_sec in seconds; "
+            f"`table_filter` — restrict to fingerprints touching the given "
+            f"table (case/schema-insensitive, whole-name exact). The header "
+            f"reports 'Showing N of M results that matched your filters' so "
+            f"callers can tell when results are admission- or rank-truncated. "
+            f"For ranking by a scalar column, aggregation, or point lookup "
+            f"(no query string) use the sibling `{browse_tool}` tool."
         )
 
     def browse_description(
@@ -302,12 +338,16 @@ class SqlFamily:
             min_lock_time: float | None = None,
             table_filter: str | None = None,
             include_raw: bool = False,
+            min_similarity: float | None = None,
+            disable_similarity_floor: bool = False,
         ) -> str:
             from dbs_vector.mcp.state import _services  # lazy import
 
             service = _services.get(engine_name)
             if service is None:
                 return f"Error: search service '{engine_name}' is not initialized."
+            if min_similarity is not None and not (-1.0 <= min_similarity <= 1.0):
+                return f"min_similarity must be within [-1, 1]; got {min_similarity}."
             try:
                 extra_filters: dict[str, Any] = {}
                 for key, value in (
@@ -339,6 +379,8 @@ class SqlFamily:
                         min_time=min_time,
                         min_lock_time=min_lock_time,
                         table_filter=table_filter,
+                        min_similarity=min_similarity,
+                        disable_similarity_floor=disable_similarity_floor,
                     )
                     t = service.count_matching(source_filter, extra_filters)
                     return r, t

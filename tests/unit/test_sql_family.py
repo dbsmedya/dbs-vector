@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from dbs_vector.core.models import SearchResponse, SqlChunk, SqlSearchResult
+from dbs_vector.core.models import RejectedCandidate, SearchResponse, SqlChunk, SqlSearchResult
 from dbs_vector.infrastructure.storage.lancedb_engine import LanceDBStore
 from dbs_vector.infrastructure.storage.mappers import SqlMapper
 from dbs_vector.mcp.families.base import RESPONSE_BUDGET_BYTES
@@ -64,6 +64,10 @@ def _make_full_sql_result(**overrides) -> SqlSearchResult:
         retrieved_by="vector",
         rrf_score=None,
     )
+
+
+def _floor_response(results, floor, inspected, best=None):
+    return SearchResponse(results=results, floor=floor, inspected=inspected, best_rejected=best)
 
 
 @pytest.fixture
@@ -183,7 +187,14 @@ def test_run_search_passes_min_time_filter():
 
     fam.run_search(service, query="q", limit=2, source_filter=None, min_time=100.0)
 
-    service.execute_query.assert_called_once_with("q", None, 2, extra_filters={"min_time": 100.0})
+    service.execute_query.assert_called_once_with(
+        "q",
+        None,
+        2,
+        extra_filters={"min_time": 100.0},
+        min_similarity=None,
+        disable_similarity_floor=False,
+    )
 
 
 def test_run_search_omits_min_time_when_unset():
@@ -193,7 +204,9 @@ def test_run_search_omits_min_time_when_unset():
 
     fam.run_search(service, query="q", limit=2, source_filter=None)
 
-    service.execute_query.assert_called_once_with("q", None, 2, extra_filters={})
+    service.execute_query.assert_called_once_with(
+        "q", None, 2, extra_filters={}, min_similarity=None, disable_similarity_floor=False
+    )
 
 
 def test_run_search_passes_min_lock_time_filter():
@@ -204,7 +217,12 @@ def test_run_search_passes_min_lock_time_filter():
     fam.run_search(service, query="q", limit=2, source_filter=None, min_lock_time=50.0)
 
     service.execute_query.assert_called_once_with(
-        "q", None, 2, extra_filters={"min_lock_time": 50.0}
+        "q",
+        None,
+        2,
+        extra_filters={"min_lock_time": 50.0},
+        min_similarity=None,
+        disable_similarity_floor=False,
     )
 
 
@@ -222,7 +240,12 @@ def test_run_search_passes_table_filter():
     )
 
     service.execute_query.assert_called_once_with(
-        "q", None, 2, extra_filters={"table_filter": "dt_customer_performance_report"}
+        "q",
+        None,
+        2,
+        extra_filters={"table_filter": "dt_customer_performance_report"},
+        min_similarity=None,
+        disable_similarity_floor=False,
     )
 
 
@@ -246,6 +269,8 @@ def test_run_search_combines_all_three_filters():
         None,
         2,
         extra_filters={"min_time": 100.0, "min_lock_time": 10.0, "table_filter": "tx_process"},
+        min_similarity=None,
+        disable_similarity_floor=False,
     )
 
 
@@ -263,10 +288,14 @@ def test_make_handler_signature_includes_new_filters():
         "min_lock_time",
         "table_filter",
         "include_raw",
+        "min_similarity",
+        "disable_similarity_floor",
     ]
     assert sig.parameters["min_lock_time"].default is None
     assert sig.parameters["table_filter"].default is None
     assert sig.parameters["include_raw"].default is False
+    assert sig.parameters["min_similarity"].default is None
+    assert sig.parameters["disable_similarity_floor"].default is False
 
 
 def test_format_results_includes_execution_time_calls_and_normalized_sql():
@@ -599,7 +628,14 @@ async def test_make_handler_runs_search_and_formats(monkeypatch):
     handler = fam.make_handler("sql-test")
     out = await handler(query="q", limit=1, min_time=200.0)
 
-    service.execute_query.assert_called_once_with("q", None, 1, extra_filters={"min_time": 200.0})
+    service.execute_query.assert_called_once_with(
+        "q",
+        None,
+        1,
+        extra_filters={"min_time": 200.0},
+        min_similarity=None,
+        disable_similarity_floor=False,
+    )
     service.count_matching.assert_called_once_with(None, {"min_time": 200.0})
     assert "Source Database: prod_db" in out
 
@@ -618,7 +654,15 @@ async def test_handler_handles_50_concurrent_search_count_pairs(monkeypatch):
     calls = {"search": 0, "count": 0}
     lock = threading.Lock()
 
-    def fake_search(query, source_filter, limit, *, extra_filters):
+    def fake_search(
+        query,
+        source_filter,
+        limit,
+        *,
+        extra_filters,
+        min_similarity=None,
+        disable_similarity_floor=False,
+    ):
         with lock:
             calls["search"] += 1
         return SearchResponse(results=[], inspected=0)  # → formatter "no results" branch
@@ -656,3 +700,55 @@ async def test_make_handler_handles_exception(monkeypatch):
     out = await handler(query="q")
 
     assert "Search execution failed: DB down" in out
+
+
+@pytest.mark.asyncio
+async def test_make_handler_rejects_out_of_range_min_similarity(monkeypatch):
+    """Validation happens before the service is called (no search/count call)."""
+    import dbs_vector.mcp.state as state_mod
+
+    service = MagicMock()
+    monkeypatch.setattr(state_mod, "_services", {"sql-test": service})
+
+    fam = SqlFamily()
+    handler = fam.make_handler("sql-test")
+    out = await handler(query="q", min_similarity=2.0)
+
+    assert out == "min_similarity must be within [-1, 1]; got 2.0."
+    service.execute_query.assert_not_called()
+    service.count_matching.assert_not_called()
+
+
+class TestFloorPresentation:
+    def test_no_floor_header_says_hybrid_ranked(self):
+        out = SqlFamily().format_results(
+            _floor_response([_make_sql_result()], None, 1), "q", total_matching=1
+        )
+        assert "(hybrid-ranked):" in out
+
+    def test_floor_header_carries_admission_phrase(self):
+        out = SqlFamily().format_results(
+            _floor_response([_make_sql_result()], 0.55, 3), "q", total_matching=4
+        )
+        assert (
+            "Showing 1 of 4 results that matched your filters for 'q' "
+            "(hybrid-ranked, admission: similarity >= 0.55 or all query terms verbatim):"
+        ) in out
+
+    def test_admission_empty_leads_with_low_confidence_not_absence(self):
+        best = RejectedCandidate(similarity=0.38, source="tests/x.py", retrieved_by="fts")
+        out = SqlFamily().format_results(_floor_response([], 0.55, 15, best), "beehive maintenance")
+        assert "No inspected candidate passed admission" in out
+        assert "similarity >= 0.55 or all query terms verbatim" in out
+        assert "'beehive maintenance'" in out
+        assert "Inspected 15 hybrid-ranked candidates" in out
+        assert "0.38" in out and "tests/x.py" in out and "fts-only" in out
+        assert "does not establish corpus-level absence" in out
+
+    def test_floor_active_but_no_candidates_falls_back_to_total_matching_message(self):
+        """floor is set but inspected==0 (nothing was even fetched): admission-empty
+        requires inspected > 0, so this falls through to the existing
+        total_matching>0 message, not the admission-empty one."""
+        out = SqlFamily().format_results(_floor_response([], 0.55, 0), "q", total_matching=37)
+        assert "37 rows matched your filters" in out
+        assert "none ranked above the similarity/FTS threshold" in out

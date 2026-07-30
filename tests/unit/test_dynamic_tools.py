@@ -83,7 +83,7 @@ def test_register_search_tools_uses_family_description(fresh_mcp, _clean_setting
 
     tool = next(t for t in fresh_mcp._tool_manager.list_tools() if t.name == "search_md")
     # Description now comes from DocumentFamily.search_description, not engine.description
-    assert "Semantic search" in tool.description
+    assert "Hybrid semantic" in tool.description
     assert tool.description != "Markdown & Prose"
 
 

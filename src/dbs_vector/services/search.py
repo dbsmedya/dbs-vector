@@ -26,6 +26,36 @@ def retrieved_by_label(value: str) -> str:
     return _RETRIEVED_BY_LABELS.get(value, value)
 
 
+def admission_phrase(floor: float) -> str:
+    """The one-line admission rule, rendered identically on every surface."""
+    return f"similarity >= {floor:g} or all query terms verbatim"
+
+
+def format_admission_empty(query: str, response: SearchResponse) -> str:
+    """Empty-because-admission-filtered message: low retrieval confidence for
+    THIS attempt — never an assertion of corpus-level absence (only the
+    inspected pool is known)."""
+    floor = response.floor
+    if floor is None:  # defensive; callers gate on floor being active
+        return f"No results found for query: '{query}'"
+    msg = (
+        f"No inspected candidate passed admission ({admission_phrase(floor)}) "
+        f"for '{query}'. Inspected {response.inspected} hybrid-ranked candidates"
+    )
+    best = response.best_rejected
+    if best is not None:
+        msg += (
+            f"; best was similarity {best.similarity:.2f} "
+            f"({best.source}, {retrieved_by_label(best.retrieved_by)})"
+        )
+    msg += (
+        ". Retrieval confidence for this attempt is low; this does not "
+        "establish corpus-level absence. Retry with different terms or a "
+        "lower min_similarity if you expected a match."
+    )
+    return msg
+
+
 class SearchService:
     """Orchestrates hybrid vector search and formats results."""
 
@@ -148,7 +178,10 @@ class SearchService:
         """Formats and prints the parsed search results."""
         results = response.results
         if not results:
-            logger.info("No results found")
+            if response.floor is not None and response.inspected > 0:
+                logger.info("{}", format_admission_empty(query, response))
+            else:
+                logger.info("No results found")
             return
 
         logger.info("Top Results:")

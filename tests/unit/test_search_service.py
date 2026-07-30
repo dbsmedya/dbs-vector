@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from dbs_vector.core.models import Chunk, SearchResponse, SearchResult
-from dbs_vector.services.search import SearchService
+from dbs_vector.core.models import Chunk, RejectedCandidate, SearchResponse, SearchResult
+from dbs_vector.services.search import SearchService, format_admission_empty
 
 
 @pytest.fixture
@@ -161,6 +161,20 @@ class TestPrintResults:
         search_service.print_results(SearchResponse(results=[], inspected=0), "some query")
 
         assert "No results found" in caplog.text
+
+    def test_print_admission_empty_logs_format_admission_empty(self, search_service, caplog):
+        """When floor is active and candidates were inspected, print_results
+        logs the honest admission-empty message, not the generic one."""
+        response = SearchResponse(
+            results=[],
+            floor=0.55,
+            inspected=4,
+            best_rejected=RejectedCandidate(similarity=0.3, source="doc.md", retrieved_by="vector"),
+        )
+
+        search_service.print_results(response, "some query")
+
+        assert format_admission_empty("some query", response) in caplog.text
 
     def test_print_document_results(self, search_service, caplog):
         """Test printing document (non-SQL) results."""
