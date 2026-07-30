@@ -1,9 +1,14 @@
 import hashlib
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
+
+# Retrieval-channel membership: which hybrid leg(s) returned a row.
+# States which channel returned the row — nothing more; not evidence the
+# match is semantically or lexically correct.
+RetrievedBy = Literal["both", "vector", "fts"]
 
 
 class Chunk(BaseModel):
