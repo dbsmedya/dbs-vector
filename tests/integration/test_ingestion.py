@@ -94,7 +94,8 @@ def test_ingestion_and_search_integration(tmp_path):
     )
     assert first_result.chunk.id is not None
     assert first_result.chunk.content_hash is not None
-    assert isinstance(first_result.is_fts_match, bool)
+    assert first_result.retrieved_by in ("both", "vector", "fts")
+    assert -1.0 <= first_result.similarity <= 1.0
 
 
 def test_section_chunking_no_noise_no_truncation(tmp_path):

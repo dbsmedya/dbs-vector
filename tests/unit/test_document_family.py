@@ -14,8 +14,8 @@ def _fake_doc_result(source: str, text: str) -> SearchResult:
     # SearchResult/Chunk breaks these tests the same way it breaks production.
     return SearchResult(
         chunk=Chunk(id=f"{source}_chunk_0", text=text, source=source, content_hash="h"),
-        score=0.9,
-        distance=None,
+        similarity=0.9,
+        retrieved_by="vector",
     )
 
 
@@ -34,45 +34,47 @@ def test_format_results_includes_source_and_text():
     results = [
         SearchResult(
             chunk=Chunk(id="x_0", text="hello world", source="doc.md", content_hash="abc"),
-            score=None,
-            distance=0.1234,
-            is_fts_match=False,
+            similarity=0.12,
+            retrieved_by="vector",
+            rrf_score=None,
         ),
     ]
     out = fam.format_results(results, query="q")
     assert "Found 1 results for 'q'" in out
     assert "Source: doc.md" in out
     assert "hello world" in out
-    assert "0.1234" in out
+    assert "similarity 0.12" in out
+    assert "retrieved by: vector-only" in out
 
 
-def test_format_results_uses_score_when_distance_none():
+def test_format_results_renders_both_channel_label():
     fam = DocumentFamily()
     results = [
         SearchResult(
             chunk=Chunk(id="x_0", text="t", source="s.md", content_hash="h"),
-            score=0.0325,
-            distance=None,
-            is_fts_match=False,
+            similarity=0.0325,
+            retrieved_by="both",
+            rrf_score=0.014,
         ),
     ]
     out = fam.format_results(results, query="q")
-    assert "0.0325" in out
-    assert "FTS" not in out
+    assert "similarity 0.03" in out
+    assert "vector+fts" in out
 
 
-def test_format_results_marks_fts_match_with_no_score_or_distance():
+def test_format_results_renders_fts_only_label():
     fam = DocumentFamily()
     results = [
         SearchResult(
             chunk=Chunk(id="x_0", text="t", source="s.md", content_hash="h"),
-            score=None,
-            distance=None,
-            is_fts_match=True,
+            similarity=0.05,
+            retrieved_by="fts",
+            rrf_score=0.014,
         ),
     ]
     out = fam.format_results(results, query="q")
-    assert "FTS" in out
+    assert "fts-only" in out
+    assert "0.014" not in out
 
 
 def test_format_results_empty_returns_no_results_message():
@@ -113,9 +115,8 @@ async def test_make_handler_runs_search_and_formats(monkeypatch):
     service.execute_query.return_value = [
         SearchResult(
             chunk=Chunk(id="x_0", text="content", source="f.md", content_hash="h"),
-            score=None,
-            distance=0.5,
-            is_fts_match=False,
+            similarity=0.5,
+            retrieved_by="vector",
         ),
     ]
     monkeypatch.setattr(state_mod, "_services", {"md-test": service})

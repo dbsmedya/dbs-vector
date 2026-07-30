@@ -33,9 +33,9 @@ def _make_sql_result(
             content_hash="h",
             latest_ts=datetime.now(),
         ),
-        score=None,
-        distance=0.5678,
-        is_fts_match=False,
+        similarity=0.5678,
+        retrieved_by="vector",
+        rrf_score=None,
     )
 
 
@@ -60,9 +60,9 @@ def _make_full_sql_result(**overrides) -> SqlSearchResult:
     chunk_kwargs.update(overrides)
     return SqlSearchResult(
         chunk=SqlChunk(**chunk_kwargs),
-        score=None,
-        distance=0.0328,
-        is_fts_match=False,
+        similarity=0.0328,
+        retrieved_by="vector",
+        rrf_score=None,
     )
 
 
@@ -277,7 +277,7 @@ def test_format_results_includes_execution_time_calls_and_normalized_sql():
     assert "Execution Time: 500.500ms (Calls: 2)" in out
     # Default renders normalized text, not the raw_query
     assert "SELECT * FROM t" in out
-    assert "0.5678" in out
+    assert "similarity 0.57" in out
 
 
 def test_format_results_truncates_long_text():
@@ -328,8 +328,8 @@ def test_format_results_flags_anomaly_when_search_exceeds_count(caplog):
     results = []
     for i in range(3):
         r = MagicMock()
-        r.distance = 0.5
-        r.score = None
+        r.similarity = 0.5
+        r.retrieved_by = "vector"
         r.chunk = MagicMock(
             id=f"fp_{i}",
             source="s",
@@ -363,8 +363,8 @@ def test_format_results_normal_header_when_counts_agree():
     results = []
     for i in range(2):
         r = MagicMock()
-        r.distance = 0.5
-        r.score = None
+        r.similarity = 0.5
+        r.retrieved_by = "vector"
         r.chunk = MagicMock(
             id=f"fp_{i}",
             source="s",

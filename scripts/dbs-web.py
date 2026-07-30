@@ -90,9 +90,12 @@ def _get_deps(engine: str) -> object:
         return deps
 
 
-def _score_str(res: object) -> str:
-    score = res.distance if res.distance is not None else res.score  # type: ignore[attr-defined]
-    return f"{score:.3f}" if isinstance(score, (int, float)) else "FTS"
+def _similarity_str(res: object) -> str:
+    from dbs_vector.services.search import retrieved_by_label
+
+    sim = res.similarity  # type: ignore[attr-defined]
+    label = retrieved_by_label(res.retrieved_by)  # type: ignore[attr-defined]
+    return f"{sim:.3f} ({label})"
 
 
 def _serialize(res: object) -> dict[str, object]:
@@ -102,15 +105,19 @@ def _serialize(res: object) -> dict[str, object]:
     one-line list summary and the full detail (header rows + body) in one shot,
     so clicking a result needs no extra round-trip.
     """
+    from dbs_vector.services.search import retrieved_by_label
+
     chunk = res.chunk  # type: ignore[attr-defined]
-    sc = _score_str(res)
+    sc = _similarity_str(res)
+    retrieved_by = retrieved_by_label(res.retrieved_by)  # type: ignore[attr-defined]
     src_start: int | None = None
     if hasattr(chunk, "raw_query"):  # SQL result — no source file
         snippet = (chunk.raw_query or chunk.text)[:90].replace("\n", " ")
         summary = f"{sc}  {chunk.source}  {chunk.execution_time_ms:.0f}ms  {snippet}"
         rows = [
             ("Source / DB", chunk.source),
-            ("Score / Dist", sc),
+            ("Similarity", sc),
+            ("Retrieved by", retrieved_by),
             ("Calls", chunk.calls),
             ("Exec time (ms)", chunk.execution_time_ms),
             ("Rows sent", chunk.rows_sent),
@@ -129,7 +136,8 @@ def _serialize(res: object) -> dict[str, object]:
         summary = f"{sc}  {chunk.source}  {snippet}"
         rows = [
             ("Source", chunk.source),
-            ("Score / Dist", sc),
+            ("Similarity", sc),
+            ("Retrieved by", retrieved_by),
             ("Content hash", chunk.content_hash),
             ("Node type", chunk.node_type),
             ("Parent scope", chunk.parent_scope),

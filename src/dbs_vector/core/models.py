@@ -120,21 +120,15 @@ class SearchResult(BaseModel):
     """A matched chunk returned from the vector store."""
 
     chunk: Chunk
-    score: float | None = None
-    distance: float | None = None
-    is_fts_match: bool = False
-    similarity: float = 0.0
-    retrieved_by: RetrievedBy = "vector"
-    rrf_score: float | None = None
+    similarity: float  # exact cosine in [-1, 1], always present
+    retrieved_by: RetrievedBy
+    rrf_score: float | None = None  # fused RRF value; JSON/debug only, never rendered
 
 
 class SqlSearchResult(BaseModel):
     """A matched SQL chunk returned from the vector store."""
 
     chunk: SqlChunk
-    score: float | None = None
-    distance: float | None = None
-    is_fts_match: bool = False
-    similarity: float = 0.0
-    retrieved_by: RetrievedBy = "vector"
+    similarity: float
+    retrieved_by: RetrievedBy
     rrf_score: float | None = None

@@ -8,7 +8,7 @@ from dbs_vector.mcp.families.base import (
     embeddings_phrase,
     render_with_budget,
 )
-from dbs_vector.services.search import SearchService
+from dbs_vector.services.search import SearchService, retrieved_by_label
 
 if TYPE_CHECKING:
     from dbs_vector.config import EngineConfig
@@ -37,15 +37,10 @@ class DocumentFamily:
         header = f"Found {len(results)} results for '{query}':\n"
 
         def _block(res: Any) -> str:
-            if res.distance is not None:
-                dist_str = f"{res.distance:.4f}"
-            elif res.score is not None:
-                dist_str = f"{res.score:.4f}"
-            else:
-                dist_str = "N/A (FTS)"
             chunk = res.chunk
             return (
-                f"--- Result (Score: {dist_str}) ---\n"
+                f"--- Result (similarity {res.similarity:.2f}, "
+                f"retrieved by: {retrieved_by_label(res.retrieved_by)}) ---\n"
                 f"Source: {chunk.source}\n"
                 f"Content:\n{chunk.text}\n"
             )

@@ -5,6 +5,13 @@ from loguru import logger
 
 from dbs_vector.core.ports import IEmbedder, IVectorStore
 
+_RETRIEVED_BY_LABELS = {"both": "vector+fts", "vector": "vector-only", "fts": "fts-only"}
+
+
+def retrieved_by_label(value: str) -> str:
+    """Render channel membership for text surfaces (vector+fts / vector-only / fts-only)."""
+    return _RETRIEVED_BY_LABELS.get(value, value)
+
 
 class SearchService:
     """Orchestrates hybrid vector search and formats results."""
@@ -58,7 +65,8 @@ class SearchService:
         """Serialize search results to a JSON array string with full fidelity.
 
         Unlike print_results, nothing is truncated: every result carries its
-        score, distance, source, full text, and all chunk metadata.
+        similarity, retrieved_by, rrf_score, source, full text, and all chunk
+        metadata.
         """
         payload = [res.model_dump(mode="json") for res in results]
         return json.dumps(payload, indent=2, ensure_ascii=False)
@@ -71,32 +79,22 @@ class SearchService:
 
         logger.info("Top Results:")
         for res in results:
-            if res.distance is not None:
-                dist_str = f"{res.distance:.4f}"
-            elif res.score is not None:
-                dist_str = f"{res.score:.4f}"
-            else:
-                dist_str = "N/A (FTS Match)"
-
-            # Polymorphic printing
+            sim_str = f"{res.similarity:.2f} ({retrieved_by_label(res.retrieved_by)})"
             if hasattr(res.chunk, "raw_query"):
-                # SQL Result
                 logger.info(
-                    "[Score/Dist: {} | DB: {} | Calls: {} | Time: {}ms]",
-                    dist_str,
+                    "[Similarity: {} | DB: {} | Calls: {} | Time: {}ms]",
+                    sim_str,
                     res.chunk.source,
                     res.chunk.calls,
                     res.chunk.execution_time_ms,
                 )
                 snippet = res.chunk.raw_query[:100].replace("\n", " ")
             else:
-                # Document Result
                 logger.info(
-                    "[Score/Dist: {} | Source: {} | Hash: {}]",
-                    dist_str,
+                    "[Similarity: {} | Source: {} | Hash: {}]",
+                    sim_str,
                     res.chunk.source,
                     res.chunk.content_hash,
                 )
                 snippet = res.chunk.text[:100].replace("\n", " ")
-
             logger.info('  --> "{}..."', snippet)

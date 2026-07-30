@@ -126,16 +126,16 @@ class TestDocumentMapper:
             "line_range": "5-15",
         }
 
-        result = mapper.from_polars_row(row, score=0.95, distance=0.95)
+        result = mapper.from_polars_row(row, similarity=0.95, retrieved_by="both", rrf_score=0.0125)
 
         assert isinstance(result, SearchResult)
         assert result.chunk.id == "chunk_42"
         assert result.chunk.text == "Sample content"
         assert result.chunk.source == "docs/readme.md"
         assert result.chunk.content_hash == "abc123"
-        assert result.score == 0.95
-        assert result.distance == 0.95
-        assert result.is_fts_match is False
+        assert result.similarity == 0.95
+        assert result.retrieved_by == "both"
+        assert result.rrf_score == 0.0125
 
     def test_from_polars_row_carries_similarity_channel_and_rrf(self, mapper):
         """New annotation fields flow through from_polars_row unchanged."""
@@ -155,26 +155,8 @@ class TestDocumentMapper:
         assert result.retrieved_by == "both"
         assert result.rrf_score == 0.0164
 
-    def test_from_polars_row_new_fields_default_when_omitted(self, mapper):
-        """When the store doesn't pass the new kwargs, defaults apply."""
-        row = {
-            "id": "chunk_42",
-            "text": "Sample content",
-            "source": "docs/readme.md",
-            "content_hash": "abc123",
-            "node_type": "paragraph",
-            "parent_scope": "# Header",
-            "line_range": "5-15",
-        }
-
-        result = mapper.from_polars_row(row, score=0.9)
-
-        assert result.similarity == 0.0
-        assert result.retrieved_by == "vector"
-        assert result.rrf_score is None
-
-    def test_from_polars_row_with_none_score(self, mapper):
-        """Test converting row with None score (FTS match)."""
+    def test_from_polars_row_fts_row(self, mapper):
+        """Test converting a pure-FTS-channel row (retrieved_by='fts')."""
         row = {
             "id": "chunk_0",
             "text": "Content",
@@ -185,11 +167,10 @@ class TestDocumentMapper:
             "line_range": None,
         }
 
-        result = mapper.from_polars_row(row, score=None)
+        result = mapper.from_polars_row(row, similarity=0.05, retrieved_by="fts", rrf_score=0.014)
 
-        assert result.score is None
-        assert result.distance is None
-        assert result.is_fts_match is True
+        assert result.retrieved_by == "fts"
+        assert result.rrf_score == 0.014
 
     def test_from_polars_row_missing_optional_fields(self, mapper):
         """Test converting row without optional fields in dict."""
@@ -201,7 +182,7 @@ class TestDocumentMapper:
             # node_type, parent_scope, line_range missing
         }
 
-        result = mapper.from_polars_row(row, score=0.8)
+        result = mapper.from_polars_row(row, similarity=0.8, retrieved_by="vector", rrf_score=None)
 
         assert result.chunk.node_type is None
         assert result.chunk.parent_scope is None
@@ -338,7 +319,7 @@ class TestSqlMapper:
             "lock_time_sec": 0.1,
         }
 
-        result = mapper.from_polars_row(row, score=0.88)
+        result = mapper.from_polars_row(row, similarity=0.88, retrieved_by="both", rrf_score=0.0125)
 
         assert isinstance(result, SqlSearchResult)
         assert result.chunk.id == "sql_42"
@@ -354,8 +335,9 @@ class TestSqlMapper:
         assert result.chunk.rows_sent == 500
         assert result.chunk.rows_examined == 5000
         assert result.chunk.lock_time_sec == 0.1
-        assert result.score == 0.88
-        assert result.is_fts_match is False
+        assert result.similarity == 0.88
+        assert result.retrieved_by == "both"
+        assert result.rrf_score == 0.0125
 
     def test_from_polars_row_carries_similarity_channel_and_rrf(self, mapper):
         """New annotation fields flow through from_polars_row unchanged."""
@@ -383,34 +365,8 @@ class TestSqlMapper:
         assert result.retrieved_by == "both"
         assert result.rrf_score == 0.0164
 
-    def test_from_polars_row_new_fields_default_when_omitted(self, mapper):
-        """When the store doesn't pass the new kwargs, defaults apply."""
-        now = datetime.now()
-        row = {
-            "id": "sql_42",
-            "text": "SELECT COUNT(*) FROM orders",
-            "raw_query": "SELECT COUNT(*) FROM orders WHERE status = 'pending'",
-            "source": "db_analytics",
-            "execution_time_ms": 245.7,
-            "calls": 1000,
-            "content_hash": "hash_abc",
-            "latest_ts": now,
-            "tables": ["orders"],
-            "user": "admin",
-            "host": "localhost",
-            "rows_sent": 500,
-            "rows_examined": 5000,
-            "lock_time_sec": 0.1,
-        }
-
-        result = mapper.from_polars_row(row, score=0.88)
-
-        assert result.similarity == 0.0
-        assert result.retrieved_by == "vector"
-        assert result.rrf_score is None
-
-    def test_from_polars_row_fts_match(self, mapper):
-        """Test SqlSearchResult with None score (FTS match)."""
+    def test_from_polars_row_fts_row(self, mapper):
+        """Test converting a pure-FTS-channel row (retrieved_by='fts')."""
         now = datetime.now()
         row = {
             "id": "sql_0",
@@ -423,10 +379,10 @@ class TestSqlMapper:
             "latest_ts": now,
         }
 
-        result = mapper.from_polars_row(row, score=None)
+        result = mapper.from_polars_row(row, similarity=0.05, retrieved_by="fts", rrf_score=0.014)
 
-        assert result.score is None
-        assert result.is_fts_match is True
+        assert result.retrieved_by == "fts"
+        assert result.rrf_score == 0.014
 
 
 class TestMapperEdgeCases:

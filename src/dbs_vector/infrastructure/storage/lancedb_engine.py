@@ -343,31 +343,9 @@ class LanceDBStore:
                     float(dist) if isinstance(dist, float) else None,
                     float(fts) if isinstance(fts, float) else None,
                 )
-            # Legacy score/distance must reproduce the exact pre-Task-4
-            # per-path behavior. Before the explicit RRFReranker(return_score
-            # ="all"), hybrid rows never carried `_distance` (LanceDB's
-            # default hybrid rerank drops the per-leg columns), so `distance`
-            # was always None there; vector-fallback rows never carried
-            # `_relevance_score`, so `score` was always None there. Now that
-            # hybrid rows DO carry `_distance` (needed for retrieved_by
-            # provenance), gate explicitly by path instead of column
-            # presence, or `distance` would leak the cosine distance into a
-            # field formatters treat as "the" score, silently inverting the
-            # displayed polarity (RRF: higher=better vs. distance: lower=
-            # better) for every existing caller.
-            if used_fallback:
-                dist_legacy = row.get("_distance")
-                score_legacy = None
-                distance_legacy = float(dist_legacy) if isinstance(dist_legacy, float) else None
-            else:
-                rel_legacy = row.get("_relevance_score")
-                score_legacy = float(rel_legacy) if isinstance(rel_legacy, float) else None
-                distance_legacy = None
             mapped_results.append(
                 self.mapper.from_polars_row(
                     row,
-                    score=score_legacy,
-                    distance=distance_legacy,
                     similarity=sim,
                     retrieved_by=retrieved_by,
                     rrf_score=rrf_score,

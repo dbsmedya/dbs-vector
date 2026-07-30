@@ -31,9 +31,9 @@ def _doc_result():
             source="docs/a.md",
             content_hash="hash_a",
         ),
-        score=0.9,
-        distance=0.42,
-        is_fts_match=False,
+        similarity=0.9,
+        retrieved_by="both",
+        rrf_score=0.42,
     )
 
 
@@ -60,7 +60,7 @@ def test_json_flag_emits_json_to_stdout_and_skips_pretty_print(runner):
         payload = json.loads(result.stdout)
         assert payload[0]["chunk"]["source"] == "docs/a.md"
         assert payload[0]["chunk"]["text"] == "Full document content here."
-        assert payload[0]["score"] == 0.9
+        assert payload[0]["similarity"] == 0.9
         # Human-readable printer is bypassed in JSON mode.
         service.results_to_json.assert_called_once()
         service.print_results.assert_not_called()

@@ -15,7 +15,7 @@ from dbs_vector.services.browse import (
     BrowseService,
     BrowseValidationError,
 )
-from dbs_vector.services.search import SearchService
+from dbs_vector.services.search import SearchService, retrieved_by_label
 
 if TYPE_CHECKING:
     from dbs_vector.config import EngineConfig
@@ -205,17 +205,12 @@ class SqlFamily:
             )
 
         def _block(res: Any) -> str:
-            if res.distance is not None:
-                dist_str = f"{res.distance:.4f}"
-            elif res.score is not None:
-                dist_str = f"{res.score:.4f}"
-            else:
-                dist_str = "N/A (FTS)"
             chunk = res.chunk
 
             normalized_sql = _truncate_raw_query(chunk.text or "")
             block_parts = [
-                f"--- Result (Score: {dist_str}) ---",
+                f"--- Result (similarity {res.similarity:.2f}, "
+                f"retrieved by: {retrieved_by_label(res.retrieved_by)}) ---",
                 f"Fingerprint ID: {chunk.id}",
                 f"Source Database: {chunk.source or 'n/a'}",
                 f"Tables: {_fmt_tables(chunk.tables)}",

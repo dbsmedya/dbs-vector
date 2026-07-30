@@ -67,12 +67,10 @@ class DocumentMapper:
     def from_polars_row(
         self,
         row: dict[str, Any],
-        score: float | None = None,
-        distance: float | None = None,
         *,
-        similarity: float = 0.0,
-        retrieved_by: RetrievedBy = "vector",
-        rrf_score: float | None = None,
+        similarity: float,
+        retrieved_by: RetrievedBy,
+        rrf_score: float | None,
     ) -> Any:
         chunk = Chunk(
             id=row["id"],
@@ -85,9 +83,6 @@ class DocumentMapper:
         )
         return SearchResult(
             chunk=chunk,
-            score=score,
-            distance=distance,
-            is_fts_match=(score is None and distance is None),
             similarity=similarity,
             retrieved_by=retrieved_by,
             rrf_score=rrf_score,
@@ -175,12 +170,10 @@ class SqlMapper:
     def from_polars_row(
         self,
         row: dict[str, Any],
-        score: float | None = None,
-        distance: float | None = None,
         *,
-        similarity: float = 0.0,
-        retrieved_by: RetrievedBy = "vector",
-        rrf_score: float | None = None,
+        similarity: float,
+        retrieved_by: RetrievedBy,
+        rrf_score: float | None,
     ) -> Any:
         chunk = SqlChunk(
             id=row["id"],
@@ -200,9 +193,6 @@ class SqlMapper:
         )
         return SqlSearchResult(
             chunk=chunk,
-            score=score,
-            distance=distance,
-            is_fts_match=(score is None and distance is None),
             similarity=similarity,
             retrieved_by=retrieved_by,
             rrf_score=rrf_score,

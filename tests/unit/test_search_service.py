@@ -46,9 +46,9 @@ class TestExecuteQuery:
                     source="test.md",
                     content_hash="hash1",
                 ),
-                score=0.9,
-                distance=0.9,
-                is_fts_match=False,
+                similarity=0.9,
+                retrieved_by="both",
+                rrf_score=0.0125,
             )
         ]
         mock_vector_store.search.return_value = expected_results
@@ -172,9 +172,9 @@ class TestPrintResults:
                     parent_scope="# Section",
                     line_range="10-20",
                 ),
-                score=0.95,
-                distance=0.95,
-                is_fts_match=False,
+                similarity=0.95,
+                retrieved_by="both",
+                rrf_score=0.0125,
             )
         ]
 
@@ -183,7 +183,7 @@ class TestPrintResults:
         assert "Top Results:" in caplog.text
         assert "docs/readme.md" in caplog.text
         assert "abc123" in caplog.text
-        assert "Score/Dist: 0.9500" in caplog.text
+        assert "Similarity: 0.95 (vector+fts)" in caplog.text
         assert "This is the document content" in caplog.text
 
     def test_print_sql_results(self, search_service, caplog):
@@ -202,9 +202,9 @@ class TestPrintResults:
                     content_hash="sql_hash_123",
                     latest_ts=datetime.now(),
                 ),
-                score=0.88,
-                distance=0.88,
-                is_fts_match=False,
+                similarity=0.88,
+                retrieved_by="both",
+                rrf_score=0.0125,
             )
         ]
 
@@ -216,9 +216,9 @@ class TestPrintResults:
         assert "Time: 150.5ms" in caplog.text
         assert "SELECT * FROM users" in caplog.text
 
-    def test_print_hybrid_result_shows_relevance_score(self, search_service, caplog):
-        """Hybrid reranker populates score but leaves distance None; the
-        rendered label must show the score, not be mislabeled as FTS."""
+    def test_print_result_shows_similarity_and_channel(self, search_service, caplog):
+        """print_results renders the exact cosine similarity and the
+        retrieval-channel label, not a legacy score/distance fallback chain."""
         results = [
             SearchResult(
                 chunk=Chunk(
@@ -227,19 +227,19 @@ class TestPrintResults:
                     source="docs/file.md",
                     content_hash="hyb_hash",
                 ),
-                score=0.0325,
-                distance=None,
-                is_fts_match=False,
+                similarity=0.78,
+                retrieved_by="both",
+                rrf_score=0.0325,
             )
         ]
 
         search_service.print_results(results)
 
-        assert "0.0325" in caplog.text
-        assert "FTS" not in caplog.text
+        assert "Similarity: 0.78 (vector+fts)" in caplog.text
 
-    def test_print_fts_match_result(self, search_service, caplog):
-        """Test printing FTS match result (no distance score)."""
+    def test_print_fts_only_result_labels_channel(self, search_service, caplog):
+        """A pure-FTS-channel result is labeled 'fts-only', with no 'N/A'
+        fallback text (the legacy FTS-match placeholder is gone)."""
         results = [
             SearchResult(
                 chunk=Chunk(
@@ -248,15 +248,16 @@ class TestPrintResults:
                     source="docs/file.md",
                     content_hash="fts_hash",
                 ),
-                score=None,
-                distance=None,
-                is_fts_match=True,
+                similarity=0.05,
+                retrieved_by="fts",
+                rrf_score=0.014,
             )
         ]
 
         search_service.print_results(results)
 
-        assert "N/A (FTS Match)" in caplog.text
+        assert "(fts-only)" in caplog.text
+        assert "N/A" not in caplog.text
         assert "Full text search result" in caplog.text
 
     def test_print_multiple_results(self, search_service, caplog):
@@ -269,9 +270,9 @@ class TestPrintResults:
                     source="docs/a.md",
                     content_hash="hash_a",
                 ),
-                score=0.9,
-                distance=0.9,
-                is_fts_match=False,
+                similarity=0.9,
+                retrieved_by="both",
+                rrf_score=0.0125,
             ),
             SearchResult(
                 chunk=Chunk(
@@ -280,9 +281,9 @@ class TestPrintResults:
                     source="docs/b.md",
                     content_hash="hash_b",
                 ),
-                score=0.8,
-                distance=0.8,
-                is_fts_match=False,
+                similarity=0.8,
+                retrieved_by="vector",
+                rrf_score=None,
             ),
         ]
 
@@ -311,9 +312,9 @@ class TestResultsToJson:
                     parent_scope="# Section",
                     line_range="10-20",
                 ),
-                score=0.95,
-                distance=0.42,
-                is_fts_match=False,
+                similarity=0.95,
+                retrieved_by="both",
+                rrf_score=0.42,
             )
         ]
 
@@ -321,9 +322,9 @@ class TestResultsToJson:
 
         assert len(payload) == 1
         item = payload[0]
-        assert item["score"] == 0.95
-        assert item["distance"] == 0.42
-        assert item["is_fts_match"] is False
+        assert item["similarity"] == 0.95
+        assert item["retrieved_by"] == "both"
+        assert item["rrf_score"] == 0.42
         # Full text is present verbatim (not truncated like print_results).
         assert item["chunk"]["text"] == (
             "This is the full document content that should be present verbatim."
@@ -351,16 +352,18 @@ class TestResultsToJson:
                     tables=["users"],
                     latest_ts=datetime(2026, 1, 1, 12, 0, 0),
                 ),
-                score=0.88,
-                distance=None,
-                is_fts_match=False,
+                similarity=0.88,
+                retrieved_by="vector",
+                rrf_score=None,
             )
         ]
 
         payload = json.loads(search_service.results_to_json(results))
 
         item = payload[0]
-        assert item["score"] == 0.88
+        assert item["similarity"] == 0.88
+        assert item["retrieved_by"] == "vector"
+        assert item["rrf_score"] is None
         assert item["chunk"]["raw_query"] == "SELECT * FROM users WHERE id = 1"
         assert item["chunk"]["source"] == "production_db"
         assert item["chunk"]["execution_time_ms"] == 150.5

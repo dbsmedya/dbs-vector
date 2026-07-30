@@ -985,9 +985,8 @@ class TestSearch:
 
     def test_vector_fallback_rows_are_vector_channel_with_no_rrf(self, lancedb_store):
         """_hybrid_ok False -> retrieved_by='vector', rrf_score=None, and the
-        legacy score/distance fields reproduce the old vector-only shape:
-        score is always None (no _relevance_score ever appears on this path)
-        and distance carries the row's _distance, exactly as before Task 4."""
+        exact cosine similarity between the query and the row's vector column
+        is passed through to the mapper."""
         import polars as pl
 
         store, _, mock_table, _ = lancedb_store
@@ -1020,56 +1019,16 @@ class TestSearch:
             side_effect=lambda row, **kw: (
                 kw["retrieved_by"],
                 kw["rrf_score"],
-                kw.get("score"),
-                kw.get("distance"),
+                kw["similarity"],
             )
         )
 
         results = store.search("q", query_vector, limit=5)
 
-        assert results == [("vector", None, None, 0.4)]
-
-    def test_hybrid_legacy_score_populated_distance_none(self, lancedb_store):
-        """Regression guard: before the explicit RRFReranker(return_score=
-        "all"), LanceDB's default hybrid rerank dropped the per-leg columns,
-        so hybrid rows never carried `_distance` and the legacy `distance`
-        field was always None there (formatters that prefer `distance` over
-        `score` rendered the RRF relevance score). The explicit rerank now
-        adds `_distance` to hybrid rows for retrieved_by provenance, but the
-        legacy `distance` field must stay None on this path — only `score`
-        (from `_relevance_score`) should populate, exactly as before."""
-        import polars as pl
-
-        store, _, mock_table, _ = lancedb_store
-        query_vector = np.array([0.1, 0.2, 0.3], dtype=np.float32)
-
-        mock_search = MagicMock()
-        mock_search.vector.return_value = mock_search
-        mock_search.text.return_value = mock_search
-        mock_search.nprobes.return_value = mock_search
-        mock_search.metric.return_value = mock_search
-        mock_search.limit.return_value = mock_search
-        mock_search.rerank.return_value = mock_search
-        mock_search.to_polars.return_value = pl.DataFrame(
-            {
-                "id": ["chunk_0"],
-                "text": ["content"],
-                "source": ["file.md"],
-                "content_hash": ["hash1"],
-                "_relevance_score": [0.82],
-                "_distance": [0.12],
-                "vector": [[1.0, 0.0, 0.0]],
-            }
-        )
-        mock_table.search.return_value = mock_search
-
-        store.mapper.from_polars_row = MagicMock(
-            side_effect=lambda row, **kw: (kw.get("score"), kw.get("distance"))
-        )
-
-        results = store.search("test", query_vector, limit=5)
-
-        assert results == [(0.82, None)]
+        retrieved_by, rrf_score, similarity = results[0]
+        assert retrieved_by == "vector"
+        assert rrf_score is None
+        assert similarity == pytest.approx(0.26726124191242434)
 
     def test_hybrid_builder_sets_cosine_metric_and_explicit_rrf_rerank(self, lancedb_store):
         """_build_hybrid must call .metric('cosine') and .rerank(_RRF_RERANKER)."""
