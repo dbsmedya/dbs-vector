@@ -27,7 +27,8 @@ def cosine_similarity(query_vector: Any, row_vector: Any) -> float:
     v_norm = float(np.linalg.norm(v))
     if q_norm == 0.0 or v_norm == 0.0:
         return 0.0
-    sim = float(np.dot(q, v) / (q_norm * v_norm))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        sim = float(np.dot(q, v) / (q_norm * v_norm))
     if not math.isfinite(sim):
         logger.warning("Non-finite cosine similarity computed; substituting 0.0")
         return 0.0
