@@ -3,7 +3,7 @@ from pathlib import Path
 
 import yaml
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from dbs_vector.core.naming import ENGINE_NAME_PATTERN
@@ -20,6 +20,15 @@ class TuningProfile(BaseModel):
     batch_size: int = Field(gt=0)
     chunk_target_tokens: int = Field(default=0, ge=0)
     chunk_max_tokens: int = Field(default=0, ge=0)
+
+
+class WatchConfig(BaseModel):
+    """Watch MECHANICS only. All filtering/scoping lives on EngineConfig."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    debounce_seconds: float = Field(default=3.0, ge=0)  # 0 = process immediately
 
 
 class EngineConfig(BaseModel):
@@ -44,6 +53,11 @@ class EngineConfig(BaseModel):
     # Per-engine content exclusion (default: exclude nothing):
     exclusion_filters: list[str] = []
 
+    # Engine-owned ingestion scope (v1: document engines only; ignored elsewhere):
+    paths: list[str] = []
+    ignore_patterns: list[str] = [".#*", "*~", "*.tmp", ".DS_Store"]
+    watch: WatchConfig = Field(default_factory=WatchConfig)
+
     # Chunker-specific (unchanged):
     duckdb_query: str | None = None
     api_base_url: str = ""
@@ -53,6 +67,21 @@ class EngineConfig(BaseModel):
     api_timeout_sec: int = 30
     api_min_execution_ms: float = 0.0
     api_database: str = ""
+
+    @field_validator("paths")
+    @classmethod
+    def _resolve_roots(cls, value: list[str]) -> list[str]:
+        """Ingestion roots are absolute directories, resolved at config load.
+
+        Existence is NOT checked here — an unmounted vault must not break
+        `dbs-vector search`. A missing root is a use-time warning + skip.
+        """
+        resolved: list[str] = []
+        for raw in value:
+            if not os.path.isabs(raw):
+                raise ValueError(f"paths entry '{raw}' must be an absolute directory path")
+            resolved.append(str(Path(raw).resolve()))
+        return resolved
 
     @property
     def resolved_family(self) -> str:
@@ -206,6 +235,9 @@ def _validate_config(settings: Settings, config_file: str) -> None:
       8. Document engines require chunk_target_tokens > 0 and chunk_max_tokens > 0;
          chunk_max_tokens ≥ chunk_target_tokens; chunk_max_tokens ≤ max_token_length.
       9. exclusion_filters (if set) must resolve to known FilterRegistry entries.
+     10. watch.enabled requires non-empty paths and chunker_type == "document".
+     11. A watched engine's table_name must not be shared with any other engine
+         (prune is root-scoped; a shared table would cross-delete).
 
     Memory budget is resolved lazily (only when rule 4 actually runs) so a
     config with an unknown model/profile fails on rule 1/2 BEFORE we attempt
@@ -341,6 +373,36 @@ def _validate_config(settings: Settings, config_file: str) -> None:
         # Rule 9: exclusion filters resolve (any engine that sets them)
         if engine.exclusion_filters:
             FilterRegistry.resolve(engine.exclusion_filters)  # raises on unknown
+
+        # Rule 10: watch prerequisites.
+        if engine.watch.enabled:
+            if not engine.paths:
+                raise ValueError(
+                    f"Engine '{engine_name}' sets watch.enabled but requires a "
+                    f"non-empty `paths:` list (the watcher has nothing to watch). "
+                    f"Edit {config_file}."
+                )
+            if engine.chunker_type != "document":
+                raise ValueError(
+                    f"Engine '{engine_name}' sets watch.enabled but "
+                    f"chunker_type='{engine.chunker_type}'. v1 watch supports "
+                    f'chunker_type: "document" only. Edit {config_file}.'
+                )
+
+            # Rule 11: exclusive table. Prune is root-scoped; a shared table
+            # would let one engine delete another's rows.
+            sharers = sorted(
+                other
+                for other, cfg in settings.engines.items()
+                if other != engine_name and cfg.table_name == engine.table_name
+            )
+            if sharers:
+                raise ValueError(
+                    f"Watched engine '{engine_name}' shares table_name "
+                    f"'{engine.table_name}' with {sharers}. A watched engine "
+                    f"needs an exclusive table (reconciliation prunes rows under "
+                    f"its roots). Give it its own table_name in {config_file}."
+                )
 
 
 def load_settings(config_file: str | None = None, validate: bool = False) -> Settings:
