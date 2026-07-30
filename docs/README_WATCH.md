@@ -88,9 +88,11 @@ nothing can starve it. That matters because macOS FSEvents emits a directory
 `modified` event for the parent whenever a child file changes, so ordinary
 editing produces a steady stream of directory events.
 
-**Index maintenance:** every 60 seconds, the FTS index is refreshed for each
-engine written since its last refresh, so new rows reach the full-text leg of
-hybrid search within a minute. The vector leg finds them immediately. After a
+**Index maintenance:** a changed file is searchable in **both** legs of hybrid
+search as soon as its debounce window elapses — LanceDB scans not-yet-indexed
+fragments, so neither leg waits on index work. The 60-second `refresh_fts()`
+tick therefore governs FTS *efficiency*, not visibility: it folds recent writes
+into the inverted index so the scan-the-tail path stays short. After a
 reconciliation pass that changed something, and at shutdown, the full vector +
 FTS indices are rebuilt and the dataset is compacted.
 
