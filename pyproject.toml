@@ -15,6 +15,7 @@ dependencies = [
     "mcp>=1.27.0",
     "mlx-embeddings>=0.1.0",
     "numpy>=2.4.4",
+    "pathspec>=1.0.4",
     "polars==1.40.0",
     "pyarrow==24.0.0",
     "pydantic-settings>=2.14.0",
@@ -28,6 +29,7 @@ dependencies = [
     "transformers>=5.0,!=5.13.0",
     "typer>=0.15.1",
     "types-pyyaml>=6.0.12.20260408",
+    "watchdog>=6.0.0",
 ]
 
 [project.scripts]

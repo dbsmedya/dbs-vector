@@ -35,3 +35,16 @@ def test_compressed_json_drops_by_info_string():
     flt = FilterRegistry.resolve(["compressed_json"])[0]
     assert flt.should_drop_block("N4KAkARAL...", "compressed-json") is True
     assert flt.should_drop_block("print('hi')", "python") is False
+
+
+def test_gitignore_is_a_known_filter_name():
+    # Registered so `exclusion_filters: [gitignore]` passes config validation.
+    assert "gitignore" in FilterRegistry.keys()
+
+
+def test_gitignore_chunk_level_hooks_are_no_ops():
+    # Enforcement lives in PathFilter at the file-discovery layer, before any
+    # file is read. The chunk-level hooks exist only to satisfy IContentFilter.
+    flt = FilterRegistry.resolve(["gitignore"])[0]
+    assert flt.should_skip_file("anything.md", "any content") is False
+    assert flt.should_drop_block("any block", "python") is False
