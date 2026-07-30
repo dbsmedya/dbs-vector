@@ -25,6 +25,9 @@ from dbs_vector.services.path_filter import PathFilter
 _UPSERT = "upsert"
 _REMOVE = "remove"
 
+# How long stop() waits for the worker to finish its current action.
+_WORKER_JOIN_TIMEOUT = 5.0
+
 
 @dataclass
 class WatchedEngine:
@@ -102,7 +105,13 @@ class WatcherService:
                 # spurious reconcile is a cheap no-op. FSEvents child delivery
                 # is unreliable — never enumerate children from the event.
                 if pf.root_for(path) is not None or (dest and pf.root_for(dest) is not None):
-                    self._state.reconcile_due[engine] = now + watched.debounce_seconds
+                    # setdefault, NOT assignment: a pending reconcile keeps its
+                    # original due time. Real FSEvents emits a directory
+                    # `modified` for the PARENT whenever a child file changes,
+                    # so assignment would let ordinary editing defer the
+                    # reconcile forever — and would also push back the
+                    # immediate startup reconcile that start() seeds.
+                    self._state.reconcile_due.setdefault(engine, now + watched.debounce_seconds)
             elif kind == "moved":
                 # Same root gate as plain deletes: never touch unmanaged sources.
                 if pf.root_for(path) is not None:
@@ -199,7 +208,15 @@ class WatcherService:
             if not roots:
                 logger.warning("Engine '{}' has no active roots; not watching", watched.name)
                 continue
-            watched.backend.start(roots, self._callback_for(watched.name))
+            try:
+                watched.backend.start(roots, self._callback_for(watched.name))
+            except Exception as e:  # noqa: BLE001 — one bad root must not kill MCP startup
+                logger.warning(
+                    "Watch backend failed to start for '{}': {}. That engine is "
+                    "unwatched for this run; search is unaffected.",
+                    watched.name,
+                    e,
+                )
 
         self._worker = threading.Thread(target=self._loop, name="dbs-vector-watcher", daemon=True)
         self._worker.start()
@@ -243,7 +260,17 @@ class WatcherService:
                 logger.warning("Backend stop failed for '{}': {}", watched.name, e)
 
         if self._worker is not None:
-            self._worker.join(timeout=5.0)
+            self._worker.join(timeout=_WORKER_JOIN_TIMEOUT)
+            if self._worker.is_alive():
+                # The join TIMED OUT — the worker is still running, not gone.
+                # Writing the store from this thread now would put two writers
+                # on the same table. Skip it: whatever is left dirty is picked
+                # up by the next startup reconciliation.
+                logger.warning(
+                    "Watcher worker still busy at shutdown; skipping index "
+                    "maintenance (the next startup reconciliation rebuilds it)"
+                )
+                return
             self._worker = None
 
         for name in sorted(self._dirty):

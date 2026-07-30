@@ -41,9 +41,12 @@ def start_stdio_server(allow_raw_queries: bool = False) -> None:
     register_discovery_tool(mcp)
 
     watcher = build_watcher_service()
-    if watcher is not None:
-        watcher.start()
     try:
+        # start() is INSIDE the try: if it fails partway through, the finally
+        # still tears down whichever backends did start. stop() is safe on a
+        # never-started watcher.
+        if watcher is not None:
+            watcher.start()
         mcp.run()
     finally:
         if watcher is not None:

@@ -82,8 +82,11 @@ prints a notice: those rows will not be watched or reconciled.
 
 Coalescing is last-state-wins per `(engine, path)`: a later event replaces the
 earlier one and resets its window. A pending reconcile absorbs that engine's
-per-file actions (it walks live disk when it runs), and only directory events
-reset the reconcile window — so continuous editing can never starve it.
+per-file actions (it walks live disk when it runs). Once a reconcile is
+scheduled its due time is **fixed** — later events never push it back, so
+nothing can starve it. That matters because macOS FSEvents emits a directory
+`modified` event for the parent whenever a child file changes, so ordinary
+editing produces a steady stream of directory events.
 
 **Index maintenance:** every 60 seconds, the FTS index is refreshed for each
 engine written since its last refresh, so new rows reach the full-text leg of

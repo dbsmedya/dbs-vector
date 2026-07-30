@@ -273,3 +273,128 @@ class TestFailureIsolation:
         svc.run_once()  # must not raise
 
         engines["md-granite"].ingestion.upsert_file.assert_called_once()
+
+
+class TestReconcileStarvation:
+    """Real FSEvents emits a directory `modified` for the PARENT whenever a
+    child file changes (verified against the watchdog backend on macOS). Those
+    incidental events must never defer an already-scheduled reconcile — the
+    spec and docs/README_WATCH.md both promise editing cannot starve it."""
+
+    def test_directory_event_does_not_extend_an_already_pending_reconcile(self, service, vault):
+        svc, clock, engines = service
+        svc.handle_event("md", str(vault / "sub"), "created", is_directory=True)  # due at 1003
+
+        clock.advance(1.0)
+        svc.handle_event("md", str(vault / "sub"), "modified", is_directory=True)
+        clock.advance(2.0)  # t = 1003: the ORIGINAL window has elapsed
+        svc.run_once()
+
+        engines["md"].ingestion.reconcile.assert_called_once()
+
+    def test_editing_files_cannot_starve_a_pending_reconcile(self, service, vault):
+        svc, clock, engines = service
+        svc.handle_event("md", str(vault / "sub"), "created", is_directory=True)
+
+        for _ in range(5):
+            clock.advance(1.0)
+            svc.handle_event("md", str(vault / "a.md"), "modified")
+            # The FSEvents side effect of writing a child file:
+            svc.handle_event("md", str(vault), "modified", is_directory=True)
+        svc.run_once()
+
+        engines["md"].ingestion.reconcile.assert_called_once()
+
+    def test_a_fresh_directory_event_schedules_again_after_a_reconcile_runs(self, service, vault):
+        svc, clock, engines = service
+        svc.handle_event("md", str(vault / "sub"), "created", is_directory=True)
+        clock.advance(3.0)
+        svc.run_once()
+
+        svc.handle_event("md", str(vault / "sub2"), "created", is_directory=True)
+        clock.advance(3.0)
+        svc.run_once()
+
+        assert engines["md"].ingestion.reconcile.call_count == 2
+
+
+class TestStartFailureContainment:
+    """A backend that refuses to start must not take down MCP startup for
+    every other engine (spec: failures log and never kill the MCP server)."""
+
+    def test_a_failing_backend_does_not_propagate(self, vault):
+        clock = FakeClock()
+        broken, healthy = _engine("md", vault), _engine("md-granite", vault)
+        broken.backend.start.side_effect = PermissionError("root not readable")
+        svc = WatcherService({"md": broken, "md-granite": healthy}, clock=clock)
+
+        svc.start()  # must not raise
+        try:
+            healthy.backend.start.assert_called_once()
+        finally:
+            svc.stop()
+
+    def test_the_worker_still_starts_when_a_backend_fails(self, vault):
+        clock = FakeClock()
+        broken = _engine("md", vault)
+        broken.backend.start.side_effect = PermissionError("root not readable")
+        svc = WatcherService({"md": broken}, clock=clock)
+
+        svc.start()
+        try:
+            assert svc._worker is not None
+        finally:
+            svc.stop()
+
+
+class TestShutdownRace:
+    """stop() must never write the store while the worker thread is still
+    running — that would break the one-writer invariant."""
+
+    def test_index_maintenance_is_skipped_when_the_worker_is_still_busy(self, vault, monkeypatch):
+        import threading as _threading
+
+        from dbs_vector.services import watcher as watcher_module
+
+        monkeypatch.setattr(watcher_module, "_WORKER_JOIN_TIMEOUT", 0.2)
+
+        engine = _engine("md", vault, debounce=0.0)
+        entered = _threading.Event()
+        blocked = _threading.Event()
+
+        def _blocking_reconcile():
+            entered.set()
+            blocked.wait(30)
+            return (1, 1)
+
+        engine.ingestion.reconcile.side_effect = _blocking_reconcile
+
+        svc = WatcherService({"md": engine})  # real clock: start() seeds an immediate reconcile
+        svc.start()
+        try:
+            assert entered.wait(5.0), "worker never entered reconcile"
+            # Without this the stop() loop has nothing to iterate and the test
+            # would pass even with the race present.
+            svc._dirty.add("md")
+
+            svc.stop()
+
+            engine.store.create_indices.assert_not_called()
+            engine.store.compact.assert_not_called()
+        finally:
+            blocked.set()
+
+    def test_index_maintenance_still_runs_when_the_worker_has_exited(self, vault, monkeypatch):
+        from dbs_vector.services import watcher as watcher_module
+
+        monkeypatch.setattr(watcher_module, "_WORKER_JOIN_TIMEOUT", 5.0)
+
+        engine = _engine("md", vault)
+        svc = WatcherService({"md": engine})
+        svc.start()
+        svc._dirty.add("md")  # as any prior per-file write would have left it
+
+        svc.stop()
+
+        engine.store.create_indices.assert_called_once()
+        engine.store.compact.assert_called_once()
