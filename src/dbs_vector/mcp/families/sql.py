@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from dbs_vector.core.models import SearchResponse
 from dbs_vector.core.naming import normalize_tool_name
 from dbs_vector.mcp.families.base import (
     RESPONSE_BUDGET_BYTES,
@@ -155,7 +156,7 @@ class SqlFamily:
         limit: int,
         source_filter: str | None,
         **family_kwargs: Any,
-    ) -> list[Any]:
+    ) -> SearchResponse:
         extra_filters: dict[str, Any] = {}
         for key in ("min_time", "min_lock_time", "table_filter"):
             value = family_kwargs.get(key)
@@ -165,11 +166,12 @@ class SqlFamily:
 
     def format_results(
         self,
-        results: list[Any],
+        response: SearchResponse,
         query: str,
         total_matching: int = 0,
         include_raw: bool = False,
     ) -> str:
+        results = response.results
         if not results:
             if total_matching > 0:
                 return (
@@ -328,7 +330,7 @@ class SqlFamily:
                 # safe. Do NOT gather them. Running both sequentially inside ONE
                 # `to_thread` closure frees the event loop without ever placing two
                 # concurrent reads on the same handle.
-                def _search_then_count() -> tuple[list[Any], int]:
+                def _search_then_count() -> tuple[SearchResponse, int]:
                     r = family.run_search(
                         service,
                         query,
@@ -341,13 +343,13 @@ class SqlFamily:
                     t = service.count_matching(source_filter, extra_filters)
                     return r, t
 
-                results, total = await asyncio.to_thread(_search_then_count)
+                response, total = await asyncio.to_thread(_search_then_count)
                 # Verbatim raw_query leaves the process ONLY when the server was
                 # started with --allow-raw-queries. include_raw=True is silently
                 # downgraded otherwise — the same lock browse already fits.
                 effective_include_raw = include_raw and allow_raw_queries
                 return family.format_results(
-                    results, query, total_matching=total, include_raw=effective_include_raw
+                    response, query, total_matching=total, include_raw=effective_include_raw
                 )
             except Exception as e:
                 return f"Search execution failed: {e}"

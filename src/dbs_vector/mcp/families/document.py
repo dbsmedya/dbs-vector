@@ -3,6 +3,7 @@
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from dbs_vector.core.models import SearchResponse
 from dbs_vector.mcp.families.base import (
     RESPONSE_BUDGET_BYTES,
     embeddings_phrase,
@@ -27,10 +28,11 @@ class DocumentFamily:
         limit: int,
         source_filter: str | None,
         **family_kwargs: Any,
-    ) -> list[Any]:
+    ) -> SearchResponse:
         return service.execute_query(query, source_filter, limit, extra_filters={})
 
-    def format_results(self, results: list[Any], query: str, total_matching: int = 0) -> str:
+    def format_results(self, response: SearchResponse, query: str, total_matching: int = 0) -> str:
+        results = response.results
         if not results:
             return f"No results found for query: '{query}'"
 
@@ -76,14 +78,14 @@ class DocumentFamily:
             if service is None:
                 return f"Error: search service '{engine_name}' is not initialized."
             try:
-                results = await asyncio.to_thread(
+                response = await asyncio.to_thread(
                     family.run_search,
                     service,
                     query,
                     limit,
                     source_filter,
                 )
-                return family.format_results(results, query)
+                return family.format_results(response, query)
             except Exception as e:
                 return f"Search execution failed: {e}"
 

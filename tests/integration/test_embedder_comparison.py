@@ -142,7 +142,7 @@ def _run_queries(search, queries: list[tuple[str, str]], metrics: dict, label: s
 
     for query, expected_file in queries:
         t0 = time.perf_counter()
-        results = search.execute_query(query, source_filter=None, limit=3, extra_filters={})
+        results = search.execute_query(query, source_filter=None, limit=3, extra_filters={}).results
         latency = time.perf_counter() - t0
         total_latency += latency
 

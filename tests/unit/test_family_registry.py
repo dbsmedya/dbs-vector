@@ -18,7 +18,7 @@ class _StubFamily:
     def run_search(self, *args: Any, **kwargs: Any) -> list[Any]:
         return []
 
-    def format_results(self, results: list[Any], query: str) -> str:
+    def format_results(self, response: Any, query: str, total_matching: int = 0) -> str:
         return ""
 
     def make_handler(self, engine_name: str, allow_raw_queries: bool = False) -> Any:

@@ -262,13 +262,13 @@ def search(
     if min_time is not None and settings.engines[engine_name].resolved_family == "sql":
         extra_filters["min_time"] = min_time
 
-    results = service.execute_query(
+    response = service.execute_query(
         query, source_filter=filter_source, limit=limit, extra_filters=extra_filters
     )
     if json_output:
-        typer.echo(service.results_to_json(results))
+        typer.echo(service.results_to_json(response))
     else:
-        service.print_results(results)
+        service.print_results(response, query)
 
 
 @app.command()

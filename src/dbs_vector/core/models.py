@@ -132,3 +132,22 @@ class SqlSearchResult(BaseModel):
     similarity: float
     retrieved_by: RetrievedBy
     rrf_score: float | None = None
+
+
+class RejectedCandidate(BaseModel):
+    """Evidence about the best candidate dropped by admission (no text snippet)."""
+
+    similarity: float
+    source: str
+    retrieved_by: RetrievedBy
+
+
+class SearchResponse(BaseModel):
+    """Admission-filtered search outcome plus the evidence formatters need."""
+
+    results: list[SearchResult | SqlSearchResult]
+    floor: float | None = None  # effective floor used; None = no floor active
+    # Required (no default): deduped candidates examined. Constructors must
+    # state it — a silent 0 would fabricate the empty-result evidence.
+    inspected: int
+    best_rejected: RejectedCandidate | None = None

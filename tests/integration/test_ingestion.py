@@ -82,7 +82,7 @@ def test_ingestion_and_search_integration(tmp_path):
     search_service = SearchService(embedder, store)
 
     # Query for something we know is in MLX_LANCEDB_POLARS_via_ApacheArrow.md
-    results = search_service.execute_query(query="Unified Memory Architecture", limit=3)
+    results = search_service.execute_query(query="Unified Memory Architecture", limit=3).results
 
     # 4. Assertions
     assert len(results) > 0, "Search should return results."

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from dbs_vector.core.models import SqlChunk, SqlSearchResult
+from dbs_vector.core.models import SearchResponse, SqlChunk, SqlSearchResult
 from dbs_vector.infrastructure.storage.lancedb_engine import LanceDBStore
 from dbs_vector.infrastructure.storage.mappers import SqlMapper
 from dbs_vector.mcp.families.base import RESPONSE_BUDGET_BYTES
@@ -271,7 +271,9 @@ def test_make_handler_signature_includes_new_filters():
 
 def test_format_results_includes_execution_time_calls_and_normalized_sql():
     fam = SqlFamily()
-    out = fam.format_results([_make_sql_result()], query="q", total_matching=1)
+    out = fam.format_results(
+        SearchResponse(results=[_make_sql_result()], inspected=1), query="q", total_matching=1
+    )
     assert "Showing 1 of 1 results that matched your filters for 'q'" in out
     assert "Source Database: prod_db" in out
     assert "Execution Time: 500.500ms (Calls: 2)" in out
@@ -286,7 +288,9 @@ def test_format_results_truncates_long_text():
     result = _make_sql_result()
     result.chunk.text = long_text
 
-    out = fam.format_results([result], query="q", total_matching=1)
+    out = fam.format_results(
+        SearchResponse(results=[result], inspected=1), query="q", total_matching=1
+    )
 
     assert long_text not in out
     assert "more chars elided" in out
@@ -298,7 +302,7 @@ def test_format_results_truncates_long_raw_query_when_include_raw():
     raw_query = "SELECT " + ("x" * 100_000)
 
     out = fam.format_results(
-        [_make_sql_result(raw_query=raw_query)],
+        SearchResponse(results=[_make_sql_result(raw_query=raw_query)], inspected=1),
         query="q",
         total_matching=1,
         include_raw=True,
@@ -316,7 +320,9 @@ def test_format_results_caps_total_response_size():
         res.chunk.text = f"SELECT {idx} " + ("x" * 2_000)
         results.append(res)
 
-    out = fam.format_results(results, query="q", total_matching=1_000)
+    out = fam.format_results(
+        SearchResponse(results=results, inspected=len(results)), query="q", total_matching=1_000
+    )
 
     assert len(out.encode("utf-8")) <= RESPONSE_BUDGET_BYTES
     assert "results elided due to MCP response size cap" in out
@@ -347,7 +353,11 @@ def test_format_results_flags_anomaly_when_search_exceeds_count(caplog):
         )
         results.append(r)
 
-    output = fam.format_results(results, query="q", total_matching=1)
+    # model_construct bypasses SearchResponse's pydantic validation: these
+    # rows are bare MagicMocks (not real SqlSearchResult instances), used
+    # here only to exercise format_results' attribute access.
+    response = SearchResponse.model_construct(results=results, inspected=len(results))
+    output = fam.format_results(response, query="q", total_matching=1)
     first_line = output.split("\n")[0]
 
     assert "Showing 3 results" in first_line
@@ -382,7 +392,8 @@ def test_format_results_normal_header_when_counts_agree():
         )
         results.append(r)
 
-    output = fam.format_results(results, query="q", total_matching=5)
+    response = SearchResponse.model_construct(results=results, inspected=len(results))
+    output = fam.format_results(response, query="q", total_matching=5)
     first_line = output.split("\n")[0]
     assert "Showing 2 of 5 results" in first_line
     assert "WARNING" not in first_line
@@ -395,46 +406,60 @@ def test_format_results_normal_header_when_counts_agree():
 
 def test_format_results_includes_fingerprint_id():
     fam = SqlFamily()
-    out = fam.format_results([_make_full_sql_result()], query="q", total_matching=1)
+    out = fam.format_results(
+        SearchResponse(results=[_make_full_sql_result()], inspected=1), query="q", total_matching=1
+    )
     assert "Fingerprint ID: AD90D81BD56976A3" in out
 
 
 def test_format_results_includes_tables_list():
     fam = SqlFamily()
-    out = fam.format_results([_make_full_sql_result()], query="q", total_matching=1)
+    out = fam.format_results(
+        SearchResponse(results=[_make_full_sql_result()], inspected=1), query="q", total_matching=1
+    )
     assert "Tables: TryOTODyn.MagentoOrders, TryOTODyn.DeliveryCompanySettings" in out
 
 
 def test_format_results_includes_host_and_user():
     fam = SqlFamily()
-    out = fam.format_results([_make_full_sql_result()], query="q", total_matching=1)
+    out = fam.format_results(
+        SearchResponse(results=[_make_full_sql_result()], inspected=1), query="q", total_matching=1
+    )
     assert "Host: 10.132.0.26" in out
     assert "User: s_web_api" in out
 
 
 def test_format_results_includes_latest_ts():
     fam = SqlFamily()
-    out = fam.format_results([_make_full_sql_result()], query="q", total_matching=1)
+    out = fam.format_results(
+        SearchResponse(results=[_make_full_sql_result()], inspected=1), query="q", total_matching=1
+    )
     assert "Last Seen: 2026-05-21T14:51:44" in out
 
 
 def test_format_results_renders_rows_examined_sent_with_selectivity():
     fam = SqlFamily()
-    out = fam.format_results([_make_full_sql_result()], query="q", total_matching=1)
+    out = fam.format_results(
+        SearchResponse(results=[_make_full_sql_result()], inspected=1), query="q", total_matching=1
+    )
     assert "Rows Examined / Sent: 853,831 / 1" in out
     assert "selectivity 853,831:1" in out
 
 
 def test_format_results_includes_lock_time():
     fam = SqlFamily()
-    out = fam.format_results([_make_full_sql_result()], query="q", total_matching=1)
+    out = fam.format_results(
+        SearchResponse(results=[_make_full_sql_result()], inspected=1), query="q", total_matching=1
+    )
     assert "Lock Time:" in out
     assert "s" in out  # rendered with seconds suffix
 
 
 def test_format_results_shows_normalized_by_default_not_raw():
     fam = SqlFamily()
-    out = fam.format_results([_make_full_sql_result()], query="q", total_matching=1)
+    out = fam.format_results(
+        SearchResponse(results=[_make_full_sql_result()], inspected=1), query="q", total_matching=1
+    )
     assert "Normalized SQL:" in out
     assert "select count(?) as count from magentoorders" in out
     # raw_query NOT shown by default
@@ -445,7 +470,10 @@ def test_format_results_shows_normalized_by_default_not_raw():
 def test_format_results_include_raw_renders_both_sections():
     fam = SqlFamily()
     out = fam.format_results(
-        [_make_full_sql_result()], query="q", total_matching=1, include_raw=True
+        SearchResponse(results=[_make_full_sql_result()], inspected=1),
+        query="q",
+        total_matching=1,
+        include_raw=True,
     )
     assert "Normalized SQL:" in out
     assert "Raw SQL:" in out
@@ -464,7 +492,9 @@ def test_format_results_optional_fields_render_na_without_crashing():
         lock_time_sec=None,
         tables=[],
     )
-    out = fam.format_results([result], query="q", total_matching=1)
+    out = fam.format_results(
+        SearchResponse(results=[result], inspected=1), query="q", total_matching=1
+    )
     assert "Host: n/a" in out
     assert "User: n/a" in out
     assert "Tables: n/a" in out
@@ -477,7 +507,9 @@ def test_format_results_selectivity_na_when_rows_sent_zero():
     """rows_sent=0 would divide-by-zero; must render as n/a."""
     fam = SqlFamily()
     result = _make_full_sql_result(rows_sent=0, rows_examined=1000)
-    out = fam.format_results([result], query="q", total_matching=1)
+    out = fam.format_results(
+        SearchResponse(results=[result], inspected=1), query="q", total_matching=1
+    )
     assert "selectivity n/a" in out
 
 
@@ -486,7 +518,9 @@ async def test_make_handler_passes_include_raw_to_formatter(monkeypatch):
     import dbs_vector.mcp.state as state_mod
 
     service = MagicMock()
-    service.execute_query.return_value = [_make_full_sql_result()]
+    service.execute_query.return_value = SearchResponse(
+        results=[_make_full_sql_result()], inspected=1
+    )
     service.count_matching.return_value = 1
     monkeypatch.setattr(state_mod, "_services", {"sql-test": service})
 
@@ -504,7 +538,9 @@ async def test_make_handler_gates_raw_off_even_when_include_raw_true(monkeypatch
     import dbs_vector.mcp.state as state_mod
 
     service = MagicMock()
-    service.execute_query.return_value = [_make_full_sql_result()]
+    service.execute_query.return_value = SearchResponse(
+        results=[_make_full_sql_result()], inspected=1
+    )
     service.count_matching.return_value = 1
     monkeypatch.setattr(state_mod, "_services", {"sql-test": service})
 
@@ -522,7 +558,9 @@ async def test_make_handler_no_raw_when_flag_on_but_include_raw_false(monkeypatc
     import dbs_vector.mcp.state as state_mod
 
     service = MagicMock()
-    service.execute_query.return_value = [_make_full_sql_result()]
+    service.execute_query.return_value = SearchResponse(
+        results=[_make_full_sql_result()], inspected=1
+    )
     service.count_matching.return_value = 1
     monkeypatch.setattr(state_mod, "_services", {"sql-test": service})
 
@@ -535,14 +573,16 @@ async def test_make_handler_no_raw_when_flag_on_but_include_raw_false(monkeypatc
 
 def test_format_results_empty_with_matching_filters_signals_total():
     fam = SqlFamily()
-    out = fam.format_results([], query="zzz", total_matching=37)
+    out = fam.format_results(
+        SearchResponse(results=[], inspected=0), query="zzz", total_matching=37
+    )
     assert "37 rows matched your filters" in out
     assert "none ranked above the similarity/FTS threshold" in out
 
 
 def test_format_results_empty_returns_no_results_message():
     fam = SqlFamily()
-    out = fam.format_results([], query="zzz")
+    out = fam.format_results(SearchResponse(results=[], inspected=0), query="zzz")
     assert out == "No results found for query: 'zzz'"
 
 
@@ -551,7 +591,7 @@ async def test_make_handler_runs_search_and_formats(monkeypatch):
     import dbs_vector.mcp.state as state_mod
 
     service = MagicMock()
-    service.execute_query.return_value = [_make_sql_result()]
+    service.execute_query.return_value = SearchResponse(results=[_make_sql_result()], inspected=1)
     service.count_matching.return_value = 1
     monkeypatch.setattr(state_mod, "_services", {"sql-test": service})
 
@@ -581,7 +621,7 @@ async def test_handler_handles_50_concurrent_search_count_pairs(monkeypatch):
     def fake_search(query, source_filter, limit, *, extra_filters):
         with lock:
             calls["search"] += 1
-        return []  # empty results → formatter "no results" branch
+        return SearchResponse(results=[], inspected=0)  # → formatter "no results" branch
 
     def fake_count(source_filter, extra_filters):
         with lock:

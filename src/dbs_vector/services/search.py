@@ -3,6 +3,11 @@ from typing import Any
 
 from loguru import logger
 
+from dbs_vector.core.models import (  # noqa: F401 (RejectedCandidate used in Task 7)
+    RejectedCandidate,
+    SearchResponse,
+    SqlChunk,
+)
 from dbs_vector.core.ports import IEmbedder, IVectorStore
 
 _RETRIEVED_BY_LABELS = {"both": "vector+fts", "vector": "vector-only", "fts": "fts-only"}
@@ -30,25 +35,25 @@ class SearchService:
         source_filter: str | None = None,
         limit: int = 5,
         extra_filters: dict[str, Any] | None = None,
-    ) -> list[Any]:
-        """Embeds the query and fetches top matches from the high-performance store."""
+    ) -> SearchResponse:
+        """Embeds the query, fetches candidates, and wraps them in a SearchResponse."""
         logger.info("Executing query: {}", query)
-
         if extra_filters is None:
             extra_filters = {}
-
-        # Step 1: Embed Query (Ensures correct shape)
         query_vector = self.embedder.embed_query(query)
-
-        # Step 2: Rust-level Vector & FTS Search
-        results = self.vector_store.search(
+        candidates = self.vector_store.search(
             query=query,
             query_vector=query_vector,
             source_filter=source_filter,
             limit=limit,
             **extra_filters,
         )
-        return results
+        return SearchResponse(
+            results=candidates[:limit],
+            floor=None,
+            inspected=len(candidates),
+            best_rejected=None,
+        )
 
     def count_matching(
         self,
@@ -61,18 +66,28 @@ class SearchService:
             **(extra_filters or {}),
         )
 
-    def results_to_json(self, results: list[Any]) -> str:
-        """Serialize search results to a JSON array string with full fidelity.
+    def results_to_json(self, response: SearchResponse) -> str:
+        """Serialize a SearchResponse to a JSON envelope with full fidelity.
 
         Unlike print_results, nothing is truncated: every result carries its
         similarity, retrieved_by, rrf_score, source, full text, and all chunk
         metadata.
         """
-        payload = [res.model_dump(mode="json") for res in results]
+        payload = {
+            "floor": response.floor,
+            "inspected": response.inspected,
+            "best_rejected": (
+                response.best_rejected.model_dump(mode="json")
+                if response.best_rejected is not None
+                else None
+            ),
+            "results": [res.model_dump(mode="json") for res in response.results],
+        }
         return json.dumps(payload, indent=2, ensure_ascii=False)
 
-    def print_results(self, results: list[Any]) -> None:
+    def print_results(self, response: SearchResponse, query: str = "") -> None:
         """Formats and prints the parsed search results."""
+        results = response.results
         if not results:
             logger.info("No results found")
             return
@@ -80,7 +95,7 @@ class SearchService:
         logger.info("Top Results:")
         for res in results:
             sim_str = f"{res.similarity:.2f} ({retrieved_by_label(res.retrieved_by)})"
-            if hasattr(res.chunk, "raw_query"):
+            if isinstance(res.chunk, SqlChunk):
                 logger.info(
                     "[Similarity: {} | DB: {} | Calls: {} | Time: {}ms]",
                     sim_str,

@@ -185,8 +185,15 @@ def _handle_search(payload: dict[str, object]) -> dict[str, object]:
 
     deps = _get_deps(engine)
     service = SearchService(deps.embedder, deps.store)  # type: ignore[attr-defined]
-    results = service.execute_query(query, limit=limit)
-    return {"results": [_serialize(r) for r in results]}
+    response = service.execute_query(query, limit=limit)
+    return {
+        "results": [_serialize(r) for r in response.results],
+        "floor": response.floor,
+        "inspected": response.inspected,
+        "best_rejected": (
+            response.best_rejected.model_dump(mode="json") if response.best_rejected else None
+        ),
+    }
 
 
 def _handle_update(payload: dict[str, object]) -> dict[str, object]:

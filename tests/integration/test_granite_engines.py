@@ -86,7 +86,9 @@ def test_md_granite_engine_end_to_end(tmp_path: Path, monkeypatch):
     ingest.ingest_directory(str(docs_dir), rebuild=True)
 
     search = SearchService(deps.embedder, deps.store)
-    results = search.execute_query("vector indexing", source_filter=None, limit=2, extra_filters={})
+    results = search.execute_query(
+        "vector indexing", source_filter=None, limit=2, extra_filters={}
+    ).results
 
     assert len(results) >= 1
     # The "Database Indexing" doc should rank above the risotto doc.
@@ -170,7 +172,7 @@ def test_sql_granite_engine_end_to_end(tmp_path: Path, monkeypatch):
     search = SearchService(deps.embedder, deps.store)
     results = search.execute_query(
         "find users by email", source_filter=None, limit=2, extra_filters={}
-    )
+    ).results
 
     assert len(results) >= 1
     raws = [r.chunk.raw_query for r in results]

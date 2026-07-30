@@ -3,6 +3,7 @@
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from dbs_vector.core.models import SearchResponse
 from dbs_vector.services.search import SearchService
 
 if TYPE_CHECKING:
@@ -99,11 +100,13 @@ class SearchFamily(Protocol):
         limit: int,
         source_filter: str | None,
         **family_kwargs: Any,
-    ) -> list[Any]:
-        """Run the search and return the raw result list."""
+    ) -> "SearchResponse":
+        """Run the search and return the SearchResponse envelope."""
         ...
 
-    def format_results(self, results: list[Any], query: str, total_matching: int = 0) -> str:
+    def format_results(
+        self, response: "SearchResponse", query: str, total_matching: int = 0
+    ) -> str:
         """Render results for an MCP tool's stdout.
 
         `total_matching` is the count of rows surviving non-semantic

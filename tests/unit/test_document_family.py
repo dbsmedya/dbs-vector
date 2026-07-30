@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from dbs_vector.core.models import Chunk, SearchResult
+from dbs_vector.core.models import Chunk, SearchResponse, SearchResult
 from dbs_vector.mcp.families.document import DocumentFamily
 
 
@@ -39,7 +39,7 @@ def test_format_results_includes_source_and_text():
             rrf_score=None,
         ),
     ]
-    out = fam.format_results(results, query="q")
+    out = fam.format_results(SearchResponse(results=results, inspected=len(results)), query="q")
     assert "Found 1 results for 'q'" in out
     assert "Source: doc.md" in out
     assert "hello world" in out
@@ -57,7 +57,7 @@ def test_format_results_renders_both_channel_label():
             rrf_score=0.014,
         ),
     ]
-    out = fam.format_results(results, query="q")
+    out = fam.format_results(SearchResponse(results=results, inspected=len(results)), query="q")
     assert "similarity 0.03" in out
     assert "vector+fts" in out
 
@@ -72,14 +72,14 @@ def test_format_results_renders_fts_only_label():
             rrf_score=0.014,
         ),
     ]
-    out = fam.format_results(results, query="q")
+    out = fam.format_results(SearchResponse(results=results, inspected=len(results)), query="q")
     assert "fts-only" in out
     assert "0.014" not in out
 
 
 def test_format_results_empty_returns_no_results_message():
     fam = DocumentFamily()
-    out = fam.format_results([], query="zzz")
+    out = fam.format_results(SearchResponse(results=[], inspected=0), query="zzz")
     assert out == "No results found for query: 'zzz'"
 
 
@@ -112,13 +112,16 @@ async def test_make_handler_runs_search_and_formats(monkeypatch):
     import dbs_vector.mcp.state as state_mod
 
     service = MagicMock()
-    service.execute_query.return_value = [
-        SearchResult(
-            chunk=Chunk(id="x_0", text="content", source="f.md", content_hash="h"),
-            similarity=0.5,
-            retrieved_by="vector",
-        ),
-    ]
+    service.execute_query.return_value = SearchResponse(
+        results=[
+            SearchResult(
+                chunk=Chunk(id="x_0", text="content", source="f.md", content_hash="h"),
+                similarity=0.5,
+                retrieved_by="vector",
+            ),
+        ],
+        inspected=1,
+    )
     monkeypatch.setattr(state_mod, "_services", {"md-test": service})
 
     fam = DocumentFamily()
@@ -134,7 +137,7 @@ def test_document_family_caps_oversized_response():
     family = DocumentFamily()
     big_text = "z" * 600_000
     results = [_fake_doc_result(source=f"f{i}.md", text=big_text) for i in range(3)]
-    out = family.format_results(results, query="q")
+    out = family.format_results(SearchResponse(results=results, inspected=len(results)), query="q")
     assert len(out.encode("utf-8")) <= 1_000_000
     assert "results elided due to MCP response size cap" in out
 
@@ -142,7 +145,7 @@ def test_document_family_caps_oversized_response():
 def test_document_family_under_budget_unchanged():
     family = DocumentFamily()
     results = [_fake_doc_result(source="a.md", text="hello world")]
-    out = family.format_results(results, query="q")
+    out = family.format_results(SearchResponse(results=results, inspected=len(results)), query="q")
     assert out.startswith("Found 1 results for 'q':")
     assert "Source: a.md" in out
     assert "hello world" in out

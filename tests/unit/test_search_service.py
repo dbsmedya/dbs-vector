@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from dbs_vector.core.models import Chunk, SearchResult
+from dbs_vector.core.models import Chunk, SearchResponse, SearchResult
 from dbs_vector.services.search import SearchService
 
 
@@ -54,7 +54,7 @@ class TestExecuteQuery:
         mock_vector_store.search.return_value = expected_results
 
         # Act
-        results = search_service.execute_query(query="test query")
+        response = search_service.execute_query(query="test query")
 
         # Assert
         mock_embedder.embed_query.assert_called_once_with("test query")
@@ -68,7 +68,10 @@ class TestExecuteQuery:
         )
         assert call_args.kwargs["source_filter"] is None
         assert call_args.kwargs["limit"] == 5
-        assert results == expected_results
+        assert response.results == expected_results
+        assert response.floor is None
+        assert response.inspected == len(expected_results)
+        assert response.best_rejected is None
 
     def test_query_with_source_filter(self, search_service, mock_embedder, mock_vector_store):
         """Test query with source filter parameter."""
@@ -155,7 +158,7 @@ class TestPrintResults:
 
     def test_print_empty_results(self, search_service, caplog):
         """Test printing empty results."""
-        search_service.print_results([])
+        search_service.print_results(SearchResponse(results=[], inspected=0), "some query")
 
         assert "No results found" in caplog.text
 
@@ -178,7 +181,9 @@ class TestPrintResults:
             )
         ]
 
-        search_service.print_results(results)
+        search_service.print_results(
+            SearchResponse(results=results, inspected=len(results)), "some query"
+        )
 
         assert "Top Results:" in caplog.text
         assert "docs/readme.md" in caplog.text
@@ -208,7 +213,9 @@ class TestPrintResults:
             )
         ]
 
-        search_service.print_results(results)
+        search_service.print_results(
+            SearchResponse(results=results, inspected=len(results)), "some query"
+        )
 
         assert "Top Results:" in caplog.text
         assert "production_db" in caplog.text
@@ -233,7 +240,9 @@ class TestPrintResults:
             )
         ]
 
-        search_service.print_results(results)
+        search_service.print_results(
+            SearchResponse(results=results, inspected=len(results)), "some query"
+        )
 
         assert "Similarity: 0.78 (vector+fts)" in caplog.text
 
@@ -254,7 +263,9 @@ class TestPrintResults:
             )
         ]
 
-        search_service.print_results(results)
+        search_service.print_results(
+            SearchResponse(results=results, inspected=len(results)), "some query"
+        )
 
         assert "(fts-only)" in caplog.text
         assert "N/A" not in caplog.text
@@ -287,7 +298,9 @@ class TestPrintResults:
             ),
         ]
 
-        search_service.print_results(results)
+        search_service.print_results(
+            SearchResponse(results=results, inspected=len(results)), "some query"
+        )
 
         assert caplog.text.count("Source:") == 2
         assert "hash_a" in caplog.text
@@ -297,8 +310,16 @@ class TestPrintResults:
 class TestResultsToJson:
     """Tests for the results_to_json method (full-fidelity JSON dump)."""
 
-    def test_empty_results_is_empty_array(self, search_service):
-        assert json.loads(search_service.results_to_json([])) == []
+    def test_empty_response_serializes_to_envelope(self, search_service):
+        payload = json.loads(
+            search_service.results_to_json(SearchResponse(results=[], floor=None, inspected=0))
+        )
+        assert payload == {
+            "floor": None,
+            "inspected": 0,
+            "best_rejected": None,
+            "results": [],
+        }
 
     def test_document_result_includes_score_source_full_text_and_metadata(self, search_service):
         results = [
@@ -318,10 +339,12 @@ class TestResultsToJson:
             )
         ]
 
-        payload = json.loads(search_service.results_to_json(results))
+        payload = json.loads(
+            search_service.results_to_json(SearchResponse(results=results, inspected=1))
+        )
 
-        assert len(payload) == 1
-        item = payload[0]
+        assert len(payload["results"]) == 1
+        item = payload["results"][0]
         assert item["similarity"] == 0.95
         assert item["retrieved_by"] == "both"
         assert item["rrf_score"] == 0.42
@@ -358,9 +381,11 @@ class TestResultsToJson:
             )
         ]
 
-        payload = json.loads(search_service.results_to_json(results))
+        payload = json.loads(
+            search_service.results_to_json(SearchResponse(results=results, inspected=1))
+        )
 
-        item = payload[0]
+        item = payload["results"][0]
         assert item["similarity"] == 0.88
         assert item["retrieved_by"] == "vector"
         assert item["rrf_score"] is None

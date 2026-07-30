@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from dbs_vector.core.models import Chunk, SearchResult
+from dbs_vector.core.models import Chunk, SearchResponse, SearchResult
 
 
 @pytest.fixture
@@ -50,17 +50,24 @@ def test_json_flag_emits_json_to_stdout_and_skips_pretty_print(runner):
         patch("dbs_vector.cli.SearchService") as MockService,
     ):
         service = MockService.return_value
-        service.execute_query.return_value = [_doc_result()]
-        service.results_to_json.return_value = json.dumps([_doc_result().model_dump(mode="json")])
+        service.execute_query.return_value = SearchResponse(results=[_doc_result()], inspected=1)
+        service.results_to_json.return_value = json.dumps(
+            {
+                "floor": None,
+                "inspected": 1,
+                "best_rejected": None,
+                "results": [_doc_result().model_dump(mode="json")],
+            }
+        )
 
         result = runner.invoke(app, ["search", "q", "--type", "md", "--json"])
 
         assert result.exit_code == 0, result.output
-        # JSON went to stdout and parses back to the full result payload.
+        # JSON went to stdout and parses back to the full envelope payload.
         payload = json.loads(result.stdout)
-        assert payload[0]["chunk"]["source"] == "docs/a.md"
-        assert payload[0]["chunk"]["text"] == "Full document content here."
-        assert payload[0]["similarity"] == 0.9
+        assert payload["results"][0]["chunk"]["source"] == "docs/a.md"
+        assert payload["results"][0]["chunk"]["text"] == "Full document content here."
+        assert payload["results"][0]["similarity"] == 0.9
         # Human-readable printer is bypassed in JSON mode.
         service.results_to_json.assert_called_once()
         service.print_results.assert_not_called()
@@ -79,7 +86,7 @@ def test_default_uses_pretty_print_not_json(runner):
         patch("dbs_vector.cli.SearchService") as MockService,
     ):
         service = MockService.return_value
-        service.execute_query.return_value = [_doc_result()]
+        service.execute_query.return_value = SearchResponse(results=[_doc_result()], inspected=1)
 
         result = runner.invoke(app, ["search", "q", "--type", "md"])
 
