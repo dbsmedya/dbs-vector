@@ -182,6 +182,8 @@ diagnosis (below).
 | `query` | string | yes | Semantic search query |
 | `limit` | int | no | Max results (default 5, max 100) |
 | `source_filter` | string | no | Restrict to a file path or pattern |
+| `min_similarity` | float | no | Per-call admission floor override (range `[-1, 1]`). Takes precedence over the engine's configured `similarity_floor`. See [Similarity, ranking, and admission](#similarity-ranking-and-admission). |
+| `disable_similarity_floor` | bool | no | Bypass admission filtering entirely — the exact unfloored baseline (no floor **and** the original, non-oversampled candidate pool). `min_similarity=0` is **not** equivalent. |
 
 **SQL family** (`search_sql`, `search_sql_granite`, `search_sql_api_granite`) takes:
 
@@ -194,6 +196,8 @@ diagnosis (below).
 | `min_lock_time` | float | no | Minimum cumulative lock time in seconds |
 | `table_filter` | string | no | Restrict to queries that touch a specific table (case/schema-insensitive, whole-name exact match) |
 | `include_raw` | bool | no | Add a `Raw SQL:` block (verbatim query with literal values). Honoured **only** when the server was started with `--allow-raw-queries`; otherwise silently downgraded. See [Raw query exposure](#raw-query-exposure---allow-raw-queries). |
+| `min_similarity` | float | no | Per-call admission floor override (range `[-1, 1]`). Takes precedence over the engine's configured `similarity_floor`. See [Similarity, ranking, and admission](#similarity-ranking-and-admission). |
+| `disable_similarity_floor` | bool | no | Bypass admission filtering entirely — the exact unfloored baseline (no floor **and** the original, non-oversampled candidate pool). `min_similarity=0` is **not** equivalent. |
 
 When `table_filter` is set the search bypasses the IVF approximate index
 in favor of an exact flat scan, ensuring no candidate rows are missed
@@ -201,6 +205,92 @@ from unscanned IVF partitions. Combined with `min_lock_time > 0` this
 answers focused investigation questions like "show me all queries that
 lock `dt_customer_performance_report` rows" — the filter narrows the
 universe; the embedding only ranks within it.
+
+### Similarity, ranking, and admission
+
+Every search result — document or SQL family — carries three fields:
+
+| Field | Meaning |
+|-------|---------|
+| `similarity` | Exact cosine similarity between the query and chunk embedding, computed in NumPy at search time. Range `[-1, 1]`. It is a consistent **geometric** scale, **not** a calibrated probability of relevance — comparisons are meaningful only within the same engine/configuration. |
+| `retrieved_by` | Which retrieval channel(s) returned the row, rendered as `vector+fts`, `vector-only`, or `fts-only`. This is channel membership only — it is **not** evidence that the match is semantically or lexically correct. |
+| `rrf_score` | The fused Reciprocal Rank Fusion (K=60) value that drove ranking. JSON/debug output only; never rendered in text surfaces. |
+
+Result blocks render as:
+
+```
+--- Result (similarity 0.78, retrieved by: vector+fts) ---
+```
+
+**Ranking stays hybrid RRF fusion, not a similarity sort.** Results are ordered
+by rank fusion, so display order can disagree with a plain sort by
+`similarity` — `similarity` is exposed as evidence for the reader, not as the
+sort key.
+
+**Admission floor.** An engine may configure a `similarity_floor` in
+`config.yaml` (see [README_PROFILES.md](README_PROFILES.md#engines-block));
+any call can override it with `min_similarity` (range `[-1, 1]`, takes
+precedence over the engine floor) or bypass it entirely with
+`disable_similarity_floor=true`. When a floor is active, a candidate is
+admitted when **either**:
+
+1. `similarity >= floor` (semantic channel), **or**
+2. every eligible query term appears verbatim in the chunk text — word
+   boundary, case-insensitive, no stemming (an **all-terms verbatim** match,
+   not phrase equality: token order/adjacency is not checked). Eligible
+   tokens exclude a frozen 33-word English stopword set and tokens under 3
+   characters; the lexical channel only fires on FTS-channel rows
+   (`retrieved_by` is `fts` or `both`).
+
+**Known limitation, stated openly:** a single-common-token query (e.g.
+`lock`) can still pass the gate against an unrelated file like `uv.lock` —
+the gate trades that residual noise for exact-identifier recall. And because
+FTS indexes only the `text` column, the gate protects filename/path recall
+only when the filename also appears inside the chunk text.
+
+`disable_similarity_floor=true` is the **exact unfloored baseline**: no
+admission filtering **and** the original (non-oversampled) candidate-pool
+size. `min_similarity=0` is **not** the same thing — it still drops
+negative-similarity rows and still triggers the oversampled fetch described
+next. When a floor is active (engine or per-call), the search fetches
+`limit * 3` candidates per retrieval leg before admission filtering and
+truncation, so filtering doesn't starve the requested `limit`. This enlarges
+the RRF fusion inputs relative to the no-floor path — a deliberate,
+spec-stated trade, not a bug.
+
+**Empty responses.** An empty response after admission filtering means *no
+inspected candidate passed the floor for this attempt* — a low-confidence
+signal, **not** proof the corpus lacks relevant content (only the inspected
+pool is known). Example:
+
+```
+No inspected candidate passed admission (similarity >= 0.55 or all query
+terms verbatim) for 'beehive maintenance'. Inspected 15 hybrid-ranked
+candidates; best was similarity 0.38 (tests/integration/test_lancedb.py,
+fts-only). Retrieval confidence for this attempt is low; this does not
+establish corpus-level absence. Retry with different terms or a lower
+min_similarity if you expected a match.
+```
+
+**CLI JSON envelope.** `dbs-vector search --json` emits the full envelope,
+not a bare result array:
+
+```json
+{
+  "floor": 0.55,
+  "inspected": 15,
+  "best_rejected": {"similarity": 0.38, "source": "...", "retrieved_by": "fts"},
+  "results": [ ... ]
+}
+```
+
+`rrf_score` appears on each entry inside `results` — JSON/debug output only,
+never in text output.
+
+**Migration note.** Any consumer that used to parse `Score:` lines from
+search output (e.g. the `find-impacting-queries` skill) must read
+`similarity` from the new result block instead. `Score:` was LanceDB's RRF
+fusion value; `similarity` is exact cosine.
 
 ### `top_impacting_<engine>` — impact triage (SQL family)
 

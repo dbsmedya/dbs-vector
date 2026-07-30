@@ -183,6 +183,36 @@ Optional engine fields:
 | `passage_prefix` / `query_prefix` | Required for asymmetric models like Gemma. Leave empty for Granite R2 in this project. |
 | `duckdb_query` | Override the default DuckDB SQL extraction query. |
 | `api_base_url`, `api_key`, `api_page_size`, `api_since_days`, `api_timeout_sec`, `api_min_execution_ms`, `api_database` | Remote SQL API chunker settings. |
+| `similarity_floor` | Optional per-engine admission floor for search. See below. |
+
+### Similarity floor (`similarity_floor`)
+
+Each engine may set `similarity_floor`, an optional minimum exact cosine
+similarity (range `[-1, 1]`) that a search result must clear to be admitted
+on the semantic channel (see [README_MCP.md](README_MCP.md#similarity-ranking-and-admission)
+for the full admission policy, including the lexical-verbatim fallback):
+
+```yaml
+engines:
+  md:
+    # Optional admission floor (exact cosine, [-1, 1]). Unset = no floor
+    # (baseline default for every engine). Floors are engine-level policy,
+    # not model properties: the same model serves engines with different
+    # prefixes and content shapes. Calibrated default values ship with the
+    # calibration spec — do NOT copy a number from documentation; leave
+    # this unset until calibration produces one for your engine.
+    # similarity_floor: <calibrated value>
+```
+
+Leave `similarity_floor` unset until per-engine calibration (the companion
+calibration spec) produces a value backed by evaluation on your corpus — the
+placeholder above is deliberately not a real number to copy. Floor-active
+searches (engine `similarity_floor` or a per-call `min_similarity` override)
+oversample per-leg candidate pools (`limit * 3`) before admission filtering,
+which changes the RRF fusion inputs relative to the no-floor path — a
+deliberate, spec-stated trade, not a bug. `disable_similarity_floor=true` on
+a search call restores the exact unfloored baseline: no admission filtering
+**and** the original, non-oversampled candidate-pool size.
 
 ## Built-In Model Keys
 

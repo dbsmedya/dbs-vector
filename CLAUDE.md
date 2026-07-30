@@ -164,6 +164,7 @@ Adding a new engine: see spec
   for mechanics only. The index is a rebuildable cache: **after any config
   change to a watched engine, run one `ingest --rebuild --force`**. See
   `docs/README_WATCH.md`.
+- **Search scoring**: every result carries `similarity` (exact cosine between query and chunk vectors, computed in NumPy at search time — metric-independent, covers FTS-only rows), `retrieved_by` (channel membership: `both`/`vector`/`fts`), and `rrf_score` (fused RRF value, JSON/debug only). Ranking stays hybrid RRF(K=60); `_build_hybrid` pins `.metric("cosine")`. Admission policy lives in `SearchService` (engine `similarity_floor` / per-call `min_similarity` / `disable_similarity_floor`), which returns a `SearchResponse` envelope (`results`, `floor`, `inspected`, `best_rejected`). Construct services via `build_search_service()` — never hand-wire `SearchService`.
 
 ### Test Structure
 
