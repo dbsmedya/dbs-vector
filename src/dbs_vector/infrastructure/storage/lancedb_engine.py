@@ -3,14 +3,21 @@ from typing import Any
 
 import lancedb  # type: ignore[import-untyped]
 import numpy as np
+from lancedb.rerankers import RRFReranker  # type: ignore[import-untyped]
 from loguru import logger
 from numpy.typing import NDArray
 
+from dbs_vector.core.models import RetrievedBy
 from dbs_vector.core.ports import IStoreMapper
+from dbs_vector.infrastructure.storage.scoring import classify_retrieved_by, cosine_similarity
 
 # Strategy switch only: at or below this many matched ids we prefilter with
 # `id IN (...)`. Above it we use an exact vector-only full-scan fallback.
 _TABLE_FILTER_PREFILTER_CAP = 50_000
+
+# Explicit reranker: keeps today's RRF(K=60) ordering while retaining the
+# per-leg _score/_distance columns needed for retrieved_by provenance.
+_RRF_RERANKER = RRFReranker(K=60, return_score="all")
 
 
 class LanceDBStore:
@@ -231,7 +238,11 @@ class LanceDBStore:
                 op = op.bypass_vector_index()
             else:
                 op = op.nprobes(self.nprobes)
-            return op.limit(fetch_limit)
+            # Bug fix: without an explicit metric, tables without an IVF index
+            # run the vector leg under L2; nothing guarantees unit-norm
+            # embeddings, so ordering could differ from cosine.
+            op = op.metric("cosine")  # pyright: ignore[reportAttributeAccessIssue]
+            return op.limit(fetch_limit).rerank(_RRF_RERANKER)  # pyright: ignore[reportAttributeAccessIssue]
 
         # Hybrid requires an FTS index. Once we learn it is unavailable, skip
         # the build+raise on every subsequent query; the cache is reset wherever
@@ -242,11 +253,13 @@ class LanceDBStore:
         if self._hybrid_ok is False or oversized:
             search_op = _build_vector()
             results_df = search_op.to_polars()
+            used_fallback = True
         else:
             try:
                 search_op = _build_hybrid()
                 results_df = search_op.to_polars()
                 self._hybrid_ok = True
+                used_fallback = False
             except (ValueError, RuntimeError, ImportError, OSError) as e:
                 # Narrowed from bare Exception so a programming error doesn't
                 # silently degrade to vector-only. Verified against LanceDB
@@ -264,6 +277,7 @@ class LanceDBStore:
                 )
                 search_op = _build_vector()
                 results_df = search_op.to_polars()
+                used_fallback = True
 
         # Hybrid search merges vector + FTS branches and can yield the same
         # `id` from both. Dedupe after LanceDB applies `limit`; this may return
@@ -304,11 +318,43 @@ class LanceDBStore:
                     _normalize_table_name(t) for t in tables
                 }:
                     continue
-            rel = row.get("_relevance_score")
-            dist = row.get("_distance")
-            score = float(rel) if isinstance(rel, float) else None
-            distance = float(dist) if isinstance(dist, float) else None
-            mapped_results.append(self.mapper.from_polars_row(row, score=score, distance=distance))
+            row_vector = row.get("vector")
+            if row_vector is None:
+                raise ValueError(
+                    "Search result row is missing the 'vector' column; search "
+                    "applies no projection, so this is a programming error."
+                )
+            sim = cosine_similarity(query_vector, row_vector)
+            if used_fallback:
+                retrieved_by: RetrievedBy = "vector"
+                rrf_score = None
+            else:
+                rel = row.get("_relevance_score")
+                if not isinstance(rel, float) or not math.isfinite(rel):
+                    raise ValueError(
+                        "Hybrid result row has no finite _relevance_score; the "
+                        "explicit RRF rerank guarantees one (programming error). "
+                        "rrf_score=None is reserved for the vector-fallback path."
+                    )
+                rrf_score = rel
+                dist = row.get("_distance")
+                fts = row.get("_score")
+                retrieved_by = classify_retrieved_by(
+                    float(dist) if isinstance(dist, float) else None,
+                    float(fts) if isinstance(fts, float) else None,
+                )
+            rel_legacy = row.get("_relevance_score")
+            dist_legacy = row.get("_distance")
+            mapped_results.append(
+                self.mapper.from_polars_row(
+                    row,
+                    score=float(rel_legacy) if isinstance(rel_legacy, float) else None,
+                    distance=float(dist_legacy) if isinstance(dist_legacy, float) else None,
+                    similarity=sim,
+                    retrieved_by=retrieved_by,
+                    rrf_score=rrf_score,
+                )
+            )
 
         return mapped_results[:limit]
 

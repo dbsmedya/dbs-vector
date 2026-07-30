@@ -314,7 +314,9 @@ class TestSearch:
         mock_search.vector.return_value = mock_search
         mock_search.text.return_value = mock_search
         mock_search.nprobes.return_value = mock_search
+        mock_search.metric.return_value = mock_search
         mock_search.limit.return_value = mock_search
+        mock_search.rerank.return_value = mock_search
 
         mock_results = pl.DataFrame(
             {
@@ -323,6 +325,8 @@ class TestSearch:
                 "source": ["file.md"],
                 "content_hash": ["hash1"],
                 "_distance": [0.9],
+                "_relevance_score": [0.85],
+                "vector": [[1.0, 0.0, 0.0]],
             }
         )
         mock_search.to_polars.return_value = mock_results
@@ -356,11 +360,13 @@ class TestSearch:
         mock_search.vector.return_value = mock_search
         mock_search.text.return_value = mock_search
         mock_search.nprobes.return_value = mock_search
+        mock_search.metric.return_value = mock_search
         mock_search.limit.return_value = mock_search
+        mock_search.rerank.return_value = mock_search
         mock_search.where.return_value = mock_search
 
         mock_results = pl.DataFrame(
-            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": [], "vector": []}
         )
         mock_search.to_polars.return_value = mock_results
         mock_table.search.return_value = mock_search
@@ -388,11 +394,13 @@ class TestSearch:
         mock_search.vector.return_value = mock_search
         mock_search.text.return_value = mock_search
         mock_search.nprobes.return_value = mock_search
+        mock_search.metric.return_value = mock_search
         mock_search.limit.return_value = mock_search
+        mock_search.rerank.return_value = mock_search
         mock_search.where.return_value = mock_search
 
         mock_results = pl.DataFrame(
-            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": [], "vector": []}
         )
         mock_search.to_polars.return_value = mock_results
         mock_table.search.return_value = mock_search
@@ -421,11 +429,13 @@ class TestSearch:
         mock_search.vector.return_value = mock_search
         mock_search.text.return_value = mock_search
         mock_search.nprobes.return_value = mock_search
+        mock_search.metric.return_value = mock_search
         mock_search.limit.return_value = mock_search
+        mock_search.rerank.return_value = mock_search
         mock_search.where.return_value = mock_search
 
         mock_results = pl.DataFrame(
-            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": [], "vector": []}
         )
         mock_search.to_polars.return_value = mock_results
         mock_table.search.return_value = mock_search
@@ -460,7 +470,7 @@ class TestSearch:
         mock_vector_search.limit.return_value = mock_vector_search
 
         mock_results = pl.DataFrame(
-            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": [], "vector": []}
         )
         mock_vector_search.to_polars.return_value = mock_results
 
@@ -490,9 +500,13 @@ class TestSearch:
         mock_search.vector.return_value = mock_search
         mock_search.text.return_value = mock_search
         mock_search.nprobes.return_value = mock_search
+        mock_search.metric.return_value = mock_search
         mock_search.limit.return_value = mock_search
+        mock_search.rerank.return_value = mock_search
 
-        # Hybrid result: _relevance_score column, no _distance column
+        # Hybrid result: _relevance_score plus a non-null _distance (the
+        # explicit RRF rerank with return_score="all" always carries both
+        # per-leg columns on a genuine hybrid row).
         mock_results = pl.DataFrame(
             {
                 "id": ["chunk_0"],
@@ -500,18 +514,28 @@ class TestSearch:
                 "source": ["file.md"],
                 "content_hash": ["hash1"],
                 "_relevance_score": [0.82],
+                "_distance": [0.12],
+                "_score": [None],
+                "vector": [[0.1, 0.2, 0.3]],
             }
         )
         mock_search.to_polars.return_value = mock_results
         mock_table.search.return_value = mock_search
 
         store.mapper.from_polars_row = MagicMock(
-            side_effect=lambda row, score, distance: (row["id"], score, distance)
+            side_effect=lambda row, **kw: (
+                row["id"],
+                kw["rrf_score"],
+                kw["retrieved_by"],
+                round(kw["similarity"], 4),
+            )
         )
 
         results = store.search(query="test", query_vector=query_vector)
 
-        assert results == [("chunk_0", 0.82, None)]
+        # row_vector == query_vector -> cosine similarity is exactly 1.0;
+        # distance non-null + score null -> retrieved_by == "vector".
+        assert results == [("chunk_0", 0.82, "vector", 1.0)]
 
     def test_search_fallback_preserves_filters(self, lancedb_store):
         """When hybrid to_polars() fails and falls back to vector search,
@@ -527,7 +551,9 @@ class TestSearch:
         hybrid_op.vector.return_value = hybrid_op
         hybrid_op.text.return_value = hybrid_op
         hybrid_op.nprobes.return_value = hybrid_op
+        hybrid_op.metric.return_value = hybrid_op
         hybrid_op.limit.return_value = hybrid_op
+        hybrid_op.rerank.return_value = hybrid_op
         hybrid_op.where.return_value = hybrid_op
         hybrid_op.to_polars.side_effect = RuntimeError("FTS index missing")
 
@@ -538,7 +564,7 @@ class TestSearch:
         fallback_op.limit.return_value = fallback_op
         fallback_op.where.return_value = fallback_op
         fallback_op.to_polars.return_value = pl.DataFrame(
-            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": [], "vector": []}
         )
 
         # First call → hybrid_op, second call (fallback) → fallback_op
@@ -561,7 +587,7 @@ class TestSearch:
         )
 
     def test_search_handles_fts_only_match(self, lancedb_store):
-        """Rows with neither _relevance_score nor _distance are FTS-only matches."""
+        """Null `_distance` + non-null `_score` = FTS-only retrieval channel."""
         import polars as pl
 
         store, _, mock_table, _ = lancedb_store
@@ -571,7 +597,9 @@ class TestSearch:
         mock_search.vector.return_value = mock_search
         mock_search.text.return_value = mock_search
         mock_search.nprobes.return_value = mock_search
+        mock_search.metric.return_value = mock_search
         mock_search.limit.return_value = mock_search
+        mock_search.rerank.return_value = mock_search
 
         mock_results = pl.DataFrame(
             {
@@ -580,17 +608,30 @@ class TestSearch:
                 "source": ["file1.md", "file2.md"],
                 "content_hash": ["hash1", "hash2"],
                 "_distance": [0.9, None],
+                "_score": [None, 2.1],
+                "_relevance_score": [0.9, 0.8],
+                "vector": [[0.1, 0.2, 0.3], [0.1, 0.2, 0.3]],
             }
         )
         mock_search.to_polars.return_value = mock_results
         mock_table.search.return_value = mock_search
 
         store.mapper.from_polars_row = MagicMock(
-            side_effect=lambda row, score, distance: (row["id"], score, distance)
+            side_effect=lambda row, **kw: (
+                row["id"],
+                kw["rrf_score"],
+                kw["retrieved_by"],
+                round(kw["similarity"], 4),
+            )
         )
 
         results = store.search(query="test", query_vector=query_vector)
-        assert results == [("chunk_0", None, 0.9), ("chunk_1", None, None)]
+        # row 0: distance non-null, score null -> "vector".
+        # row 1: distance null, score non-null -> "fts".
+        assert results == [
+            ("chunk_0", 0.9, "vector", 1.0),
+            ("chunk_1", 0.8, "fts", 1.0),
+        ]
 
     def test_search_min_lock_time_filter_emits_where_clause(self, lancedb_store):
         """min_lock_time kwarg must add a `lock_time_sec >= X` prefilter."""
@@ -603,10 +644,12 @@ class TestSearch:
         mock_search.vector.return_value = mock_search
         mock_search.text.return_value = mock_search
         mock_search.nprobes.return_value = mock_search
+        mock_search.metric.return_value = mock_search
         mock_search.limit.return_value = mock_search
+        mock_search.rerank.return_value = mock_search
         mock_search.where.return_value = mock_search
         mock_search.to_polars.return_value = pl.DataFrame(
-            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": [], "vector": []}
         )
         mock_table.search.return_value = mock_search
 
@@ -630,10 +673,12 @@ class TestSearch:
         mock_search.text.return_value = mock_search
         mock_search.nprobes.return_value = mock_search
         mock_search.bypass_vector_index.return_value = mock_search
+        mock_search.metric.return_value = mock_search
         mock_search.limit.return_value = mock_search
+        mock_search.rerank.return_value = mock_search
         mock_search.where.return_value = mock_search
         mock_search.to_polars.return_value = pl.DataFrame(
-            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": [], "vector": []}
         )
         mock_table.search.return_value = mock_search
 
@@ -660,9 +705,11 @@ class TestSearch:
         mock_search.text.return_value = mock_search
         mock_search.nprobes.return_value = mock_search
         mock_search.bypass_vector_index.return_value = mock_search
+        mock_search.metric.return_value = mock_search
         mock_search.limit.return_value = mock_search
+        mock_search.rerank.return_value = mock_search
         mock_search.to_polars.return_value = pl.DataFrame(
-            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": [], "vector": []}
         )
         mock_table.search.return_value = mock_search
 
@@ -684,9 +731,11 @@ class TestSearch:
         mock_search.vector.return_value = mock_search
         mock_search.text.return_value = mock_search
         mock_search.nprobes.return_value = mock_search
+        mock_search.metric.return_value = mock_search
         mock_search.limit.return_value = mock_search
+        mock_search.rerank.return_value = mock_search
         mock_search.to_polars.return_value = pl.DataFrame(
-            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": [], "vector": []}
         )
         mock_table.search.return_value = mock_search
 
@@ -721,8 +770,9 @@ class TestSearch:
         mock_search.nprobes.side_effect = _log("nprobes")
         mock_search.limit.side_effect = _log("limit")
         mock_search.metric.side_effect = _log("metric")
+        mock_search.rerank.side_effect = _log("rerank")
         mock_search.to_polars.return_value = pl.DataFrame(
-            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": [], "vector": []}
         )
         mock_table.search.return_value = mock_search
 
@@ -754,6 +804,7 @@ class TestSearch:
         mock_search.nprobes.return_value = mock_search
         mock_search.limit.return_value = mock_search
         mock_search.metric.return_value = mock_search
+        mock_search.rerank.return_value = mock_search
         mock_search.bypass_vector_index.return_value = mock_search
         mock_search.where.return_value = mock_search
         mock_search.to_polars.return_value = pl.DataFrame(
@@ -763,11 +814,13 @@ class TestSearch:
                 "source": ["s", "s", "s"],
                 "content_hash": ["h", "h", "h2"],
                 "_relevance_score": [0.9, 0.8, 0.7],
+                "_distance": [0.1, 0.2, 0.3],
+                "vector": [[1.0, 0.0, 0.0]] * 3,
             }
         )
         mock_table.search.return_value = mock_search
 
-        store.mapper.from_polars_row = MagicMock(side_effect=lambda row, score, distance: row["id"])
+        store.mapper.from_polars_row = MagicMock(side_effect=lambda row, **kw: row["id"])
 
         results = store.search(query="q", query_vector=query_vector)
 
@@ -788,7 +841,7 @@ class TestSearch:
         mock_search.nprobes.return_value = mock_search
         mock_search.limit.return_value = mock_search
         mock_search.to_polars.return_value = pl.DataFrame(
-            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": [], "vector": []}
         )
 
         def search_side_effect(*args, **kwargs):
@@ -837,8 +890,9 @@ class TestSearch:
         mock_search.metric.return_value = mock_search
         mock_search.nprobes.return_value = mock_search
         mock_search.limit.return_value = mock_search
+        mock_search.rerank.return_value = mock_search
         mock_search.to_polars.return_value = pl.DataFrame(
-            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": []}
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": [], "vector": []}
         )
 
         fts_exists = {"v": False}
@@ -866,6 +920,162 @@ class TestSearch:
             f"Expected hybrid retried after version bump, calls: {mock_table.search.call_args_list}"
         )
         assert store._hybrid_ok is True
+
+    def test_search_annotates_exact_cosine_similarity(self, lancedb_store):
+        """Query [1,0,0] against a row vector [1,1,0] -> cos 0.7071."""
+        import polars as pl
+
+        store, _, mock_table, _ = lancedb_store
+        query_vector = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+
+        mock_search = MagicMock()
+        mock_search.vector.return_value = mock_search
+        mock_search.text.return_value = mock_search
+        mock_search.nprobes.return_value = mock_search
+        mock_search.metric.return_value = mock_search
+        mock_search.limit.return_value = mock_search
+        mock_search.rerank.return_value = mock_search
+        mock_search.to_polars.return_value = pl.DataFrame(
+            {
+                "id": ["chunk_0"],
+                "text": ["content"],
+                "source": ["file.md"],
+                "content_hash": ["hash1"],
+                "_relevance_score": [0.5],
+                "_distance": [0.3],
+                "vector": [[1.0, 1.0, 0.0]],
+            }
+        )
+        mock_table.search.return_value = mock_search
+
+        store.mapper.from_polars_row = MagicMock(side_effect=lambda row, **kw: kw["similarity"])
+
+        results = store.search("q", query_vector, limit=5)
+
+        assert results[0] == pytest.approx(0.7071, abs=1e-4)
+
+    def test_search_raises_on_missing_vector_column(self, lancedb_store):
+        """A result frame without 'vector' is a programming error."""
+        import polars as pl
+
+        store, _, mock_table, _ = lancedb_store
+        query_vector = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        mock_search = MagicMock()
+        mock_search.vector.return_value = mock_search
+        mock_search.text.return_value = mock_search
+        mock_search.nprobes.return_value = mock_search
+        mock_search.metric.return_value = mock_search
+        mock_search.limit.return_value = mock_search
+        mock_search.rerank.return_value = mock_search
+        mock_search.to_polars.return_value = pl.DataFrame(
+            {
+                "id": ["chunk_0"],
+                "text": ["content"],
+                "source": ["file.md"],
+                "content_hash": ["hash1"],
+                "_relevance_score": [0.5],
+                "_distance": [0.3],
+            }
+        )
+        mock_table.search.return_value = mock_search
+
+        with pytest.raises(ValueError, match="vector"):
+            store.search("q", query_vector, limit=5)
+
+    def test_vector_fallback_rows_are_vector_channel_with_no_rrf(self, lancedb_store):
+        """_hybrid_ok False -> retrieved_by='vector', rrf_score=None."""
+        import polars as pl
+
+        store, _, mock_table, _ = lancedb_store
+        query_vector = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        # Pin the version the store has already "seen" so search()'s
+        # checkout_latest()/version-advance check doesn't reset our forced
+        # _hybrid_ok=False back to None before the fallback branch runs.
+        mock_table.version = 1
+        store._table_version = 1
+        store._hybrid_ok = False
+
+        mock_search = MagicMock()
+        mock_search.metric.return_value = mock_search
+        mock_search.nprobes.return_value = mock_search
+        mock_search.limit.return_value = mock_search
+        mock_search.to_polars.return_value = pl.DataFrame(
+            {
+                "id": ["chunk_0"],
+                "text": ["content"],
+                "source": ["file.md"],
+                "content_hash": ["hash1"],
+                "_distance": [0.4],
+                "vector": [[1.0, 0.0, 0.0]],
+            }
+        )
+        mock_table.search.return_value = mock_search
+
+        store.mapper.from_polars_row = MagicMock(
+            side_effect=lambda row, **kw: (kw["retrieved_by"], kw["rrf_score"])
+        )
+
+        results = store.search("q", query_vector, limit=5)
+
+        assert results == [("vector", None)]
+
+    def test_hybrid_builder_sets_cosine_metric_and_explicit_rrf_rerank(self, lancedb_store):
+        """_build_hybrid must call .metric('cosine') and .rerank(_RRF_RERANKER)."""
+        import polars as pl
+
+        from dbs_vector.infrastructure.storage.lancedb_engine import _RRF_RERANKER
+
+        store, _, mock_table, _ = lancedb_store
+        query_vector = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        op_mock = MagicMock()
+        op_mock.vector.return_value = op_mock
+        op_mock.text.return_value = op_mock
+        op_mock.nprobes.return_value = op_mock
+        op_mock.metric.return_value = op_mock
+        op_mock.limit.return_value = op_mock
+        op_mock.rerank.return_value = op_mock
+        op_mock.to_polars.return_value = pl.DataFrame(
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": [], "vector": []}
+        )
+        mock_table.search.return_value = op_mock
+
+        store.search("q", query_vector, limit=5)
+
+        op_mock.metric.assert_called_once_with("cosine")
+        op_mock.rerank.assert_called_once_with(_RRF_RERANKER)
+
+    def test_hybrid_row_without_relevance_score_raises(self, lancedb_store):
+        """A successful hybrid path must never yield rrf_score=None — None is
+        reserved for the pure-vector fallback (no fusion ran)."""
+        import polars as pl
+
+        store, _, mock_table, _ = lancedb_store
+        query_vector = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        mock_search = MagicMock()
+        mock_search.vector.return_value = mock_search
+        mock_search.text.return_value = mock_search
+        mock_search.nprobes.return_value = mock_search
+        mock_search.metric.return_value = mock_search
+        mock_search.limit.return_value = mock_search
+        mock_search.rerank.return_value = mock_search
+        mock_search.to_polars.return_value = pl.DataFrame(
+            {
+                "id": ["chunk_0"],
+                "text": ["content"],
+                "source": ["file.md"],
+                "content_hash": ["hash1"],
+                "_distance": [0.3],
+                "vector": [[1.0, 0.0, 0.0]],
+            }
+        )
+        mock_table.search.return_value = mock_search
+
+        with pytest.raises(ValueError, match="_relevance_score"):
+            store.search("q", query_vector, limit=5)
 
 
 class TestDeleteBySource:

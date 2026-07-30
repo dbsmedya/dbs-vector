@@ -137,6 +137,42 @@ class TestDocumentMapper:
         assert result.distance == 0.95
         assert result.is_fts_match is False
 
+    def test_from_polars_row_carries_similarity_channel_and_rrf(self, mapper):
+        """New annotation fields flow through from_polars_row unchanged."""
+        row = {
+            "id": "chunk_42",
+            "text": "Sample content",
+            "source": "docs/readme.md",
+            "content_hash": "abc123",
+            "node_type": "paragraph",
+            "parent_scope": "# Header",
+            "line_range": "5-15",
+        }
+
+        result = mapper.from_polars_row(row, similarity=0.73, retrieved_by="both", rrf_score=0.0164)
+
+        assert result.similarity == 0.73
+        assert result.retrieved_by == "both"
+        assert result.rrf_score == 0.0164
+
+    def test_from_polars_row_new_fields_default_when_omitted(self, mapper):
+        """When the store doesn't pass the new kwargs, defaults apply."""
+        row = {
+            "id": "chunk_42",
+            "text": "Sample content",
+            "source": "docs/readme.md",
+            "content_hash": "abc123",
+            "node_type": "paragraph",
+            "parent_scope": "# Header",
+            "line_range": "5-15",
+        }
+
+        result = mapper.from_polars_row(row, score=0.9)
+
+        assert result.similarity == 0.0
+        assert result.retrieved_by == "vector"
+        assert result.rrf_score is None
+
     def test_from_polars_row_with_none_score(self, mapper):
         """Test converting row with None score (FTS match)."""
         row = {
@@ -320,6 +356,58 @@ class TestSqlMapper:
         assert result.chunk.lock_time_sec == 0.1
         assert result.score == 0.88
         assert result.is_fts_match is False
+
+    def test_from_polars_row_carries_similarity_channel_and_rrf(self, mapper):
+        """New annotation fields flow through from_polars_row unchanged."""
+        now = datetime.now()
+        row = {
+            "id": "sql_42",
+            "text": "SELECT COUNT(*) FROM orders",
+            "raw_query": "SELECT COUNT(*) FROM orders WHERE status = 'pending'",
+            "source": "db_analytics",
+            "execution_time_ms": 245.7,
+            "calls": 1000,
+            "content_hash": "hash_abc",
+            "latest_ts": now,
+            "tables": ["orders"],
+            "user": "admin",
+            "host": "localhost",
+            "rows_sent": 500,
+            "rows_examined": 5000,
+            "lock_time_sec": 0.1,
+        }
+
+        result = mapper.from_polars_row(row, similarity=0.73, retrieved_by="both", rrf_score=0.0164)
+
+        assert result.similarity == 0.73
+        assert result.retrieved_by == "both"
+        assert result.rrf_score == 0.0164
+
+    def test_from_polars_row_new_fields_default_when_omitted(self, mapper):
+        """When the store doesn't pass the new kwargs, defaults apply."""
+        now = datetime.now()
+        row = {
+            "id": "sql_42",
+            "text": "SELECT COUNT(*) FROM orders",
+            "raw_query": "SELECT COUNT(*) FROM orders WHERE status = 'pending'",
+            "source": "db_analytics",
+            "execution_time_ms": 245.7,
+            "calls": 1000,
+            "content_hash": "hash_abc",
+            "latest_ts": now,
+            "tables": ["orders"],
+            "user": "admin",
+            "host": "localhost",
+            "rows_sent": 500,
+            "rows_examined": 5000,
+            "lock_time_sec": 0.1,
+        }
+
+        result = mapper.from_polars_row(row, score=0.88)
+
+        assert result.similarity == 0.0
+        assert result.retrieved_by == "vector"
+        assert result.rrf_score is None
 
     def test_from_polars_row_fts_match(self, mapper):
         """Test SqlSearchResult with None score (FTS match)."""

@@ -28,7 +28,7 @@ class _Mapper:
             schema=self.schema,
         )
 
-    def from_polars_row(self, row, score, distance):
+    def from_polars_row(self, row, *args, **kwargs):
         return {"id": row["id"], "tables": row.get("tables")}
 
 

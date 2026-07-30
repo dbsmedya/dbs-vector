@@ -123,6 +123,9 @@ class SearchResult(BaseModel):
     score: float | None = None
     distance: float | None = None
     is_fts_match: bool = False
+    similarity: float = 0.0
+    retrieved_by: RetrievedBy = "vector"
+    rrf_score: float | None = None
 
 
 class SqlSearchResult(BaseModel):
@@ -132,3 +135,6 @@ class SqlSearchResult(BaseModel):
     score: float | None = None
     distance: float | None = None
     is_fts_match: bool = False
+    similarity: float = 0.0
+    retrieved_by: RetrievedBy = "vector"
+    rrf_score: float | None = None

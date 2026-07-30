@@ -4,7 +4,7 @@ import numpy as np
 import pyarrow as pa
 from numpy.typing import NDArray
 
-from dbs_vector.core.models import Chunk, SearchResult, SqlChunk, SqlSearchResult
+from dbs_vector.core.models import Chunk, RetrievedBy, SearchResult, SqlChunk, SqlSearchResult
 
 
 class DocumentMapper:
@@ -69,6 +69,10 @@ class DocumentMapper:
         row: dict[str, Any],
         score: float | None = None,
         distance: float | None = None,
+        *,
+        similarity: float = 0.0,
+        retrieved_by: RetrievedBy = "vector",
+        rrf_score: float | None = None,
     ) -> Any:
         chunk = Chunk(
             id=row["id"],
@@ -84,6 +88,9 @@ class DocumentMapper:
             score=score,
             distance=distance,
             is_fts_match=(score is None and distance is None),
+            similarity=similarity,
+            retrieved_by=retrieved_by,
+            rrf_score=rrf_score,
         )
 
 
@@ -170,6 +177,10 @@ class SqlMapper:
         row: dict[str, Any],
         score: float | None = None,
         distance: float | None = None,
+        *,
+        similarity: float = 0.0,
+        retrieved_by: RetrievedBy = "vector",
+        rrf_score: float | None = None,
     ) -> Any:
         chunk = SqlChunk(
             id=row["id"],
@@ -192,4 +203,7 @@ class SqlMapper:
             score=score,
             distance=distance,
             is_fts_match=(score is None and distance is None),
+            similarity=similarity,
+            retrieved_by=retrieved_by,
+            rrf_score=rrf_score,
         )

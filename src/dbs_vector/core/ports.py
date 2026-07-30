@@ -4,6 +4,8 @@ from typing import Any, Protocol
 import numpy as np
 from numpy.typing import NDArray
 
+from dbs_vector.core.models import RetrievedBy
+
 
 class IEmbedder(Protocol):
     """Protocol defining how an embedder should behave."""
@@ -45,11 +47,18 @@ class IStoreMapper(Protocol):
         row: dict[str, Any],
         score: float | None = None,
         distance: float | None = None,
+        *,
+        similarity: float = 0.0,
+        retrieved_by: RetrievedBy = "vector",
+        rrf_score: float | None = None,
     ) -> Any:
-        """Converts a Polars row back into a domain SearchResult.
+        """Convert one Polars result row into a domain search-result model.
 
-        score    — LanceDB hybrid `_relevance_score` (None for pure-vector search)
-        distance — LanceDB vector `_distance` (None for hybrid search)
+        `similarity` is exact query-to-row cosine; `retrieved_by` is the
+        retrieval channel that returned the row; `rrf_score` is the fused RRF
+        value (None when no fusion ran — the pure-vector fallback path).
+        `score`/`distance` are the legacy RRF/L2 fields, removed in the next
+        task.
         """
         ...
 

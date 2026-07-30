@@ -43,14 +43,12 @@ class _IdentityMapper:
             schema=self.schema,
         )
 
-    def from_polars_row(self, row, score, distance):
+    def from_polars_row(self, row, *args, **kwargs):
         return {
             "id": row["id"],
             "lock_time_sec": row.get("lock_time_sec"),
             "execution_time_ms": row.get("execution_time_ms"),
             "tables": row.get("tables"),
-            "score": score,
-            "distance": distance,
         }
 
 
