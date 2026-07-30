@@ -115,6 +115,43 @@ def build_dependencies(
     )
 
 
+def build_watcher_service() -> Any:
+    """Compose a WatcherService for every engine with `watch.enabled`.
+
+    Returns None when nothing is watched. Deliberately creates a SECOND
+    LanceDBStore handle per engine (the writer) alongside SearchService's
+    (the readers) — that separation is what makes MVCC / checkout_latest()
+    reads safe while the watcher writes. Keep it.
+    """
+    from dbs_vector.infrastructure.watch.watchdog_backend import WatchdogBackend
+    from dbs_vector.services.ingestion import IngestionService
+    from dbs_vector.services.watcher import WatchedEngine, WatcherService
+
+    watched_names = [name for name, cfg in settings.engines.items() if cfg.watch.enabled]
+    if not watched_names:
+        return None
+
+    engines: dict[str, Any] = {}
+    for name in watched_names:
+        deps = build_dependencies(name)
+        engines[name] = WatchedEngine(
+            name=name,
+            ingestion=IngestionService(
+                deps.chunker,
+                deps.embedder,
+                deps.store,
+                deps.workflow,
+                batch_size=deps.batch_size,
+                path_filter=deps.path_filter,
+            ),
+            path_filter=deps.path_filter,
+            store=deps.store,
+            debounce_seconds=settings.engines[name].watch.debounce_seconds,
+            backend=WatchdogBackend(),
+        )
+    return WatcherService(engines)
+
+
 def build_store(engine_name: str) -> LanceDBStore:
     """Resolve ONLY the vector store for an engine — no embedder, no chunker.
 

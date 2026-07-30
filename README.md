@@ -17,6 +17,7 @@ It enables lightning-fast, hybrid (Vector + Full-Text) search across your local 
 *   **Production Robustness**: Features dynamic `IVF_PQ` indexing, Rust-level predicate pushdown (metadata filtering), and dataset compaction for delta-updates.
 *   **Remote SQL API Ingestion**: `ApiChunker` pulls pre-aggregated slow-query records from any networked backend over HTTP, replacing local files with a paginated REST API — no changes to the embedding or storage layers.
 *   **Dynamic MCP Tools**: `dbs-vector mcp` exposes one stdio MCP tool per configured engine from `config.yaml`; SQL engines additionally get an analytical `browse_` tool and an impact-triage `top_impacting_` tool for slow-query diagnosis.
+*   **Directory Watch**: document engines can re-ingest file changes from configured roots while `dbs-vector mcp` is running (uses the resident embedder). See [docs/README_WATCH.md](docs/README_WATCH.md).
 
 ## 🚀 Installation
 
@@ -54,6 +55,9 @@ Index markdown files, JSON SQL logs, DuckDB analytical files, or a remote HTTP s
 ```bash
 # Ingest all markdown files (default)
 uv run dbs-vector ingest "docs/"
+
+# Ingest every configured root for a document engine (paths: in config.yaml)
+uv run dbs-vector ingest --type md
 
 # Ingest SQL slow query logs (JSON format)
 uv run dbs-vector ingest "slow_queries.json" --type sql

@@ -80,6 +80,15 @@ profiles:
 #
 # Engine names must match ^[a-z0-9][a-z0-9_-]*$  (validator Rule 6).
 # resolved_family must be a known FamilyKeyRegistry key  (validator Rule 7).
+#   • paths:            absolute directory roots this engine ingests. Enables
+#                       `dbs-vector ingest --type <engine>` with no path, and is
+#                       what the watcher watches. Document engines only.
+#   • ignore_patterns:  fnmatch globs tested against the basename AND the
+#                       root-relative path. Setting it REPLACES the defaults
+#                       [".#*", "*~", "*.tmp", ".DS_Store"].
+#   • watch:            {enabled: bool, debounce_seconds: float}. Requires
+#                       paths: and chunker_type: "document", plus an exclusive
+#                       table_name. See docs/README_WATCH.md.
 # -----------------------------------------------------------------------------
 engines:
 
@@ -93,8 +102,15 @@ engines:
     workflow:       "md_search"           # workflow label written into every chunk
     tuning_profile: "gemma-md"            # references profiles: block above
     # Optional per-engine content exclusion (default: none). Built-ins:
-    # excalidraw (skips drawing files/blocks), compressed_json (drops blobs).
+    # excalidraw (skips drawing files/blocks), compressed_json (drops blobs),
+    # gitignore (marker: PathFilter enforces <root>/.gitignore at discovery).
     exclusion_filters: [excalidraw, compressed_json]
+    # Directory watch (see docs/README_WATCH.md). After ANY config change to a
+    # watched engine, run one `ingest --rebuild --force` before starting mcp.
+    # paths: ["/Users/you/vault"]
+    # ignore_patterns: [".#*", "*~", "*.tmp", ".DS_Store"]
+    # exclusion_filters: [excalidraw, compressed_json, gitignore]
+    # watch: {enabled: true, debounce_seconds: 3.0}
     # Gemma is task-instruction-tuned: prefixes project queries and passages
     # into a shared task-conditional subspace. REQUIRED for Gemma.
     passage_prefix: "title: none | text: "

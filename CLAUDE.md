@@ -59,10 +59,17 @@ This is a Clean Architecture, configuration-driven RAG search engine for Apple S
 - `storage/mappers.py`: `DocumentMapper` and `SqlMapper` convert domain chunks ↔ PyArrow `RecordBatch` for zero-copy ingestion and back to domain models on retrieval.
 - `chunking/document.py`: `DocumentChunker` — uses `markdown-it-py` to parse `.md` semantically (code fences are kept atomic); falls back to naive splitting for `.txt`.
 - `chunking/sql.py`: `SqlChunker` — parses JSON slow query log format.
+- `watch/watchdog_backend.py`: `WatchdogBackend` — the only module importing
+  `watchdog`. Implements the `IWatchBackend` port.
 
 **`services/`** — Orchestration, depend only on protocols.
 - `ingestion.py`: `IngestionService` — reads files, chunks, deduplicates via SHA-256 content hashes, batches, embeds, and streams to `IVectorStore`.
 - `search.py`: `SearchService` — embeds query and delegates hybrid search; also formats results for CLI output.
+- `path_filter.py`: `PathFilter` — the single owner of ingestion path scoping
+  (roots, extensions, `ignore_patterns`, gitignore). Shared by CLI discovery,
+  watcher events and reconciliation; `None` for non-document engines.
+- `watcher.py`: `WatcherService` — debounce map keyed by `(engine, path)`,
+  one worker thread that serializes every LanceDB write, 60s FTS refresh timer.
 
 **`mcp/`** — MCP presentation layer.
 - `server.py`: FastMCP instance + `start_stdio_server()` entry point.
@@ -117,8 +124,9 @@ Three layers for engine config:
    and `tuning_profile:` (profile name). Holds pipeline shape (mapper,
    chunker, table, workflow) and prefixes (which vary per engine for the
    same underlying model). Optional `exclusion_filters` list (default `[]`)
-   names per-engine content filters; built-ins are `excalidraw` and
-   `compressed_json`. Register custom filters via `FilterRegistry.register`
+   names per-engine content filters; built-ins are `excalidraw`,
+   `compressed_json`, and `gitignore` (marker; discovery enforcement is in
+   `PathFilter`). Register custom filters via `FilterRegistry.register`
    in `src/dbs_vector/infrastructure/chunking/filters.py`.
 
 Memory budget auto-detected from `mlx.core.metal.device_info()`; override
@@ -150,6 +158,12 @@ Adding a new engine: see spec
 - **Asymmetric embeddings**: `MLXEmbedder` prepends different prefixes for passages (`passage_prefix`) vs queries (`query_prefix`), supporting instruction-tuned models like `embeddinggemma`.
 - **Thread safety**: `MLXEmbedder` uses a per-model `threading.Lock`.
 - **IVF_PQ indexing**: Only created when `total_rows > 256`; partitions scale as `sqrt(total_rows)` capped at 256.
+- **Directory watch**: engines with `watch.enabled` re-ingest file changes
+  while `dbs-vector mcp` runs. Config lives on the engine (`paths`,
+  `ignore_patterns`, `exclusion_filters: [gitignore]`) plus a `watch:` block
+  for mechanics only. The index is a rebuildable cache: **after any config
+  change to a watched engine, run one `ingest --rebuild --force`**. See
+  `docs/README_WATCH.md`.
 
 ### Test Structure
 

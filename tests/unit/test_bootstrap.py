@@ -285,3 +285,26 @@ class TestPathFilterWiring:
         deps = bootstrap_module.build_dependencies("md")
 
         assert deps.path_filter.use_gitignore is True
+
+
+class TestBuildWatcherService:
+    def test_returns_none_when_no_engine_is_watched(self, tmp_path, monkeypatch):
+        from dbs_vector.services import bootstrap as bootstrap_module
+
+        _install_document_engine(monkeypatch, paths=[str(tmp_path)])
+        assert bootstrap_module.build_watcher_service() is None
+
+    def test_builds_one_watched_engine_entry(self, tmp_path, monkeypatch):
+        from dbs_vector.config import WatchConfig
+        from dbs_vector.services import bootstrap as bootstrap_module
+
+        _install_document_engine(
+            monkeypatch,
+            paths=[str(tmp_path)],
+            watch=WatchConfig(enabled=True, debounce_seconds=1.5),
+        )
+        service = bootstrap_module.build_watcher_service()
+
+        assert service is not None
+        assert set(service._engines) == {"md"}
+        assert service._engines["md"].debounce_seconds == 1.5
