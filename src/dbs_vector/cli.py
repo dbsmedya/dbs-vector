@@ -8,7 +8,12 @@ from loguru import logger
 from dbs_vector.config import settings
 from dbs_vector.infrastructure.storage.lancedb_engine import LanceDBStore
 from dbs_vector.logger import configure_logger
-from dbs_vector.services.bootstrap import EngineDeps, build_dependencies, build_store
+from dbs_vector.services.bootstrap import (
+    EngineDeps,
+    build_dependencies,
+    build_search_service,
+    build_store,
+)
 from dbs_vector.services.browse import BrowseService, result_to_json, result_to_table
 from dbs_vector.services.ingestion import IngestionService
 from dbs_vector.services.path_filter import anchor_for
@@ -92,6 +97,17 @@ def _build_store(engine_name: str) -> LanceDBStore:
     """CLI-facing store-only builder: converts schema-mismatch to a typer exit."""
     try:
         return build_store(engine_name)
+    except ValueError as e:
+        if "Schema mismatch" in str(e):
+            typer.echo(f"\n[!] Database Error: {e}", err=True)
+            raise typer.Exit(code=1) from e
+        raise
+
+
+def _build_search_service(engine_name: str) -> SearchService:
+    """CLI-facing search-service builder: converts schema-mismatch to a typer exit."""
+    try:
+        return build_search_service(engine_name)
     except ValueError as e:
         if "Schema mismatch" in str(e):
             typer.echo(f"\n[!] Database Error: {e}", err=True)
@@ -255,8 +271,7 @@ def search(
         )
         raise typer.Exit(code=1)
 
-    deps = _build_dependencies(engine_name)
-    service = SearchService(deps.embedder, deps.store)
+    service = _build_search_service(engine_name)
 
     extra_filters = {}
     if min_time is not None and settings.engines[engine_name].resolved_family == "sql":

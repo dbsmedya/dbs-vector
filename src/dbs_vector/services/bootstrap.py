@@ -8,6 +8,7 @@ from dbs_vector.core.model_registry import ModelRegistry
 from dbs_vector.core.registry import ComponentRegistry
 from dbs_vector.infrastructure.embeddings.mlx_engine import MLXEmbedder
 from dbs_vector.infrastructure.storage.lancedb_engine import LanceDBStore
+from dbs_vector.services.search import SearchService
 
 
 class EngineDeps(NamedTuple):
@@ -112,6 +113,27 @@ def build_dependencies(
         workflow=engine.workflow,
         batch_size=profile.batch_size,
         path_filter=path_filter,
+    )
+
+
+def build_search_service(engine_name: str, deps: EngineDeps | None = None) -> SearchService:
+    """SearchService with the engine's similarity_floor injected.
+
+    The single construction path for every search surface (MCP, CLI,
+    dbs-web) — a hand-wired SearchService is exactly where a floor would
+    drift. Pass prebuilt `deps` to reuse cached embedder/store handles.
+    """
+    if engine_name not in settings.engines:
+        raise ValueError(
+            f"Unknown engine: '{engine_name}'. "
+            f"Check {os.environ.get('DBS_CONFIG_FILE', 'config.yaml')}."
+        )
+    if deps is None:
+        deps = build_dependencies(engine_name)
+    return SearchService(
+        deps.embedder,
+        deps.store,
+        similarity_floor=settings.engines[engine_name].similarity_floor,
     )
 
 

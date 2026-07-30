@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from dbs_vector.services.bootstrap import EngineDeps, build_dependencies
+from dbs_vector.services.bootstrap import EngineDeps, build_dependencies, build_search_service
 
 
 @pytest.fixture
@@ -285,6 +285,44 @@ class TestPathFilterWiring:
         deps = bootstrap_module.build_dependencies("md")
 
         assert deps.path_filter.use_gitignore is True
+
+
+class TestBuildSearchService:
+    def _deps(self):
+        return EngineDeps(
+            embedder=MagicMock(),
+            store=MagicMock(),
+            chunker=MagicMock(),
+            workflow="default",
+            batch_size=64,
+        )
+
+    def test_injects_engine_floor(self, mock_settings):
+        _, engine_config, _ = mock_settings
+        engine_config.similarity_floor = 0.4
+        deps = self._deps()
+        with patch(
+            "dbs_vector.services.bootstrap.build_dependencies", return_value=deps
+        ) as mock_build:
+            svc = build_search_service("md")
+        mock_build.assert_called_once_with("md")
+        assert svc.similarity_floor == 0.4
+        assert svc.embedder is deps.embedder
+        assert svc.vector_store is deps.store
+
+    def test_prebuilt_deps_skip_dependency_build(self, mock_settings):
+        _, engine_config, _ = mock_settings
+        engine_config.similarity_floor = None
+        deps = self._deps()
+        with patch("dbs_vector.services.bootstrap.build_dependencies") as mock_build:
+            svc = build_search_service("md", deps=deps)
+        mock_build.assert_not_called()
+        assert svc.vector_store is deps.store
+        assert svc.similarity_floor is None
+
+    def test_unknown_engine_raises_value_error(self, mock_settings):
+        with pytest.raises(ValueError, match="Unknown engine"):
+            build_search_service("no-such-engine")
 
 
 class TestBuildWatcherService:

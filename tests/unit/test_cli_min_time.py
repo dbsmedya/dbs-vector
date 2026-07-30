@@ -33,36 +33,30 @@ def _settings_with(engines: dict):
 def test_min_time_forwarded_for_sql_family_engines(runner, engine_name, mapper_type):
     from dbs_vector.cli import app
 
-    deps = MagicMock()
-    deps.embedder = MagicMock()
-    deps.store = MagicMock()
+    service = MagicMock()
+    service.execute_query.return_value = []
 
     with (
         patch("dbs_vector.cli.settings", _settings_with({engine_name: mapper_type})),
-        patch("dbs_vector.cli._build_dependencies", return_value=deps),
-        patch("dbs_vector.cli.SearchService") as MockService,
+        patch("dbs_vector.cli.build_search_service", return_value=service),
     ):
-        MockService.return_value.execute_query.return_value = []
         result = runner.invoke(app, ["search", "q", "--type", engine_name, "--min-time", "100"])
         assert result.exit_code == 0, result.output
-        _, kwargs = MockService.return_value.execute_query.call_args
+        _, kwargs = service.execute_query.call_args
         assert kwargs["extra_filters"] == {"min_time": 100.0}
 
 
 def test_min_time_ignored_for_document_engines(runner):
     from dbs_vector.cli import app
 
-    deps = MagicMock()
-    deps.embedder = MagicMock()
-    deps.store = MagicMock()
+    service = MagicMock()
+    service.execute_query.return_value = []
 
     with (
         patch("dbs_vector.cli.settings", _settings_with({"md": "document"})),
-        patch("dbs_vector.cli._build_dependencies", return_value=deps),
-        patch("dbs_vector.cli.SearchService") as MockService,
+        patch("dbs_vector.cli.build_search_service", return_value=service),
     ):
-        MockService.return_value.execute_query.return_value = []
         result = runner.invoke(app, ["search", "q", "--type", "md", "--min-time", "100"])
         assert result.exit_code == 0, result.output
-        _, kwargs = MockService.return_value.execute_query.call_args
+        _, kwargs = service.execute_query.call_args
         assert kwargs["extra_filters"] == {}

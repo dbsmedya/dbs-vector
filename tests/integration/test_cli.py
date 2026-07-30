@@ -123,8 +123,8 @@ def mock_ingestion_service():
 
 @pytest.fixture
 def mock_search_service():
-    """Mock SearchService."""
-    with patch("dbs_vector.cli.SearchService") as mock:
+    """Mock the build_search_service factory used by the CLI's search command."""
+    with patch("dbs_vector.cli.build_search_service") as mock:
         mock_instance = MagicMock()
         mock.return_value = mock_instance
         yield mock

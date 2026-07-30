@@ -181,10 +181,10 @@ def _handle_search(payload: dict[str, object]) -> dict[str, object]:
     except (TypeError, ValueError):
         limit = 20
 
-    from dbs_vector.services.search import SearchService
+    from dbs_vector.services.bootstrap import build_search_service
 
     deps = _get_deps(engine)
-    service = SearchService(deps.embedder, deps.store)  # type: ignore[attr-defined]
+    service = build_search_service(engine, deps=deps)  # type: ignore[attr-defined]
     response = service.execute_query(query, limit=limit)
     return {
         "results": [_serialize(r) for r in response.results],

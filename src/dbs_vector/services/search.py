@@ -3,14 +3,22 @@ from typing import Any
 
 from loguru import logger
 
-from dbs_vector.core.models import (  # noqa: F401 (RejectedCandidate used in Task 7)
-    RejectedCandidate,
-    SearchResponse,
-    SqlChunk,
-)
+from dbs_vector.core.models import RejectedCandidate, SearchResponse, SqlChunk
 from dbs_vector.core.ports import IEmbedder, IVectorStore
+from dbs_vector.services.admission import eligible_tokens, lexical_gate
 
 _RETRIEVED_BY_LABELS = {"both": "vector+fts", "vector": "vector-only", "fts": "fts-only"}
+
+# When a floor is active, fetch this multiple of `limit` so floor-filtering
+# doesn't starve the requested limit. Enlarged per-leg pools change RRF
+# fusion inputs — a deliberate, spec-stated behavior change (floor-active
+# paths only; measured in the companion spec).
+_FLOOR_OVERSAMPLE = 3
+
+# LLM-callable surface guard: LanceDB treats a non-positive limit as "no
+# limit" (unbounded fetch before app-side truncation), and floor mode
+# multiplies the fetch by _FLOOR_OVERSAMPLE.
+_MAX_LIMIT = 100
 
 
 def retrieved_by_label(value: str) -> str:
@@ -25,9 +33,11 @@ class SearchService:
         self,
         embedder: IEmbedder,
         vector_store: IVectorStore,
+        similarity_floor: float | None = None,
     ) -> None:
         self.embedder = embedder
         self.vector_store = vector_store
+        self.similarity_floor = similarity_floor
 
     def execute_query(
         self,
@@ -35,24 +45,73 @@ class SearchService:
         source_filter: str | None = None,
         limit: int = 5,
         extra_filters: dict[str, Any] | None = None,
+        min_similarity: float | None = None,
+        disable_similarity_floor: bool = False,
     ) -> SearchResponse:
-        """Embeds the query, fetches candidates, and wraps them in a SearchResponse."""
+        """Embed, fetch hybrid-ranked candidates, apply admission policy.
+
+        Floor precedence: disable_similarity_floor (no floor AND the original
+        candidate-pool size — the exact-baseline state; min_similarity=0.0 is
+        NOT equivalent) > per-call min_similarity > engine similarity_floor >
+        no floor. Input validation (limit and min_similarity ranges) is
+        unconditional — it runs even when disable_similarity_floor=True, so
+        garbage input fails loudly instead of being masked by the flag.
+        """
+        if not 1 <= limit <= _MAX_LIMIT:
+            raise ValueError(f"limit must be within [1, {_MAX_LIMIT}]; got {limit}")
+        if min_similarity is not None and not (-1.0 <= min_similarity <= 1.0):
+            raise ValueError(f"min_similarity must be within [-1, 1]; got {min_similarity}")
         logger.info("Executing query: {}", query)
         if extra_filters is None:
             extra_filters = {}
+
+        if disable_similarity_floor:
+            floor: float | None = None
+        elif min_similarity is not None:
+            floor = min_similarity
+        else:
+            floor = self.similarity_floor
+        fetch_limit = limit if floor is None else limit * _FLOOR_OVERSAMPLE
+
         query_vector = self.embedder.embed_query(query)
         candidates = self.vector_store.search(
             query=query,
             query_vector=query_vector,
             source_filter=source_filter,
-            limit=limit,
+            limit=fetch_limit,
             **extra_filters,
         )
+        inspected = len(candidates)
+        if floor is None:
+            return SearchResponse(
+                results=candidates[:limit], floor=None, inspected=inspected, best_rejected=None
+            )
+
+        eligible = eligible_tokens(query)
+        admitted: list[Any] = []
+        rejected: list[Any] = []
+        for cand in candidates:
+            if cand.similarity >= floor or lexical_gate(
+                eligible, cand.retrieved_by, cand.chunk.text
+            ):
+                admitted.append(cand)
+            else:
+                rejected.append(cand)
+        best = max(rejected, key=lambda c: c.similarity, default=None)
+        best_rejected = (
+            RejectedCandidate(
+                similarity=best.similarity,
+                source=best.chunk.source,
+                retrieved_by=best.retrieved_by,
+            )
+            if best is not None
+            else None
+        )
         return SearchResponse(
-            results=candidates[:limit],
-            floor=None,
-            inspected=len(candidates),
-            best_rejected=None,
+            results=admitted[:limit],
+            floor=floor,
+            inspected=inspected,
+            best_rejected=best_rejected,
         )
 
     def count_matching(

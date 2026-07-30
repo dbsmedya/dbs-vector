@@ -40,26 +40,21 @@ def _doc_result():
 def test_json_flag_emits_json_to_stdout_and_skips_pretty_print(runner):
     from dbs_vector.cli import app
 
-    deps = MagicMock()
-    deps.embedder = MagicMock()
-    deps.store = MagicMock()
+    service = MagicMock()
+    service.execute_query.return_value = SearchResponse(results=[_doc_result()], inspected=1)
+    service.results_to_json.return_value = json.dumps(
+        {
+            "floor": None,
+            "inspected": 1,
+            "best_rejected": None,
+            "results": [_doc_result().model_dump(mode="json")],
+        }
+    )
 
     with (
         patch("dbs_vector.cli.settings", _settings_with({"md": "document"})),
-        patch("dbs_vector.cli._build_dependencies", return_value=deps),
-        patch("dbs_vector.cli.SearchService") as MockService,
+        patch("dbs_vector.cli.build_search_service", return_value=service),
     ):
-        service = MockService.return_value
-        service.execute_query.return_value = SearchResponse(results=[_doc_result()], inspected=1)
-        service.results_to_json.return_value = json.dumps(
-            {
-                "floor": None,
-                "inspected": 1,
-                "best_rejected": None,
-                "results": [_doc_result().model_dump(mode="json")],
-            }
-        )
-
         result = runner.invoke(app, ["search", "q", "--type", "md", "--json"])
 
         assert result.exit_code == 0, result.output
@@ -76,18 +71,13 @@ def test_json_flag_emits_json_to_stdout_and_skips_pretty_print(runner):
 def test_default_uses_pretty_print_not_json(runner):
     from dbs_vector.cli import app
 
-    deps = MagicMock()
-    deps.embedder = MagicMock()
-    deps.store = MagicMock()
+    service = MagicMock()
+    service.execute_query.return_value = SearchResponse(results=[_doc_result()], inspected=1)
 
     with (
         patch("dbs_vector.cli.settings", _settings_with({"md": "document"})),
-        patch("dbs_vector.cli._build_dependencies", return_value=deps),
-        patch("dbs_vector.cli.SearchService") as MockService,
+        patch("dbs_vector.cli.build_search_service", return_value=service),
     ):
-        service = MockService.return_value
-        service.execute_query.return_value = SearchResponse(results=[_doc_result()], inspected=1)
-
         result = runner.invoke(app, ["search", "q", "--type", "md"])
 
         assert result.exit_code == 0, result.output

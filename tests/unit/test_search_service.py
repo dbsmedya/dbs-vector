@@ -396,3 +396,118 @@ class TestResultsToJson:
         assert item["chunk"]["tables"] == ["users"]
         # datetime serializes to an ISO-8601 string in JSON mode.
         assert item["chunk"]["latest_ts"].startswith("2026-01-01T12:00:00")
+
+
+def _floor_result(sim, rb="vector", text="body text", source="doc.md"):
+    return SearchResult(
+        chunk=Chunk(id="c1", text=text, source=source, content_hash="h1"),
+        similarity=sim,
+        retrieved_by=rb,
+        rrf_score=None,
+    )
+
+
+class TestFloorPolicy:
+    def _service(self, results, floor=None):
+        embedder = MagicMock()
+        embedder.embed_query.return_value = np.zeros(4, dtype=np.float32)
+        store = MagicMock()
+        store.search.return_value = results
+        return SearchService(embedder, store, similarity_floor=floor), store
+
+    def test_no_floor_returns_everything_unchanged(self):
+        svc, store = self._service([_floor_result(0.1), _floor_result(-0.5)])
+        resp = svc.execute_query("q", limit=5)
+        assert resp.floor is None
+        assert len(resp.results) == 2
+        assert resp.inspected == 2
+        assert resp.best_rejected is None
+        assert store.search.call_args.kwargs["limit"] == 5
+
+    def test_engine_floor_oversamples_and_filters(self):
+        svc, store = self._service([_floor_result(0.9), _floor_result(0.2)], floor=0.5)
+        resp = svc.execute_query("q", limit=5)
+        assert store.search.call_args.kwargs["limit"] == 15  # limit * _FLOOR_OVERSAMPLE
+        assert [r.similarity for r in resp.results] == [0.9]
+        assert resp.floor == 0.5
+        assert resp.inspected == 2
+        assert resp.best_rejected is not None
+        assert resp.best_rejected.similarity == 0.2
+        assert resp.best_rejected.source == "doc.md"
+
+    def test_per_call_min_similarity_overrides_engine_floor(self):
+        svc, _ = self._service([_floor_result(0.4)], floor=0.9)
+        resp = svc.execute_query("q", min_similarity=0.3)
+        assert resp.floor == 0.3
+        assert len(resp.results) == 1
+
+    def test_min_similarity_zero_is_a_real_floor_not_disable(self):
+        svc, store = self._service([_floor_result(-0.2)])
+        resp = svc.execute_query("q", limit=5, min_similarity=0.0)
+        assert resp.floor == 0.0
+        assert resp.results == []
+        assert store.search.call_args.kwargs["limit"] == 15  # still oversampled
+
+    def test_disable_flag_beats_everything_and_keeps_original_pool(self):
+        svc, store = self._service([_floor_result(-0.9)], floor=0.9)
+        resp = svc.execute_query("q", limit=5, min_similarity=0.8, disable_similarity_floor=True)
+        assert resp.floor is None
+        assert len(resp.results) == 1
+        assert store.search.call_args.kwargs["limit"] == 5  # exact-baseline pool
+
+    def test_lexical_gate_admits_fts_verbatim_row_below_floor(self):
+        row = _floor_result(0.0, rb="fts", text="def delete_by_source(): ...")
+        svc, _ = self._service([row], floor=0.5)
+        resp = svc.execute_query("delete_by_source")
+        assert resp.results == [row]
+        assert resp.best_rejected is None
+
+    def test_lexical_gate_requires_fts_channel(self):
+        row = _floor_result(0.0, rb="vector", text="def delete_by_source(): ...")
+        svc, _ = self._service([row], floor=0.5)
+        assert svc.execute_query("delete_by_source").results == []
+
+    def test_truncation_happens_after_admission(self):
+        rows = [
+            _floor_result(0.9),
+            _floor_result(0.2),
+            _floor_result(0.8),
+            _floor_result(0.7),
+        ]
+        svc, _ = self._service(rows, floor=0.5)
+        resp = svc.execute_query("q", limit=2)
+        assert [r.similarity for r in resp.results] == [0.9, 0.8]  # RRF order kept, gaps dropped
+        assert resp.inspected == 4
+
+    def test_out_of_range_min_similarity_raises(self):
+        svc, _ = self._service([])
+        with pytest.raises(ValueError, match="min_similarity"):
+            svc.execute_query("q", min_similarity=1.5)
+
+    def test_range_validation_is_unconditional_even_with_disable_flag(self):
+        # The chosen rule for conflicting controls: input validation always
+        # runs; disable_similarity_floor only wins the FLOOR resolution.
+        # Garbage input fails loudly instead of being masked by the flag.
+        svc, _ = self._service([])
+        with pytest.raises(ValueError, match="min_similarity"):
+            svc.execute_query("q", min_similarity=2.0, disable_similarity_floor=True)
+
+    def test_invalid_limit_raises(self):
+        # LanceDB treats a non-positive limit as "no limit" (unbounded fetch)
+        # on an LLM-callable surface; floor mode also multiplies limit by 3.
+        svc, _ = self._service([])
+        for bad in (0, -1, 101):
+            with pytest.raises(ValueError, match="limit"):
+                svc.execute_query("q", limit=bad)
+
+    def test_best_rejected_is_highest_similarity_among_all_rejected(self):
+        rows = [
+            _floor_result(0.1),
+            _floor_result(0.4, source="close.md"),
+            _floor_result(0.2),
+        ]
+        svc, _ = self._service(rows, floor=0.5)
+        resp = svc.execute_query("q")
+        assert resp.best_rejected is not None
+        assert resp.best_rejected.similarity == 0.4
+        assert resp.best_rejected.source == "close.md"
