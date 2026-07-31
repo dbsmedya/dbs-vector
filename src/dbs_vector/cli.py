@@ -247,7 +247,15 @@ def search(
     ] = "md",
     filter_source: Annotated[
         str | None,
-        typer.Option("--source", "-s", help="Filter results to a specific file or database."),
+        typer.Option(
+            "--source",
+            "-s",
+            help=(
+                "Restrict to part of the corpus: a full stored path, a trailing "
+                "fragment (specs/api.md, api.md), or a directory to scope to "
+                "(specs). SQL engines take a database name. Not a glob."
+            ),
+        ),
     ] = None,
     limit: Annotated[
         int, typer.Option("--limit", "-l", help="Maximum number of search results to return.")

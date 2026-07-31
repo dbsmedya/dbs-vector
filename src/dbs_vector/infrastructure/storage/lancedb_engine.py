@@ -9,6 +9,8 @@ from numpy.typing import NDArray
 
 from dbs_vector.core.models import RetrievedBy, _normalize_table_name
 from dbs_vector.core.ports import IStoreMapper
+from dbs_vector.core.source_scope import SourceResolution
+from dbs_vector.core.source_scope import resolve_source_filter as _resolve_scope
 from dbs_vector.infrastructure.storage.scoring import classify_retrieved_by, cosine_similarity
 
 # Strategy switch only: at or below this many matched ids we prefilter with
@@ -44,6 +46,11 @@ class LanceDBStore:
         # Last table version seen by search(); when checkout_latest() advances
         # it (possibly via a commit from ANOTHER process), _hybrid_ok resets.
         self._table_version: int | None = None
+        # Distinct `source` values, for resolving a caller's source_filter.
+        # Computed lazily (only when a filter is actually used) and keyed on
+        # the table version, so an out-of-band ingest cannot serve a stale set.
+        self._sources_cache: list[str] | None = None
+        self._sources_version: int | None = None
 
         self.db = lancedb.connect(db_path)
         # Use exist_ok to open existing tables rather than overwriting on app start
@@ -134,6 +141,24 @@ class LanceDBStore:
         tbl = self.table.search().select(["content_hash"]).to_arrow()
         return set(tbl.column("content_hash").to_pylist())
 
+    def _distinct_sources(self) -> list[str]:
+        """Distinct `source` values at the current table version."""
+        self.table.checkout_latest()
+        version = self.table.version
+        if self._sources_cache is None or self._sources_version != version:
+            column = self.table.search().select(["source"]).to_arrow().column("source")
+            self._sources_cache = sorted({v for v in column.to_pylist() if v is not None})
+            self._sources_version = version
+        return self._sources_cache
+
+    def resolve_source_filter(self, value: str) -> SourceResolution:
+        """Resolve a caller's source_filter against the stored sources."""
+        return _resolve_scope(value, self._distinct_sources())
+
+    def _source_predicate(self, sources: list[str]) -> str:
+        quoted = ", ".join("'" + s.replace("'", "''") + "'" for s in sources)
+        return f"source IN ({quoted})"
+
     def _matching_table_ids(self, table_filter: str) -> list[str]:
         """Row ids whose tables contain table_filter after exact normalization."""
         from dbs_vector.core.models import _normalize_table_name
@@ -178,6 +203,18 @@ class LanceDBStore:
         min_time = kwargs.get("min_time")
         min_lock_time = kwargs.get("min_lock_time")
         table_filter = kwargs.get("table_filter")
+
+        # Resolve the caller's filter to concrete stored sources. An input that
+        # names nothing returns no rows here; SearchService reports WHY via the
+        # resolution, so an unmatched filter is never mistaken for an empty
+        # corpus. See core/source_scope.py for the precedence rules.
+        source_values: list[str] | None = None
+        if source_filter:
+            resolution = self.resolve_source_filter(source_filter)
+            if resolution.is_unmatched:
+                return []
+            source_values = resolution.matched
+
         table_ids: list[str] | None = None
         oversized = False
         fetch_limit = limit
@@ -199,16 +236,21 @@ class LanceDBStore:
                     _TABLE_FILTER_PREFILTER_CAP,
                 )
 
-        # When `table_filter` is set the candidate set is highly selective
-        # (typically <5% of rows) and lives across IVF partitions the default
-        # nprobes will not scan, silently returning zero results. Bypass the
-        # IVF index for exact flat search in that case.
-        bypass_index = table_filter is not None
+        # Any exact-equality filter makes the candidate set highly selective
+        # (typically <5% of rows) and scatters it across IVF partitions the
+        # default nprobes will not scan. `prefilter=True` decides which rows may
+        # be RETURNED; it has no say in which partitions are OPENED, and those
+        # are chosen by the query vector alone. Matching rows in unprobed
+        # partitions are never scored — silently missing, not rejected.
+        # Measured on an 85-source / 1,984-row md table: one source with 88
+        # chunks returned 2 rows at nprobes=20 and 88 with the index bypassed,
+        # for +0.16 ms. Prefiltering runs first, so the exact scan only scores
+        # rows that already passed the filter.
+        bypass_index = table_filter is not None or source_values is not None
 
         def _apply_filters(op: Any) -> Any:
-            if source_filter:
-                safe_filter = source_filter.replace("'", "''")
-                op = op.where(f"source = '{safe_filter}'", prefilter=True)
+            if source_values:
+                op = op.where(self._source_predicate(source_values), prefilter=True)
             if min_time is not None:
                 op = op.where(f"execution_time_ms >= {min_time}", prefilter=True)
             if min_lock_time is not None:
@@ -291,8 +333,9 @@ class LanceDBStore:
         if table_filter:
             normalized_table = _normalize_table_name(table_filter)
 
+        source_set = set(source_values) if source_values else None
         for row in results_df.iter_rows(named=True):
-            if source_filter and row.get("source") != source_filter:
+            if source_set is not None and row.get("source") not in source_set:
                 continue
             if min_time is not None:
                 execution_time_ms = row.get("execution_time_ms")
@@ -364,13 +407,21 @@ class LanceDBStore:
         min_lock_time = kwargs.get("min_lock_time")
         table_filter = kwargs.get("table_filter")
 
+        # Must resolve exactly as search() does, or the "Showing N of M" header
+        # reports a total the result set could never reach.
+        source_values: list[str] | None = None
+        if source_filter:
+            resolution = self.resolve_source_filter(source_filter)
+            if resolution.is_unmatched:
+                return 0
+            source_values = resolution.matched
+
         if table_filter:
-            return self._count_matching_scan(source_filter, min_time, min_lock_time, table_filter)
+            return self._count_matching_scan(source_values, min_time, min_lock_time, table_filter)
 
         predicates: list[str] = []
-        if source_filter:
-            safe = source_filter.replace("'", "''")
-            predicates.append(f"source = '{safe}'")
+        if source_values:
+            predicates.append(self._source_predicate(source_values))
         if min_time is not None:
             predicates.append(f"execution_time_ms >= {min_time}")
         if min_lock_time is not None:
@@ -384,7 +435,7 @@ class LanceDBStore:
 
     def _count_matching_scan(
         self,
-        source_filter: str | None,
+        source_values: list[str] | None,
         min_time: float | None,
         min_lock_time: float | None,
         table_filter: str,
@@ -399,9 +450,10 @@ class LanceDBStore:
         cols = ["tables", "source", "execution_time_ms", "lock_time_sec"]
         available = [c for c in cols if c in self.schema.names]
         rows = self.table.search().select(available).to_arrow().to_pylist()
+        source_set = set(source_values) if source_values else None
         n = 0
         for row in rows:
-            if source_filter and row.get("source") != source_filter:
+            if source_set is not None and row.get("source") not in source_set:
                 continue
             if min_time is not None and (row.get("execution_time_ms") or 0) < min_time:
                 continue

@@ -371,6 +371,9 @@ class TestSearch:
         mock_search.to_polars.return_value = mock_results
         mock_table.search.return_value = mock_search
 
+        # The filter is resolved against what is actually stored.
+        store._distinct_sources = lambda: ["docs/specific.md"]  # type: ignore[method-assign]
+
         store.search(
             query="test",
             query_vector=query_vector,
@@ -379,7 +382,7 @@ class TestSearch:
 
         # Verify where clause was applied with escaped filter
         mock_search.where.assert_called_once_with(
-            "source = 'docs/specific.md'",
+            "source IN ('docs/specific.md')",
             prefilter=True,
         )
 
@@ -405,6 +408,10 @@ class TestSearch:
         mock_search.to_polars.return_value = mock_results
         mock_table.search.return_value = mock_search
 
+        # A stored source may itself contain quotes; resolution must not be a
+        # way to smuggle one into the predicate unescaped.
+        store._distinct_sources = lambda: ["file' OR '1'='1"]  # type: ignore[method-assign]
+
         # Attempt SQL injection
         store.search(
             query="test",
@@ -414,7 +421,7 @@ class TestSearch:
 
         # Verify quotes are escaped
         mock_search.where.assert_called_once_with(
-            "source = 'file'' OR ''1''=''1'",
+            "source IN ('file'' OR ''1''=''1')",
             prefilter=True,
         )
 
@@ -556,12 +563,15 @@ class TestSearch:
         hybrid_op.limit.return_value = hybrid_op
         hybrid_op.rerank.return_value = hybrid_op
         hybrid_op.where.return_value = hybrid_op
+        # source_filter bypasses the IVF index, so the chain must survive it.
+        hybrid_op.bypass_vector_index.return_value = hybrid_op
         hybrid_op.to_polars.side_effect = RuntimeError("FTS index missing")
 
         # Second (vector fallback) search object — must also receive .where() calls
         fallback_op = MagicMock(name="fallback_op")
         fallback_op.metric.return_value = fallback_op
         fallback_op.nprobes.return_value = fallback_op
+        fallback_op.bypass_vector_index.return_value = fallback_op
         fallback_op.limit.return_value = fallback_op
         fallback_op.where.return_value = fallback_op
         fallback_op.to_polars.return_value = pl.DataFrame(
@@ -570,6 +580,7 @@ class TestSearch:
 
         # First call → hybrid_op, second call (fallback) → fallback_op
         mock_table.search.side_effect = [hybrid_op, fallback_op]
+        store._distinct_sources = lambda: ["some/file.md"]  # type: ignore[method-assign]
 
         store.search(
             query="test",
@@ -580,7 +591,7 @@ class TestSearch:
 
         # The fallback vector op MUST have received both filter pushdowns
         where_calls = [c.args[0] for c in fallback_op.where.call_args_list]
-        assert any("source = 'some/file.md'" in w for w in where_calls), (
+        assert any("source IN ('some/file.md')" in w for w in where_calls), (
             f"source filter not applied on fallback; got where calls: {where_calls}"
         )
         assert any("execution_time_ms >= 100.0" in w for w in where_calls), (
@@ -690,6 +701,36 @@ class TestSearch:
             f"table_filter id prefilter not emitted; got where calls: {where_calls}"
         )
         # When table_filter is set, the IVF index must be bypassed.
+        mock_search.bypass_vector_index.assert_called()
+        mock_search.nprobes.assert_not_called()
+
+    def test_search_source_filter_bypasses_index(self, lancedb_store):
+        """source_filter is exact equality and just as selective as table_filter:
+        prefilter decides which rows may be returned, not which IVF partitions
+        are opened, so matching rows in unprobed partitions go silently missing.
+        """
+        import polars as pl
+
+        store, _, mock_table, _ = lancedb_store
+        query_vector = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        mock_search = MagicMock()
+        mock_search.vector.return_value = mock_search
+        mock_search.text.return_value = mock_search
+        mock_search.nprobes.return_value = mock_search
+        mock_search.bypass_vector_index.return_value = mock_search
+        mock_search.metric.return_value = mock_search
+        mock_search.limit.return_value = mock_search
+        mock_search.rerank.return_value = mock_search
+        mock_search.where.return_value = mock_search
+        mock_search.to_polars.return_value = pl.DataFrame(
+            {"id": [], "text": [], "source": [], "content_hash": [], "_distance": [], "vector": []}
+        )
+        mock_table.search.return_value = mock_search
+        store._distinct_sources = lambda: ["/abs/path/to/doc.md"]  # type: ignore[method-assign]
+
+        store.search(query="q", query_vector=query_vector, source_filter="/abs/path/to/doc.md")
+
         mock_search.bypass_vector_index.assert_called()
         mock_search.nprobes.assert_not_called()
 

@@ -11,9 +11,11 @@ from dbs_vector.mcp.families.base import (
     render_with_budget,
 )
 from dbs_vector.services.search import (
+    ACCEPTED_SOURCE_FORMS_DOCUMENT,
     SearchService,
     admission_phrase,
     format_admission_empty,
+    format_unmatched_source,
     retrieved_by_label,
 )
 
@@ -47,6 +49,9 @@ class DocumentFamily:
     def format_results(self, response: SearchResponse, query: str, total_matching: int = 0) -> str:
         results = response.results
         if not results:
+            resolution = response.source_resolution
+            if resolution is not None and resolution.is_unmatched:
+                return format_unmatched_source(response, ACCEPTED_SOURCE_FORMS_DOCUMENT)
             if response.floor is not None and response.inspected > 0:
                 return format_admission_empty(query, response)
             return f"No results found for query: '{query}'"
@@ -87,7 +92,12 @@ class DocumentFamily:
             f"(vector, fts, or both) — not evidence the match is correct. "
             f"{floor}`min_similarity` sets a per-call floor and "
             f"`disable_similarity_floor=true` disables admission filtering "
-            f"entirely (exact unfloored baseline). An empty response means no "
+            f"entirely (exact unfloored baseline). `source_filter` narrows the "
+            f"corpus and accepts a full stored path, a trailing fragment "
+            f"('specs/api.md', 'api.md'), or a directory to scope to ('specs') "
+            f"— but not globs or wildcards. If it resolves to nothing you get "
+            f"a message saying so, which is NOT evidence about the corpus. "
+            f"An empty response means no "
             f"inspected candidate passed admission — a low-confidence signal "
             f"for this attempt, NOT proof the corpus lacks relevant content."
         )

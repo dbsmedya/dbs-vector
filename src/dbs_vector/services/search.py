@@ -31,6 +31,41 @@ def admission_phrase(floor: float) -> str:
     return f"similarity >= {floor:g} or all query terms verbatim"
 
 
+# What a source_filter may look like. Family-specific: telling a SQL caller to
+# pass "a trailing path fragment" is worse than saying nothing, because the
+# corpus stores database names, not paths.
+ACCEPTED_SOURCE_FORMS_DOCUMENT = (
+    "a full stored path, a trailing path fragment (`specs/api.md`, `api.md`), "
+    "or a directory to scope to (`specs`)"
+)
+ACCEPTED_SOURCE_FORMS_SQL = "the database name exactly as stored"
+_ACCEPTED_SOURCE_FORMS_ANY = "the stored source value, or part of it"
+
+
+def format_unmatched_source(response: SearchResponse, accepted: str | None = None) -> str:
+    """Empty-because-the-filter-named-nothing message.
+
+    Distinct from every other empty response on purpose: this one says nothing
+    at all about the corpus, only that `source_filter` did not resolve. Left
+    silent it is indistinguishable from a genuine absence, which is the single
+    most misleading answer this system can give.
+    """
+    resolution = response.source_resolution
+    value = resolution.value if resolution is not None else ""
+    msg = (
+        f"source_filter '{value}' matched no indexed source, so no search was "
+        f"run. This says nothing about whether the corpus contains an answer"
+    )
+    suggestions = resolution.suggestions if resolution is not None else []
+    if suggestions:
+        msg += ". Closest indexed sources: " + ", ".join(suggestions)
+    msg += (
+        f". A filter may be {accepted or _ACCEPTED_SOURCE_FORMS_ANY}. "
+        f"Drop the filter to search the whole corpus."
+    )
+    return msg
+
+
 def format_admission_empty(query: str, response: SearchResponse) -> str:
     """Empty-because-admission-filtered message: low retrieval confidence for
     THIS attempt — never an assertion of corpus-level absence (only the
@@ -103,6 +138,20 @@ class SearchService:
             floor = self.similarity_floor
         fetch_limit = limit if floor is None else limit * FLOOR_OVERSAMPLE
 
+        # Resolve before embedding: a filter that names nothing is a caller
+        # error, and reporting it costs neither a model load nor a search.
+        resolution = (
+            self.vector_store.resolve_source_filter(source_filter) if source_filter else None
+        )
+        if resolution is not None and resolution.is_unmatched:
+            return SearchResponse(
+                results=[],
+                floor=None,
+                inspected=0,
+                best_rejected=None,
+                source_resolution=resolution,
+            )
+
         query_vector = self.embedder.embed_query(query)
         candidates = self.vector_store.search(
             query=query,
@@ -114,7 +163,11 @@ class SearchService:
         inspected = len(candidates)
         if floor is None:
             return SearchResponse(
-                results=candidates[:limit], floor=None, inspected=inspected, best_rejected=None
+                results=candidates[:limit],
+                floor=None,
+                inspected=inspected,
+                best_rejected=None,
+                source_resolution=resolution,
             )
 
         admitted, rejected = apply_admission(candidates, query, floor)
@@ -133,6 +186,7 @@ class SearchService:
             floor=floor,
             inspected=inspected,
             best_rejected=best_rejected,
+            source_resolution=resolution,
         )
 
     def count_matching(
@@ -161,6 +215,13 @@ class SearchService:
                 if response.best_rejected is not None
                 else None
             ),
+            # Present whenever a source_filter was supplied, so a JSON consumer
+            # can tell an unmatched filter from an empty corpus too.
+            "source_resolution": (
+                response.source_resolution.model_dump(mode="json")
+                if response.source_resolution is not None
+                else None
+            ),
             "results": [res.model_dump(mode="json") for res in response.results],
         }
         return json.dumps(payload, indent=2, ensure_ascii=False)
@@ -169,7 +230,10 @@ class SearchService:
         """Formats and prints the parsed search results."""
         results = response.results
         if not results:
-            if response.floor is not None and response.inspected > 0:
+            resolution = response.source_resolution
+            if resolution is not None and resolution.is_unmatched:
+                logger.warning("{}", format_unmatched_source(response))
+            elif response.floor is not None and response.inspected > 0:
                 logger.info("{}", format_admission_empty(query, response))
             else:
                 logger.info("No results found")

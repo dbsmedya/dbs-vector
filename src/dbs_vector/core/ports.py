@@ -5,6 +5,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from dbs_vector.core.models import RetrievedBy
+from dbs_vector.core.source_scope import SourceResolution
 
 
 class IEmbedder(Protocol):
@@ -111,6 +112,15 @@ class IVectorStore(Protocol):
         **kwargs: Any,
     ) -> int:
         """Count rows that survive the same prefilter set used by `search`."""
+        ...
+
+    def resolve_source_filter(self, value: str) -> SourceResolution:
+        """Resolve a caller's `source_filter` against the stored sources.
+
+        Implementations MUST use the same resolution in `search` and
+        `count_matching`, or a "showing N of M" caller reports a total its
+        result set can never reach.
+        """
         ...
 
     def scan(self, columns: list[str] | None = None) -> Any:

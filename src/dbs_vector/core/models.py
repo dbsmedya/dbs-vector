@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from dbs_vector.core.source_scope import SourceResolution
+
 # Retrieval-channel membership: which hybrid leg(s) returned a row.
 # States which channel returned the row — nothing more; not evidence the
 # match is semantically or lexically correct.
@@ -151,3 +153,7 @@ class SearchResponse(BaseModel):
     # state it — a silent 0 would fabricate the empty-result evidence.
     inspected: int
     best_rejected: RejectedCandidate | None = None
+    # How the caller's source_filter resolved; None when none was supplied.
+    # An unmatched filter must be reported as such — empty results from a
+    # filter that names nothing are not evidence about the corpus.
+    source_resolution: SourceResolution | None = None

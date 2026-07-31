@@ -8,7 +8,12 @@ import numpy as np
 import pytest
 
 from dbs_vector.core.models import Chunk, RejectedCandidate, SearchResponse, SearchResult
-from dbs_vector.services.search import SearchService, format_admission_empty
+from dbs_vector.core.source_scope import SourceResolution
+from dbs_vector.services.search import (
+    SearchService,
+    format_admission_empty,
+    format_unmatched_source,
+)
 
 
 @pytest.fixture
@@ -23,6 +28,12 @@ def mock_embedder():
 def mock_vector_store():
     """Create a mock vector store that returns predictable results."""
     store = MagicMock()
+    # Default: any source_filter resolves. Tests that care about an unmatched
+    # filter override this explicitly — a bare MagicMock would make every
+    # filter look unresolved and silently skip the search.
+    store.resolve_source_filter.side_effect = lambda value: SourceResolution(
+        value=value, kind="exact", matched=[value]
+    )
     return store
 
 
@@ -151,6 +162,61 @@ def test_count_matching_delegates_to_store():
         table_filter="OrderShipment",
         min_time=100,
     )
+
+
+class TestUnmatchedSourceFilter:
+    """A filter that names nothing must never look like an empty corpus."""
+
+    @pytest.fixture
+    def unmatched(self, mock_vector_store):
+        mock_vector_store.resolve_source_filter.side_effect = None
+        mock_vector_store.resolve_source_filter.return_value = SourceResolution(
+            value="specs",
+            kind="none",
+            matched=[],
+            suggestions=["/root/docs/spec.md"],
+        )
+        return mock_vector_store
+
+    def test_unmatched_filter_short_circuits_before_embedding(
+        self, search_service, mock_embedder, unmatched
+    ):
+        """No model load and no search for a filter that cannot match."""
+        response = search_service.execute_query(query="anything", source_filter="specs")
+
+        assert response.results == []
+        assert response.source_resolution is not None
+        assert response.source_resolution.is_unmatched
+        mock_embedder.embed_query.assert_not_called()
+        unmatched.search.assert_not_called()
+
+    def test_unmatched_filter_is_not_reported_as_an_absent_corpus(self, search_service, unmatched):
+        message = format_unmatched_source(
+            search_service.execute_query(query="anything", source_filter="specs")
+        )
+
+        assert "matched no indexed source" in message
+        assert "/root/docs/spec.md" in message
+        # The distinguishing property: it must not assert anything about the
+        # corpus, which is exactly what "No results found" wrongly implied.
+        assert "No results found" not in message
+
+    def test_a_resolved_filter_is_reported_on_a_successful_response(
+        self, search_service, mock_vector_store
+    ):
+        mock_vector_store.search.return_value = []
+        response = search_service.execute_query(query="q", source_filter="docs/api.md")
+
+        assert response.source_resolution is not None
+        assert not response.source_resolution.is_unmatched
+        assert response.source_resolution.matched == ["docs/api.md"]
+
+    def test_no_filter_leaves_the_resolution_unset(self, search_service, mock_vector_store):
+        mock_vector_store.search.return_value = []
+        response = search_service.execute_query(query="q")
+
+        assert response.source_resolution is None
+        mock_vector_store.resolve_source_filter.assert_not_called()
 
 
 class TestPrintResults:
@@ -332,7 +398,28 @@ class TestResultsToJson:
             "floor": None,
             "inspected": 0,
             "best_rejected": None,
+            "source_resolution": None,
             "results": [],
+        }
+
+    def test_unmatched_source_filter_is_visible_in_the_envelope(self, search_service):
+        payload = json.loads(
+            search_service.results_to_json(
+                SearchResponse(
+                    results=[],
+                    floor=None,
+                    inspected=0,
+                    source_resolution=SourceResolution(
+                        value="specs", kind="none", suggestions=["/root/spec.md"]
+                    ),
+                )
+            )
+        )
+        assert payload["source_resolution"] == {
+            "value": "specs",
+            "kind": "none",
+            "matched": [],
+            "suggestions": ["/root/spec.md"],
         }
 
     def test_document_result_includes_score_source_full_text_and_metadata(self, search_service):

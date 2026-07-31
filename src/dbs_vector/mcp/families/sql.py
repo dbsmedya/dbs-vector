@@ -18,9 +18,11 @@ from dbs_vector.services.browse import (
     BrowseValidationError,
 )
 from dbs_vector.services.search import (
+    ACCEPTED_SOURCE_FORMS_SQL,
     SearchService,
     admission_phrase,
     format_admission_empty,
+    format_unmatched_source,
     retrieved_by_label,
 )
 
@@ -186,6 +188,9 @@ class SqlFamily:
     ) -> str:
         results = response.results
         if not results:
+            resolution = response.source_resolution
+            if resolution is not None and resolution.is_unmatched:
+                return format_unmatched_source(response, ACCEPTED_SOURCE_FORMS_SQL)
             if response.floor is not None and response.inspected > 0:
                 return format_admission_empty(query, response)
             if total_matching > 0:
@@ -283,7 +288,11 @@ class SqlFamily:
             f"`min_time` — minimum cumulative execution_time_ms in ms; "
             f"`min_lock_time` — minimum cumulative lock_time_sec in seconds; "
             f"`table_filter` — restrict to fingerprints touching the given "
-            f"table (case/schema-insensitive, whole-name exact). The header "
+            f"table (case/schema-insensitive, whole-name exact); "
+            f"`source_filter` — restrict to one database by its stored name, "
+            f"matched case-sensitively (unlike `table_filter`, nothing is "
+            f"normalized); a name that resolves to nothing is reported as "
+            f"such, not returned as an empty result. The header "
             f"reports 'Showing N of M results that matched your filters' so "
             f"callers can tell when results are admission- or rank-truncated. "
             f"For ranking by a scalar column, aggregation, or point lookup "

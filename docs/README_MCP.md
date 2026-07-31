@@ -30,9 +30,7 @@ spawns `dbs-vector mcp` as a subprocess and communicates over its
 standard input/output. No network ports are opened. Each client process
 loads its own copy of the MLX models (~1.2 GB GPU memory each).
 
-Streamable-HTTP MCP transport is not currently shipped — see the design
-spec at `docs/superpowers/specs/2026-05-07-dynamic-engine-exposure-design.md`
-for rationale and re-introduction notes.
+Streamable-HTTP MCP transport is not currently shipped.
 
 ---
 
@@ -181,7 +179,7 @@ diagnosis (below).
 |----------|------|----------|-------------|
 | `query` | string | yes | Semantic search query |
 | `limit` | int | no | Max results (default 5, max 100) |
-| `source_filter` | string | no | Restrict to a file path or pattern |
+| `source_filter` | string | no | Restrict to part of the corpus. Resolved in precedence order: the full stored path, then a trailing path fragment (`specs/api.md`, `api.md`), then a directory to scope to (`specs`, `docs/specs`) which matches every source beneath it. Still not a glob — no `*` or `%`. A value that resolves to nothing returns an explicit "matched no indexed source" message with the closest candidates, **never** a silent empty result. |
 | `min_similarity` | float | no | Per-call admission floor override (range `[-1, 1]`). Takes precedence over the engine's configured `similarity_floor`. See [Similarity, ranking, and admission](#similarity-ranking-and-admission). |
 | `disable_similarity_floor` | bool | no | Bypass admission filtering entirely — the exact unfloored baseline (no floor **and** the original, non-oversampled candidate pool). `min_similarity=0` is **not** equivalent. |
 
@@ -191,7 +189,7 @@ diagnosis (below).
 |----------|------|----------|-------------|
 | `query` | string | yes | Natural language or partial SQL |
 | `limit` | int | no | Max results (default 5, max 100) |
-| `source_filter` | string | no | Restrict to a database name |
+| `source_filter` | string | no | Restrict to one database by its stored name, matched case-sensitively. Unlike `table_filter`, no case/schema normalization is applied. An unresolvable name returns an explicit message naming the closest known databases, never a silent empty result. |
 | `min_time` | float | no | Minimum cumulative execution time in ms |
 | `min_lock_time` | float | no | Minimum cumulative lock time in seconds |
 | `table_filter` | string | no | Restrict to queries that touch a specific table (case/schema-insensitive, whole-name exact match) |
@@ -199,12 +197,15 @@ diagnosis (below).
 | `min_similarity` | float | no | Per-call admission floor override (range `[-1, 1]`). Takes precedence over the engine's configured `similarity_floor`. See [Similarity, ranking, and admission](#similarity-ranking-and-admission). |
 | `disable_similarity_floor` | bool | no | Bypass admission filtering entirely — the exact unfloored baseline (no floor **and** the original, non-oversampled candidate pool). `min_similarity=0` is **not** equivalent. |
 
-When `table_filter` is set the search bypasses the IVF approximate index
-in favor of an exact flat scan, ensuring no candidate rows are missed
-from unscanned IVF partitions. Combined with `min_lock_time > 0` this
-answers focused investigation questions like "show me all queries that
-lock `dt_customer_performance_report` rows" — the filter narrows the
-universe; the embedding only ranks within it.
+When `table_filter` **or** `source_filter` is set the search bypasses the IVF
+approximate index in favor of an exact flat scan, ensuring no candidate rows
+are missed from unscanned IVF partitions. This matters because an exact-match
+filter decides which rows may be *returned*, not which partitions are
+*opened* — those are chosen by the query vector alone, so without the bypass
+matching rows in unprobed partitions are never scored and vanish silently.
+Combined with `min_lock_time > 0` this answers focused investigation questions
+like "show me all queries that lock `dt_customer_performance_report` rows" —
+the filter narrows the universe; the embedding only ranks within it.
 
 ### Similarity, ranking, and admission
 
@@ -242,12 +243,13 @@ admitted when **either**:
    characters; the lexical channel only fires on FTS-channel rows
 (`retrieved_by` is `fts` or `both`).
 
-The current deployment's `md` and `md-granite` calibrations found no safe
-numeric floor, so both remain unfloored by default. The measurements and
-identities are recorded in
-[`docs/superpowers/calibration.md`](superpowers/calibration.md). A caller may
-still use `min_similarity` deliberately for one attempt; that override is not
-a calibrated corpus default.
+No engine ships a floor: a safe value is a property of one corpus, not of the
+software, so every `similarity_floor` starts unset and stays unset until
+measured. See
+[`README_CALIBRATE_CORPUS.md`](README_CALIBRATE_CORPUS.md) to calibrate your
+own; the measurements stay with your deployment. A caller may still use
+`min_similarity` deliberately for one attempt; that override is not a
+calibrated corpus default.
 
 **Known limitation, stated openly:** a single-common-token query (e.g.
 `lock`) can still pass the gate against an unrelated file like `uv.lock` —
