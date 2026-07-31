@@ -1,0 +1,247 @@
+{
+  "name": "dev",
+  "corpus": "documents",
+  "queries": [
+    {
+      "query": "delete_by_source",
+      "kind": "relevant",
+      "shape": "identifier",
+      "expected_source": "docs/superpowers/specs/2026-07-30-search-scoring-design.md",
+      "note": "Single-token identifier; the lexical gate's reason to exist."
+    },
+    {
+      "query": "README_WATCH.md",
+      "kind": "relevant",
+      "shape": "filename",
+      "expected_source": "docs/README_WATCH.md"
+    },
+    {
+      "query": "min_similarity must be within [-1, 1]; got 2.0",
+      "kind": "relevant",
+      "shape": "error",
+      "expected_source": "docs/superpowers/plans/2026-07-30-search-scoring-baseline.md"
+    },
+    {
+      "query": "how does the watcher decide when to re-ingest a changed file",
+      "kind": "relevant",
+      "shape": "long",
+      "expected_source": "docs/README_WATCH.md"
+    },
+    {
+      "query": "batching",
+      "kind": "relevant",
+      "shape": "short",
+      "expected_source": ".ayder/BATCHING.md"
+    },
+    {
+      "query": "what is a tuning profile and how does it relate to the model registry",
+      "kind": "relevant",
+      "shape": "prose",
+      "expected_source": "docs/README_PROFILES.md"
+    },
+    {
+      "query": "known_hashes",
+      "kind": "relevant",
+      "shape": "identifier",
+      "expected_source": ".ayder/claude_api_contract.md"
+    },
+    {
+      "query": "how is raw production SQL protected before it can leave through MCP tools",
+      "kind": "relevant",
+      "shape": "long",
+      "expected_source": ".ayder/010-feat_sql-browse-release-notes.md"
+    },
+    {
+      "query": "table_filter case and schema insensitive equality",
+      "kind": "relevant",
+      "shape": "prose",
+      "expected_source": ".ayder/011-feat_sql-api-table-case-release-notes.md"
+    },
+    {
+      "query": "markdown heading aware section chunker",
+      "kind": "relevant",
+      "shape": "short",
+      "expected_source": ".ayder/superpowers_20260506/specs/2026-06-06-markdown-section-chunking-design.md"
+    },
+    {
+      "query": "why does Granite R2 use empty passage and query prefixes",
+      "kind": "relevant",
+      "shape": "prose",
+      "expected_source": "docs/README_granite.md"
+    },
+    {
+      "query": "check_remote_api.py",
+      "kind": "relevant",
+      "shape": "filename",
+      "expected_source": "docs/README_REMOTE_SQL_API.md"
+    },
+    {
+      "query": "PathFilter",
+      "kind": "relevant",
+      "shape": "identifier",
+      "expected_source": "docs/README_WATCH.md"
+    },
+    {
+      "query": "what is the difference between semantic search and analytical browse tools",
+      "kind": "relevant",
+      "shape": "prose",
+      "expected_source": "docs/README_MCP.md"
+    },
+    {
+      "query": "why are Gemma search queries and document passages encoded with different prefixes",
+      "kind": "relevant",
+      "shape": "long",
+      "expected_source": "docs/README_EMBEDDINGS.md"
+    },
+    {
+      "query": "DuckDBChunker",
+      "kind": "relevant",
+      "shape": "identifier",
+      "expected_source": "docs/README_duckdb.md"
+    },
+    {
+      "query": "raw_query is unavailable on this engine",
+      "kind": "relevant",
+      "shape": "error",
+      "expected_source": ".ayder/001-mcp-recommendations.md"
+    },
+    {
+      "query": "oversized markdown table repeats its header in every split part",
+      "kind": "relevant",
+      "shape": "long",
+      "expected_source": ".ayder/superpowers_20260506/specs/2026-06-06-markdown-section-chunking-design.md"
+    },
+    {
+      "query": "disable_similarity_floor",
+      "kind": "relevant",
+      "shape": "identifier",
+      "expected_source": "docs/superpowers/plans/2026-07-30-search-scoring-baseline.md"
+    },
+    {
+      "query": "expected source hit at five and mean reciprocal rank",
+      "kind": "relevant",
+      "shape": "prose",
+      "expected_source": "docs/superpowers/specs/2026-07-30-search-scoring-calibration-design.md"
+    },
+    {
+      "query": "how do I configure the Kafka consumer group offset reset policy",
+      "kind": "absent",
+      "shape": "prose",
+      "absent_kind": "hard_negative"
+    },
+    {
+      "query": "cross encoder reranker torch dependency setup",
+      "kind": "absent",
+      "shape": "long",
+      "absent_kind": "hard_negative"
+    },
+    {
+      "query": "dynamic HNSW efSearch configuration for each engine",
+      "kind": "absent",
+      "shape": "prose",
+      "absent_kind": "hard_negative"
+    },
+    {
+      "query": "Redis vector result cache invalidation",
+      "kind": "absent",
+      "shape": "prose",
+      "absent_kind": "hard_negative"
+    },
+    {
+      "query": "OAuth refresh token rotation for the MCP server",
+      "kind": "absent",
+      "shape": "long",
+      "absent_kind": "hard_negative"
+    },
+    {
+      "query": "multi tenant vector namespace isolation",
+      "kind": "absent",
+      "shape": "short",
+      "absent_kind": "hard_negative"
+    },
+    {
+      "query": "CUDA deployment tuning for NVIDIA GPUs",
+      "kind": "absent",
+      "shape": "prose",
+      "absent_kind": "hard_negative"
+    },
+    {
+      "query": "Elasticsearch BM25 analyzer synonym configuration",
+      "kind": "absent",
+      "shape": "long",
+      "absent_kind": "hard_negative"
+    },
+    {
+      "query": "protobuf schema evolution for ingestion records",
+      "kind": "absent",
+      "shape": "prose",
+      "absent_kind": "hard_negative"
+    },
+    {
+      "query": "S3 object event webhook ingestion",
+      "kind": "absent",
+      "shape": "short",
+      "absent_kind": "hard_negative"
+    },
+    {
+      "query": "rollback_schema_migration",
+      "kind": "absent",
+      "shape": "identifier",
+      "absent_kind": "hard_negative"
+    },
+    {
+      "query": "Prometheus search latency histogram endpoint",
+      "kind": "absent",
+      "shape": "prose",
+      "absent_kind": "hard_negative"
+    },
+    {
+      "query": "beehive maintenance",
+      "kind": "absent",
+      "shape": "prose",
+      "absent_kind": "off_domain"
+    },
+    {
+      "query": "narrowboat lock",
+      "kind": "absent",
+      "shape": "short",
+      "absent_kind": "off_domain"
+    },
+    {
+      "query": "risotto",
+      "kind": "absent",
+      "shape": "short",
+      "absent_kind": "off_domain"
+    },
+    {
+      "query": "sourdough starter hydration",
+      "kind": "absent",
+      "shape": "prose",
+      "absent_kind": "off_domain"
+    },
+    {
+      "query": "orbital mechanics Hohmann transfer",
+      "kind": "absent",
+      "shape": "prose",
+      "absent_kind": "off_domain"
+    },
+    {
+      "query": "piano fingering for arpeggios",
+      "kind": "absent",
+      "shape": "prose",
+      "absent_kind": "off_domain"
+    },
+    {
+      "query": "coral reef salinity",
+      "kind": "absent",
+      "shape": "short",
+      "absent_kind": "off_domain"
+    },
+    {
+      "query": "watercolor wet on wet landscape",
+      "kind": "absent",
+      "shape": "long",
+      "absent_kind": "off_domain"
+    }
+  ]
+}
