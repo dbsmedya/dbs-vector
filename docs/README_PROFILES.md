@@ -198,9 +198,8 @@ engines:
     # Optional admission floor (exact cosine, [-1, 1]). Unset = no floor
     # (baseline default for every engine). Floors are engine-level policy,
     # not model properties: the same model serves engines with different
-    # prefixes and content shapes. Calibrated default values ship with the
-    # calibration spec — do NOT copy a number from documentation; leave
-    # this unset until calibration produces one for your engine.
+    # prefixes and content shapes. Do NOT copy a number from another corpus;
+    # leave this unset until calibration produces one for your deployment.
     # similarity_floor: <calibrated value>
 ```
 
@@ -213,6 +212,14 @@ which changes the RRF fusion inputs relative to the no-floor path — a
 deliberate, spec-stated trade, not a bug. `disable_similarity_floor=true` on
 a search call restores the exact unfloored baseline: no admission filtering
 **and** the original, non-oversampled candidate-pool size.
+
+The current deployment calibration is recorded in
+[`docs/superpowers/calibration.md`](superpowers/calibration.md). Both document
+engines (`md` and `md-granite`) currently have the valid outcome **no safe
+floor found**, so their deployment-local floors remain unset; the generic
+example is also unset. A measured value is invalidated by any change to the
+model, passage/query prefixes, chunker, tuning profile, `nprobes`, admission
+policy, retrieval-pool geometry, or corpus digest.
 
 ## Built-In Model Keys
 

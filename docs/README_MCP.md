@@ -240,7 +240,14 @@ admitted when **either**:
    not phrase equality: token order/adjacency is not checked). Eligible
    tokens exclude a frozen 33-word English stopword set and tokens under 3
    characters; the lexical channel only fires on FTS-channel rows
-   (`retrieved_by` is `fts` or `both`).
+(`retrieved_by` is `fts` or `both`).
+
+The current deployment's `md` and `md-granite` calibrations found no safe
+numeric floor, so both remain unfloored by default. The measurements and
+identities are recorded in
+[`docs/superpowers/calibration.md`](superpowers/calibration.md). A caller may
+still use `min_similarity` deliberately for one attempt; that override is not
+a calibrated corpus default.
 
 **Known limitation, stated openly:** a single-common-token query (e.g.
 `lock`) can still pass the gate against an unrelated file like `uv.lock` —
@@ -261,15 +268,13 @@ spec-stated trade, not a bug.
 **Empty responses.** An empty response after admission filtering means *no
 inspected candidate passed the floor for this attempt* — a low-confidence
 signal, **not** proof the corpus lacks relevant content (only the inspected
-pool is known). Example:
+pool is known). Schematically:
 
 ```
-No inspected candidate passed admission (similarity >= 0.55 or all query
-terms verbatim) for 'beehive maintenance'. Inspected 15 hybrid-ranked
-candidates; best was similarity 0.38 (tests/integration/test_lancedb.py,
-fts-only). Retrieval confidence for this attempt is low; this does not
-establish corpus-level absence. Retry with different terms or a lower
-min_similarity if you expected a match.
+No inspected candidate passed admission (similarity >= <floor> or all query
+terms verbatim) for '<query>'. Retrieval confidence for this attempt is low;
+this does not establish corpus-level absence. Retry with different terms or a
+lower min_similarity if you expected a match.
 ```
 
 **CLI JSON envelope.** `dbs-vector search --json` emits the full envelope,
@@ -277,9 +282,9 @@ not a bare result array:
 
 ```json
 {
-  "floor": 0.55,
-  "inspected": 15,
-  "best_rejected": {"similarity": 0.38, "source": "...", "retrieved_by": "fts"},
+  "floor": "<configured or per-call floor>",
+  "inspected": "<candidate count>",
+  "best_rejected": {"similarity": "<exact cosine>", "source": "...", "retrieved_by": "fts"},
   "results": [ ... ]
 }
 ```

@@ -7,7 +7,7 @@ from lancedb.rerankers import RRFReranker  # type: ignore[import-untyped]
 from loguru import logger
 from numpy.typing import NDArray
 
-from dbs_vector.core.models import RetrievedBy
+from dbs_vector.core.models import RetrievedBy, _normalize_table_name
 from dbs_vector.core.ports import IStoreMapper
 from dbs_vector.infrastructure.storage.scoring import classify_retrieved_by, cosine_similarity
 
@@ -289,8 +289,6 @@ class LanceDBStore:
         mapped_results: list[Any] = []
         normalized_table = None
         if table_filter:
-            from dbs_vector.core.models import _normalize_table_name
-
             normalized_table = _normalize_table_name(table_filter)
 
         for row in results_df.iter_rows(named=True):
