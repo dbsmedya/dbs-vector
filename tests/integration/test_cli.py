@@ -60,6 +60,7 @@ def mock_settings():
     with (
         patch("dbs_vector.cli.settings") as cli_mock,
         patch("dbs_vector.services.bootstrap.settings") as bootstrap_mock,
+        patch("dbs_vector.services.bootstrap.configure_mlx_memory_limits"),
     ):
         for mock in (cli_mock, bootstrap_mock):
             mock.engines = engines
@@ -67,6 +68,8 @@ def mock_settings():
             mock.db_path = "./test_db"
             mock.nprobes = 20
             mock.memory_budget_gb = 22.0
+            mock.mlx_memory_limit_gb = None
+            mock.mlx_cache_limit_gb = None
         yield cli_mock
 
 

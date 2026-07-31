@@ -141,8 +141,13 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_serialize: bool = False
 
-    # NEW: memory budget (None → auto-detect via MLX in resolve_memory_budget_gb)
+    # Profile-validation budget (None → auto-detect via MLX).
     memory_budget_gb: float | None = Field(default=None, gt=0)
+
+    # Runtime MLX allocator limits. The total limit falls back to the resolved
+    # memory budget; the cache limit falls back to the resolved total limit.
+    mlx_memory_limit_gb: float | None = Field(default=None, gt=0)
+    mlx_cache_limit_gb: float | None = Field(default=None, ge=0)
 
     # NEW: profile dict
     profiles: dict[str, TuningProfile] = {}
@@ -170,6 +175,8 @@ _KNOWN_SYSTEM_KEYS = {
     "log_level",
     "log_serialize",
     "memory_budget_gb",
+    "mlx_memory_limit_gb",
+    "mlx_cache_limit_gb",
 }
 
 
@@ -196,8 +203,11 @@ def _apply_system_config(system: dict[str, object], settings: Settings, config_f
             f"Unknown keys in {config_file} system: block: {unknown}. "
             f"Allowed: {sorted(_KNOWN_SYSTEM_KEYS)}."
         )
-    for key, value in system.items():
-        setattr(settings, key, value)
+    # Validate YAML values with the same Pydantic rules used at construction,
+    # then copy only the explicitly configured fields onto this instance.
+    validated = Settings.model_validate({**settings.model_dump(), **system})
+    for key in system:
+        setattr(settings, key, getattr(validated, key))
 
 
 def _raise_migration_hint(err: ValidationError, config_file: str, where: str) -> None:
@@ -459,6 +469,8 @@ _PROPAGATED_SETTINGS_FIELDS: set[str] = {
     "engines",
     "profiles",
     "memory_budget_gb",
+    "mlx_memory_limit_gb",
+    "mlx_cache_limit_gb",
     "log_level",
     "log_serialize",
 }

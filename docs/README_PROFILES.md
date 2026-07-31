@@ -24,6 +24,9 @@ system:
   nprobes: 20
   # Optional. If unset, dbs-vector tries to auto-detect the Metal max buffer.
   # memory_budget_gb: 22.0
+  # Optional MLX allocator caps. See the fallback rules below.
+  # mlx_memory_limit_gb: 22.0
+  # mlx_cache_limit_gb: 4.0
 ```
 
 Fields:
@@ -35,6 +38,13 @@ Fields:
 | `log_level` | `INFO` | Optional Loguru level override. |
 | `log_serialize` | `false` | Optional JSON log serialization flag. |
 | `memory_budget_gb` | unset | Optional Metal memory budget override. Set this if auto-detection fails or if you want a lower safety budget. |
+| `mlx_memory_limit_gb` | `memory_budget_gb` | Optional process-wide MLX memory limit in GiB. When both values are unset, the auto-detected Metal budget is used. |
+| `mlx_cache_limit_gb` | resolved MLX memory limit | Optional free-cache limit in GiB. Cached buffers above this threshold are reclaimed on the next allocation; set `0` to disable the cache. Must not exceed the resolved MLX memory limit. |
+
+The MLX settings are applied before model weights are loaded. MLX describes
+`mlx_memory_limit_gb` as a guideline for graph evaluation, so it bounds MLX
+allocator behavior but is not a strict cap on total process RSS. Python,
+tokenizer, LanceDB, memory-mapped files, and other allocations remain outside it.
 
 Do not set `system.batch_size`; batching moved to profiles.
 
