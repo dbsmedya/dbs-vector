@@ -4,6 +4,56 @@ Helper scripts for validating and maintaining dbs-vector.
 
 ---
 
+## calibrate_similarity_floor.py
+
+Measures a corpus- and engine-specific `similarity_floor` with the production
+embedder, hybrid store, lexical gate, and candidate-pool geometry. Development
+mode prints an exact sweep and a suggestion for human review:
+
+```bash
+uv run python scripts/calibrate_similarity_floor.py \
+  --engine md-granite \
+  --set scripts/calibration/documents/dev.json
+```
+
+Locked evaluation mode scores one committed human choice:
+
+```bash
+uv run python scripts/calibrate_similarity_floor.py \
+  --engine md-granite \
+  --set scripts/calibration/documents/eval.json \
+  --floor <chosen-value> \
+  --choice-record scripts/calibration/choices/<choice>.json
+```
+
+An evaluation set is consumed per engine before its first search. A failed or
+interrupted evaluation must not be rerun; author and commit a fresh set. Exit
+code `0` means a development run or passing evaluation, `1` means evaluation
+acceptance failed, and `2` means a setup or sealing error. Identity,
+acceptance evidence, and rerun guidance live in
+[`docs/superpowers/calibration.md`](../docs/superpowers/calibration.md).
+
+Use `--preflight-only` to validate the corpus and expected-source labels
+without loading an embedder or executing retrieval.
+
+## measure_metric_delta.py
+
+Isolates the raw vector-metric change from L2 to cosine by bypassing the ANN
+index for both orderings. It reports embedding-norm percentiles, top-k
+membership/order changes, top-1 changes, shared-member Kendall disagreement,
+and the live IVF-index state:
+
+```bash
+uv run python scripts/measure_metric_delta.py \
+  --engine md-granite \
+  --set scripts/calibration/documents/dev.json
+```
+
+This probe measures vector geometry only; it deliberately excludes hybrid
+fusion and admission behavior.
+
+---
+
 ## check_remote_api.py
 
 Verifies that a remote backend correctly implements the HTTP contract that

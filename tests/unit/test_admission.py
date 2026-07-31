@@ -1,6 +1,20 @@
-"""Unit tests for the admission-policy lexical gate (spec section 4)."""
+"""Unit tests for the admission policy (spec section 4)."""
 
-from dbs_vector.services.admission import eligible_tokens, lexical_gate
+from dbs_vector.core.models import Chunk, SearchResult
+from dbs_vector.services.admission import (
+    apply_admission,
+    eligible_tokens,
+    is_admitted,
+    lexical_gate,
+)
+
+
+def _result(text: str, similarity: float, retrieved_by: str) -> SearchResult:
+    return SearchResult(
+        chunk=Chunk(id=text[:8], text=text, source="s.md", content_hash="h"),
+        similarity=similarity,
+        retrieved_by=retrieved_by,
+    )
 
 
 class TestEligibleTokens:
@@ -59,3 +73,34 @@ class TestLexicalGate:
     def test_underscore_identifier_not_matched_inside_longer_identifier(self):
         # \b sees no boundary between word chars: embedded identifier is no match
         assert lexical_gate(["delete_by_source"], "fts", "x_delete_by_source_y") is False
+
+
+def test_apply_admission_splits_on_semantic_channel():
+    high = _result("unrelated prose", 0.80, "vector")
+    low = _result("unrelated prose", 0.10, "vector")
+    admitted, rejected = apply_admission([high, low], "anything at all", floor=0.5)
+    assert admitted == [high]
+    assert rejected == [low]
+
+
+def test_apply_admission_lexical_gate_rescues_below_floor():
+    rescued = _result("call delete_by_source to purge", 0.02, "fts")
+    admitted, rejected = apply_admission([rescued], "delete_by_source", floor=0.5)
+    assert admitted == [rescued]
+    assert rejected == []
+
+
+def test_apply_admission_preserves_input_order_in_both_lists():
+    a = _result("alpha", 0.9, "vector")
+    b = _result("bravo", 0.1, "vector")
+    c = _result("charlie", 0.8, "vector")
+    d = _result("delta", 0.2, "vector")
+    admitted, rejected = apply_admission([a, b, c, d], "zzz qqq", floor=0.5)
+    assert [result.chunk.text for result in admitted] == ["alpha", "charlie"]
+    assert [result.chunk.text for result in rejected] == ["bravo", "delta"]
+
+
+def test_shared_admission_predicate_uses_semantic_or_lexical_channel():
+    assert is_admitted(0.8, False, 0.5)
+    assert is_admitted(0.1, True, 0.5)
+    assert not is_admitted(0.1, False, 0.5)

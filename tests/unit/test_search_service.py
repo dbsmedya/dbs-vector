@@ -441,7 +441,7 @@ class TestFloorPolicy:
     def test_engine_floor_oversamples_and_filters(self):
         svc, store = self._service([_floor_result(0.9), _floor_result(0.2)], floor=0.5)
         resp = svc.execute_query("q", limit=5)
-        assert store.search.call_args.kwargs["limit"] == 15  # limit * _FLOOR_OVERSAMPLE
+        assert store.search.call_args.kwargs["limit"] == 15  # limit * FLOOR_OVERSAMPLE
         assert [r.similarity for r in resp.results] == [0.9]
         assert resp.floor == 0.5
         assert resp.inspected == 2

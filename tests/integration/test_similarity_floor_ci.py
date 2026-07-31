@@ -146,3 +146,26 @@ def test_disable_similarity_floor_restores_baseline_pool(store):
     assert baseline.inspected == 2  # original pool: fetch limit == limit
     active = floored.execute_query("beekeeping spring", limit=2)
     assert active.inspected > 2  # oversampled pool (limit * 3 per leg)
+
+
+def test_direct_baseline_fetch_matches_disable_flag_field_for_field(store):
+    query = "beekeeping spring"
+    query_vector = _FakeEmbedder().embed_query(query)
+    direct = store.search(query=query, query_vector=query_vector, limit=5)
+    response = _service(store, floor=0.5).execute_query(
+        query,
+        limit=5,
+        disable_similarity_floor=True,
+    )
+
+    def identity(result):
+        return (
+            result.chunk.id,
+            result.similarity,
+            result.retrieved_by,
+            result.rrf_score,
+        )
+
+    assert [identity(result) for result in direct] == [
+        identity(result) for result in response.results
+    ]

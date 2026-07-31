@@ -5,7 +5,7 @@ from loguru import logger
 
 from dbs_vector.core.models import RejectedCandidate, SearchResponse, SqlChunk
 from dbs_vector.core.ports import IEmbedder, IVectorStore
-from dbs_vector.services.admission import eligible_tokens, lexical_gate
+from dbs_vector.services.admission import apply_admission
 
 _RETRIEVED_BY_LABELS = {"both": "vector+fts", "vector": "vector-only", "fts": "fts-only"}
 
@@ -13,11 +13,11 @@ _RETRIEVED_BY_LABELS = {"both": "vector+fts", "vector": "vector-only", "fts": "f
 # doesn't starve the requested limit. Enlarged per-leg pools change RRF
 # fusion inputs — a deliberate, spec-stated behavior change (floor-active
 # paths only; measured in the companion spec).
-_FLOOR_OVERSAMPLE = 3
+FLOOR_OVERSAMPLE = 3
 
 # LLM-callable surface guard: LanceDB treats a non-positive limit as "no
 # limit" (unbounded fetch before app-side truncation), and floor mode
-# multiplies the fetch by _FLOOR_OVERSAMPLE.
+# multiplies the fetch by FLOOR_OVERSAMPLE.
 _MAX_LIMIT = 100
 
 
@@ -101,7 +101,7 @@ class SearchService:
             floor = min_similarity
         else:
             floor = self.similarity_floor
-        fetch_limit = limit if floor is None else limit * _FLOOR_OVERSAMPLE
+        fetch_limit = limit if floor is None else limit * FLOOR_OVERSAMPLE
 
         query_vector = self.embedder.embed_query(query)
         candidates = self.vector_store.search(
@@ -117,16 +117,7 @@ class SearchService:
                 results=candidates[:limit], floor=None, inspected=inspected, best_rejected=None
             )
 
-        eligible = eligible_tokens(query)
-        admitted: list[Any] = []
-        rejected: list[Any] = []
-        for cand in candidates:
-            if cand.similarity >= floor or lexical_gate(
-                eligible, cand.retrieved_by, cand.chunk.text
-            ):
-                admitted.append(cand)
-            else:
-                rejected.append(cand)
+        admitted, rejected = apply_admission(candidates, query, floor)
         best = max(rejected, key=lambda c: c.similarity, default=None)
         best_rejected = (
             RejectedCandidate(

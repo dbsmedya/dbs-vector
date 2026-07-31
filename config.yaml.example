@@ -107,7 +107,12 @@ engines:
     exclusion_filters: [excalidraw, compressed_json]
     # Directory watch (see docs/README_WATCH.md). After ANY config change to a
     # watched engine, run one `ingest --rebuild --force` before starting mcp.
-    # paths: ["/Users/you/vault"]
+    # Absolute roots this engine ingests. Both document engines point at the
+    # SAME roots so one labeled query set (scripts/calibration/documents/)
+    # serves both — see docs/superpowers/calibration.md.
+    paths:
+      - "/absolute/path/to/your/docs"
+    # Keep similarity_floor unset here: floors are corpus-specific.
     # ignore_patterns: [".#*", "*~", "*.tmp", ".DS_Store"]
     # exclusion_filters: [excalidraw, compressed_json, gitignore]
     # watch: {enabled: true, debounce_seconds: 3.0}
@@ -126,6 +131,10 @@ engines:
     workflow:       "md_search_granite"
     tuning_profile: "granite-md-large"
     exclusion_filters: [excalidraw, compressed_json]
+    # Keep this list identical to md.paths when calibrating the engines.
+    paths:
+      - "/absolute/path/to/your/docs"
+    # Keep similarity_floor unset here: floors are corpus-specific.
     # Granite R2 is NOT instruction-tuned. Leave prefixes empty.
     # Rationale: docs/README_granite.md (model card ships empty prompt slots).
 

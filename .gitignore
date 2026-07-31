@@ -17,6 +17,9 @@ wheels/
 # test db
 lancedb_dbs_vector/
 
+# Exploratory calibration artifacts. Final evaluation JSON is copied to
+# docs/superpowers/calibration-reports/ and committed.
+calibration_reports/
+
 # Config
 config.yaml
-

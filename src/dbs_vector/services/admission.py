@@ -9,6 +9,11 @@ appears in chunk text.
 """
 
 import re
+from collections.abc import Sequence
+
+from dbs_vector.core.models import SearchResult, SqlSearchResult
+
+Candidate = SearchResult | SqlSearchResult
 
 # Lucene's classic 33-word English stop set. Frozen for this baseline;
 # tuning the list and the length threshold is companion-spec work driven by
@@ -78,3 +83,30 @@ def lexical_gate(eligible: list[str], retrieved_by: str, chunk_text: str) -> boo
         re.search(rf"\b{re.escape(token)}\b", chunk_text, re.IGNORECASE) is not None
         for token in eligible
     )
+
+
+def is_admitted(similarity: float, lexical_match: bool, floor: float) -> bool:
+    """One admission predicate shared by production and calibration records."""
+    return similarity >= floor or lexical_match
+
+
+def apply_admission(
+    candidates: Sequence[Candidate], query: str, floor: float
+) -> tuple[list[Candidate], list[Candidate]]:
+    """Split candidates into admitted and rejected lists under the dual-channel rule.
+
+    Input order is preserved in both lists because callers rely on the
+    hybrid-ranked order when truncating admitted results.
+    """
+    eligible = eligible_tokens(query)
+    admitted: list[Candidate] = []
+    rejected: list[Candidate] = []
+    for candidate in candidates:
+        lexical_match = lexical_gate(
+            eligible,
+            candidate.retrieved_by,
+            candidate.chunk.text,
+        )
+        target = admitted if is_admitted(candidate.similarity, lexical_match, floor) else rejected
+        target.append(candidate)
+    return admitted, rejected
