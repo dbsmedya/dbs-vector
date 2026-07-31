@@ -96,6 +96,7 @@ uv run dbs-vector search "SELECT * FROM users" --type sql --min-time 1000
 - [README_ARCHITECTURE.md](README_ARCHITECTURE.md) — Deep dive: Arrow pipeline, zero-copy, SOLID design
 - [README_EMBEDDINGS.md](README_EMBEDDINGS.md) — supported embedding models, attention-mask dtype config, truncation alarm
 - [README_MCP.md](README_MCP.md) — MCP server, per-engine tool naming, A/B testing workflow
+- [README_CALIBRATE_CORPUS.md](README_CALIBRATE_CORPUS.md) — step-by-step similarity-floor calibration for a new corpus
 
 ---
 

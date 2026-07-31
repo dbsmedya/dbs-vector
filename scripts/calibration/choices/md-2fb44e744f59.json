@@ -1,9 +1,0 @@
-{
-  "engine": "md",
-  "floor": null,
-  "rationale": "No safe floor was found on the sealed development set. The strongest candidate that preserved baseline hit@5 with zero relevant empty responses (0.4627230370852818) rejected 65% of absent queries but only 62.5% of off-domain anchors, below the mandatory 100% anchor criterion. Raising the floor further would trade away known-answer behavior without establishing a defensible separation, so this deployment keeps the md floor unset.",
-  "dev_report_path": "docs/superpowers/calibration-reports/md-dev-2fb44e744f59-20260731T011349Z.json",
-  "dev_report_digest": "320b973f7c93dbcc62554baf4b9cf1279a45c5ce4c940b1cc47841a832e26728",
-  "corpus_digest": "c5c5295b670af8d4225228eee0ace3962ee09312d3222c9514a4ee280f598e43",
-  "code_commit": "55687ff27eb773ad580dc6791d26b36504bd985b"
-}

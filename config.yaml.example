@@ -108,12 +108,12 @@ engines:
     # Directory watch (see docs/README_WATCH.md). After ANY config change to a
     # watched engine, run one `ingest --rebuild --force` before starting mcp.
     # Absolute roots this engine ingests. Both document engines point at the
-    # SAME roots so one labeled query set (scripts/calibration/documents/)
-    # serves both — see docs/superpowers/calibration.md.
+    # SAME roots so one labeled query set serves both — see
+    # docs/README_CALIBRATE_CORPUS.md.
     paths:
       - "/absolute/path/to/your/docs"
     # Corpus-specific; intentionally unset in the generic example.
-    # See docs/superpowers/calibration.md before applying a measured value.
+    # See docs/README_CALIBRATE_CORPUS.md before applying a measured value.
     # similarity_floor: <calibrate for this corpus>
     # ignore_patterns: [".#*", "*~", "*.tmp", ".DS_Store"]
     # exclusion_filters: [excalidraw, compressed_json, gitignore]
@@ -137,7 +137,7 @@ engines:
     paths:
       - "/absolute/path/to/your/docs"
     # Corpus-specific; intentionally unset in the generic example.
-    # See docs/superpowers/calibration.md before applying a measured value.
+    # See docs/README_CALIBRATE_CORPUS.md before applying a measured value.
     # similarity_floor: <calibrate for this corpus>
     # Granite R2 is NOT instruction-tuned. Leave prefixes empty.
     # Rationale: docs/README_granite.md (model card ships empty prompt slots).

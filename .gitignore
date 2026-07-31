@@ -17,8 +17,9 @@ wheels/
 # test db
 lancedb_dbs_vector/
 
-# Exploratory calibration artifacts. Final evaluation JSON is copied to
-# docs/superpowers/calibration-reports/ and committed.
+# Calibration artifacts. Measurements are deployment-local evidence about one
+# corpus, so they are never published: exploratory runs land here, and the
+# report backing a certified choice is copied to calibration_reports/durable/.
 calibration_reports/
 
 # Config

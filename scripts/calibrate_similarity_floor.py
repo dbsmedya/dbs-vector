@@ -151,7 +151,7 @@ def _require_shared_document_corpus() -> None:
 
 def _consume_eval_once(engine: str, query_digest: str, floor: float) -> None:
     """Create the spend marker before the first evaluation search."""
-    durable_dir = REPO_ROOT / "docs" / "superpowers" / "calibration-reports"
+    durable_dir = REPO_ROOT / "calibration_reports" / "durable"
     durable = list(durable_dir.glob(f"{engine}-*-{query_digest[:12]}-*.json"))
     if durable:
         raise ValueError(

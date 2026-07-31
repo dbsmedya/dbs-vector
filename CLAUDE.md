@@ -138,8 +138,7 @@ import (no YAML, no `.env`); CLI callback / API lifespan call
 the singleton via `_populate_singleton_from()`. This makes
 `dbs-vector --help` / `--version` survive a malformed or absent `config.yaml`.
 
-Adding a new engine: see spec
-`docs/superpowers/specs/2026-05-06-tuning-profiles-design.md`.
+Adding a new engine: see `docs/README_PROFILES.md`.
 
 ### Key Design Details
 
@@ -165,7 +164,41 @@ Adding a new engine: see spec
   change to a watched engine, run one `ingest --rebuild --force`**. See
   `docs/README_WATCH.md`.
 - **Search scoring**: every result carries `similarity` (exact cosine between query and chunk vectors, computed in NumPy at search time — metric-independent, covers FTS-only rows), `retrieved_by` (channel membership: `both`/`vector`/`fts`), and `rrf_score` (fused RRF value, JSON/debug only). Ranking stays hybrid RRF(K=60); `_build_hybrid` pins `.metric("cosine")`. Admission policy lives in `SearchService` (engine `similarity_floor` / per-call `min_similarity` / `disable_similarity_floor`), which returns a `SearchResponse` envelope (`results`, `floor`, `inspected`, `best_rejected`). Construct services via `build_search_service()` — never hand-wire `SearchService`.
-- **Floor calibration**: deployment-local evidence is in `docs/superpowers/calibration.md`. The current `md` and `md-granite` measurements found no safe floor, so both remain unset. A different corpus or any model/prefix/chunker/profile, `nprobes`, admission-policy, or pool-geometry change requires recalibration.
+- **Floor calibration**: `similarity_floor` is deployment-local evidence about one corpus and is never committed here — query sets, choice records, and reports live outside the repo (this deployment keeps them in the gitignored `.ayder/`). Every engine ships unset; the `md`/`md-granite` measurements found no safe floor, and unset is a valid outcome. The shipped workflow is `docs/README_CALIBRATE_CORPUS.md`. A different corpus or any model/prefix/chunker/profile, `nprobes`, admission-policy, or pool-geometry change requires recalibration.
+
+### Documentation Layout
+
+**`docs/` is for user-facing guides only.** Everything published there is
+written for someone who has never seen this repository's history: how to
+configure an engine, how to run a workflow, what a knob means. It must stay
+readable without any internal context.
+
+**All internal project documentation lives in `.ayder/superpowers_<YYYYMMDD>/`**
+— one gitignored, date-slugged directory per working session:
+
+```
+.ayder/superpowers_<YYYYMMDD>/
+  specs/          # design specs
+  plans/          # implementation plans
+  calibration/    # deployment-local measurement evidence
+```
+
+Never write a spec, plan, brainstorm, review, session note, or measurement
+report into `docs/`. Never commit one. This covers superpowers artifacts and
+anything else that documents *how the work happened* rather than *how to use
+the result*.
+
+Two consequences worth stating explicitly:
+
+- **Deployment-local evidence never ships.** Calibration query sets, choice
+  records, and reports measure one corpus and are meaningless — actively
+  misleading — to anyone else. The generic *harness* and *guide* ship; the
+  numbers stay local. Same test for anything else that is true only of this
+  machine's corpus or config.
+- **Shipped docs and code must not cite internal paths.** A reference to a
+  spec or plan is a link a user cannot follow, and it rots the moment the
+  session directory is archived. Point at the relevant `docs/README_*.md`
+  instead — including in error messages raised from `src/`.
 
 ### Test Structure
 

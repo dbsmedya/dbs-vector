@@ -21,7 +21,7 @@ Locked evaluation mode scores one committed human choice:
 ```bash
 uv run python scripts/calibrate_similarity_floor.py \
   --engine md-granite \
-  --set scripts/calibration/documents/eval.json \
+  --set scripts/calibration/<corpus-name>/eval.json \
   --floor <chosen-value> \
   --choice-record scripts/calibration/choices/<choice>.json
 ```
@@ -29,9 +29,11 @@ uv run python scripts/calibrate_similarity_floor.py \
 An evaluation set is consumed per engine before its first search. A failed or
 interrupted evaluation must not be rerun; author and commit a fresh set. Exit
 code `0` means a development run or passing evaluation, `1` means evaluation
-acceptance failed, and `2` means a setup or sealing error. Identity,
-acceptance evidence, and rerun guidance live in
-[`docs/superpowers/calibration.md`](../docs/superpowers/calibration.md).
+acceptance failed, and `2` means a setup or sealing error. Query sets, choice
+records, and reports are deployment-local evidence about one corpus, so this
+repository ships none of them. For the complete workflow — authoring sets,
+sealing, spending an evaluation once, and recording the outcome — see
+[`docs/README_CALIBRATE_CORPUS.md`](../docs/README_CALIBRATE_CORPUS.md).
 
 Use `--preflight-only` to validate the corpus and expected-source labels
 without loading an embedder or executing retrieval.

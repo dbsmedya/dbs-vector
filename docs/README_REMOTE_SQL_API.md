@@ -301,8 +301,8 @@ output rather than a crash.
 
 ## Server Contract
 
-The full API specification is in [`claude_api_contract.md`](../claude_api_contract.md).
-Key points for a server implementor:
+The contract a server must satisfy is specified below in full. Key points for
+a server implementor:
 
 ### Endpoints
 

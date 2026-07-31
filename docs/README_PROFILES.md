@@ -213,13 +213,17 @@ deliberate, spec-stated trade, not a bug. `disable_similarity_floor=true` on
 a search call restores the exact unfloored baseline: no admission filtering
 **and** the original, non-oversampled candidate-pool size.
 
-The current deployment calibration is recorded in
-[`docs/superpowers/calibration.md`](superpowers/calibration.md). Both document
-engines (`md` and `md-granite`) currently have the valid outcome **no safe
-floor found**, so their deployment-local floors remain unset; the generic
-example is also unset. A measured value is invalidated by any change to the
-model, passage/query prefixes, chunker, tuning profile, `nprobes`, admission
-policy, retrieval-pool geometry, or corpus digest.
+`similarity_floor` ships unset on every engine and is not a value this
+repository can supply: it is measured against one corpus and is invalidated by
+any change to the model, passage/query prefixes, chunker, tuning profile,
+`nprobes`, admission policy, retrieval-pool geometry, or corpus digest.
+**Unset is a valid outcome** — calibration can legitimately find no value that
+rejects off-domain queries without dropping real answers, in which case the
+engine stays unfloored.
+
+To calibrate your own corpus, and to keep the resulting evidence with your
+deployment rather than in this repository, follow
+[`README_CALIBRATE_CORPUS.md`](README_CALIBRATE_CORPUS.md).
 
 ## Built-In Model Keys
 
@@ -568,8 +572,7 @@ peak_bytes ≈ batch_size × chunk_max_tokens × hidden_dim × dtype_bytes × ov
              for SQL/atomic profiles chunk_max_tokens == 0 so max_token_length is used instead)
 ```
 
-The 3× overhead matches the calibration constant in `_validate_config`
-(`docs/superpowers/specs/2026-05-06-tuning-profiles-design.md`).
+The 3× overhead matches the calibration constant in `_validate_config`.
 
 ### Decision rubric
 

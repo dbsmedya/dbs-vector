@@ -189,8 +189,7 @@ def _apply_system_config(system: dict[str, object], settings: Settings, config_f
             f"  These moved to TuningProfile. Define profiles under "
             f"`profiles:` and reference them from each engine via "
             f"`tuning_profile:`. See "
-            f"docs/superpowers/specs/2026-05-06-tuning-profiles-design.md "
-            f"§10 / docs/README_EMBEDDINGS.md."
+            f"docs/README_PROFILES.md / docs/README_EMBEDDINGS.md."
         )
     if unknown:
         raise ValueError(
@@ -215,8 +214,8 @@ def _raise_migration_hint(err: ValidationError, config_file: str, where: str) ->
             f"Config schema mismatch in {config_file} ({where}: block).\n"
             f"  Legacy per-engine fields found: {sorted(seen_legacy) or 'none'}\n"
             f"  Missing new required fields: {sorted(missing_required) or 'none'}\n"
-            f"See docs/superpowers/specs/2026-05-06-tuning-profiles-design.md §10 "
-            f"or docs/README_EMBEDDINGS.md for the new schema."
+            f"See docs/README_PROFILES.md or docs/README_EMBEDDINGS.md "
+            f"for the new schema."
         ) from err
     raise err
 

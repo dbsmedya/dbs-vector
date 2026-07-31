@@ -1,9 +1,0 @@
-{
-  "engine": "md-granite",
-  "floor": null,
-  "rationale": "No safe floor was found on the sealed development set. Under the no-hit@5-regression and at-most-5%-relevant-empty constraints, the best candidate floor (0.871314914598602) rejected only 55% of absent queries and 62.5% of off-domain anchors, below the required 60% and 100%. The expected-source and absent top-score distributions overlap, so applying a numeric floor would either retain too much noise or sacrifice known-answer behavior.",
-  "dev_report_path": "docs/superpowers/calibration-reports/md-granite-dev-2fb44e744f59-20260731T011208Z.json",
-  "dev_report_digest": "5edff8cf76fe8eb4e6c67529c0584fd9ee9661a8d1efb8d36ec11a1898fc05fc",
-  "corpus_digest": "d135104db2167efb8f63f85a5a19e8369f65c0039a2f9634d8460d58e6770972",
-  "code_commit": "55687ff27eb773ad580dc6791d26b36504bd985b"
-}
