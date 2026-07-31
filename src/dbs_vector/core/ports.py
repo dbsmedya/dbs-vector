@@ -59,6 +59,10 @@ class IStoreMapper(Protocol):
         """
         ...
 
+    def from_storage_row(self, row: dict[str, Any]) -> Any:
+        """Convert an unranked stored row into its domain chunk model."""
+        ...
+
 
 class IVectorStore(Protocol):
     """Protocol defining how a high-performance vector store behaves."""
@@ -81,6 +85,10 @@ class IVectorStore(Protocol):
 
     def get_existing_hashes(self) -> set[str]:
         """Returns a set of all unique content hashes currently in the store."""
+        ...
+
+    def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[Any]:
+        """Return unranked chunks for exact ids, preserving requested order."""
         ...
 
     def delete_by_source(self, source: str) -> None:

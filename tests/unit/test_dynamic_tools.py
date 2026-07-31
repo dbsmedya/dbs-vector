@@ -191,3 +191,27 @@ def test_register_search_tools_flag_change_raises(fresh_mcp, _clean_settings):
     dyn.register_search_tools(fresh_mcp, allow_raw_queries=False)
     with pytest.raises(RuntimeError, match="Stale tool registration"):
         dyn.register_search_tools(fresh_mcp, allow_raw_queries=True)
+
+
+def test_register_read_tools_only_for_document_engines(fresh_mcp, _clean_settings):
+    _clean_settings.engines = {
+        "md": _make_engine("document"),
+        "sql": _make_engine("sql"),
+    }
+
+    dyn.register_read_tools(fresh_mcp)
+
+    tools = {tool.name: tool for tool in fresh_mcp._tool_manager.list_tools()}
+    assert "read_md" in tools
+    assert "read_sql" not in tools
+    assert "no embedding or semantic search" in tools["read_md"].description
+
+
+def test_register_read_tools_is_idempotent(fresh_mcp, _clean_settings):
+    _clean_settings.engines = {"md-granite": _make_engine("document")}
+
+    dyn.register_read_tools(fresh_mcp)
+    dyn.register_read_tools(fresh_mcp)
+
+    names = [tool.name for tool in fresh_mcp._tool_manager.list_tools()]
+    assert names.count("read_md_granite") == 1

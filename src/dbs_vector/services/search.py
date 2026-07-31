@@ -3,7 +3,15 @@ from typing import Any
 
 from loguru import logger
 
-from dbs_vector.core.models import RejectedCandidate, SearchResponse, SqlChunk
+from dbs_vector.core.models import (
+    Chunk,
+    ChunkBoundary,
+    ChunkDirection,
+    ChunkPage,
+    RejectedCandidate,
+    SearchResponse,
+    SqlChunk,
+)
 from dbs_vector.core.ports import IEmbedder, IVectorStore
 from dbs_vector.services.admission import apply_admission
 
@@ -14,6 +22,7 @@ _RETRIEVED_BY_LABELS = {"both": "vector+fts", "vector": "vector-only", "fts": "f
 # fusion inputs — a deliberate, spec-stated behavior change (floor-active
 # paths only; measured in the companion spec).
 FLOOR_OVERSAMPLE = 3
+MAX_ADJACENT_CHUNKS = 3
 
 # LLM-callable surface guard: LanceDB treats a non-positive limit as "no
 # limit" (unbounded fetch before app-side truncation), and floor mode
@@ -198,6 +207,63 @@ class SearchService:
         return self.vector_store.count_matching(
             source_filter=source_filter,
             **(extra_filters or {}),
+        )
+
+    def read_adjacent_chunks(
+        self,
+        chunk_id: str,
+        direction: ChunkDirection,
+        count: int = 1,
+    ) -> ChunkPage:
+        """Read neighboring document chunks without embedding or vector search."""
+        if direction not in ("previous", "next"):
+            raise ValueError("direction must be 'previous' or 'next'")
+        if not 1 <= count <= MAX_ADJACENT_CHUNKS:
+            raise ValueError(f"count must be within [1, {MAX_ADJACENT_CHUNKS}]; got {count}")
+
+        anchors = self.vector_store.get_chunks_by_ids([chunk_id])
+        if not anchors:
+            raise ValueError(
+                f"Chunk cursor '{chunk_id}' was not found. "
+                "Run a new search to obtain a current cursor."
+            )
+        anchor = anchors[0]
+        if not isinstance(anchor, Chunk):
+            raise ValueError("Adjacent chunk navigation is available only for document chunks")
+
+        prefix = f"{anchor.source}_chunk_"
+        suffix = anchor.id.removeprefix(prefix)
+        if anchor.id == suffix or not suffix.isdigit():
+            raise ValueError(
+                f"Chunk cursor '{chunk_id}' does not contain a valid document position"
+            )
+        anchor_index = int(suffix)
+
+        if direction == "next":
+            indices = range(anchor_index + 1, anchor_index + count + 2)
+        else:
+            indices = range(max(0, anchor_index - count - 1), anchor_index)
+        requested_ids = [f"{anchor.source}_chunk_{index}" for index in indices]
+        found = self.vector_store.get_chunks_by_ids(requested_ids)
+
+        has_more = len(found) > count
+        boundary: ChunkBoundary | None
+        if direction == "next":
+            chunks = found[:count]
+            continuation = chunks[-1].id if chunks and has_more else None
+            boundary = None if has_more else "end"
+        else:
+            chunks = found[-count:]
+            continuation = chunks[0].id if chunks and has_more else None
+            boundary = None if has_more else "start"
+
+        return ChunkPage(
+            anchor_id=anchor.id,
+            direction=direction,
+            chunks=chunks,
+            continuation_cursor=continuation,
+            has_more=has_more,
+            boundary=boundary,
         )
 
     def results_to_json(self, response: SearchResponse) -> str:

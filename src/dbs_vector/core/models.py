@@ -11,6 +11,8 @@ from dbs_vector.core.source_scope import SourceResolution
 # States which channel returned the row — nothing more; not evidence the
 # match is semantically or lexically correct.
 RetrievedBy = Literal["both", "vector", "fts"]
+ChunkDirection = Literal["previous", "next"]
+ChunkBoundary = Literal["start", "end"]
 
 
 class Chunk(BaseModel):
@@ -125,6 +127,17 @@ class SearchResult(BaseModel):
     similarity: float  # exact cosine in [-1, 1], always present
     retrieved_by: RetrievedBy
     rrf_score: float | None = None  # fused RRF value; JSON/debug only, never rendered
+
+
+class ChunkPage(BaseModel):
+    """A deterministic page of document chunks adjacent to a search result."""
+
+    anchor_id: str
+    direction: ChunkDirection
+    chunks: list[Chunk]
+    continuation_cursor: str | None = None
+    has_more: bool = False
+    boundary: ChunkBoundary | None = None
 
 
 class SqlSearchResult(BaseModel):

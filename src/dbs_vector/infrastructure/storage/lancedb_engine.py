@@ -141,6 +141,22 @@ class LanceDBStore:
         tbl = self.table.search().select(["content_hash"]).to_arrow()
         return set(tbl.column("content_hash").to_pylist())
 
+    def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[Any]:
+        """Read exact chunks without materialising vectors or search scores."""
+        if not chunk_ids:
+            return []
+
+        self.table.checkout_latest()
+        if len(self.table) == 0:
+            return []
+
+        unique_ids = list(dict.fromkeys(chunk_ids))
+        quoted = ", ".join("'" + value.replace("'", "''") + "'" for value in unique_ids)
+        columns = [name for name in self.schema.names if name not in ("vector", "workflow")]
+        rows = self.table.search().where(f"id IN ({quoted})").select(columns).to_arrow().to_pylist()
+        by_id = {row["id"]: self.mapper.from_storage_row(row) for row in rows}
+        return [by_id[chunk_id] for chunk_id in chunk_ids if chunk_id in by_id]
+
     def _distinct_sources(self) -> list[str]:
         """Distinct `source` values at the current table version."""
         self.table.checkout_latest()
