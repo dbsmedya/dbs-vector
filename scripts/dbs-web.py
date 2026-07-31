@@ -18,7 +18,7 @@ bound to localhost only.
 Run from the repo root with the project venv so `dbs_vector` and its deps
 (lancedb / mlx) resolve:
 
-    uv run python ui/dbs-web.py
+    uv run python scripts/dbs-web.py
 
 then open http://127.0.0.1:8765 (it auto-opens unless DBS_WEB_NO_OPEN is set).
 Override the port with DBS_WEB_PORT.
@@ -33,6 +33,10 @@ import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dbs_vector.core.models import Chunk
 
 # --------------------------------------------------------------------------- #
 # Bootstrap dbs-vector config (mirror the CLI callback) BEFORE importing the
@@ -111,6 +115,10 @@ def _serialize(res: object) -> dict[str, object]:
     sc = _similarity_str(res)
     retrieved_by = retrieved_by_label(res.retrieved_by)  # type: ignore[attr-defined]
     src_start: int | None = None
+    chunk_id: str | None = None
+    can_navigate = False
+    prev_disabled = True
+    next_disabled = True
     if hasattr(chunk, "raw_query"):  # SQL result — no source file
         snippet = (chunk.raw_query or chunk.text)[:90].replace("\n", " ")
         summary = f"{sc}  {chunk.source}  {chunk.execution_time_ms:.0f}ms  {snippet}"
@@ -138,6 +146,7 @@ def _serialize(res: object) -> dict[str, object]:
             ("Source", chunk.source),
             ("Similarity", sc),
             ("Retrieved by", retrieved_by),
+            ("Chunk cursor", chunk.id),
             ("Content hash", chunk.content_hash),
             ("Node type", chunk.node_type),
             ("Parent scope", chunk.parent_scope),
@@ -145,6 +154,12 @@ def _serialize(res: object) -> dict[str, object]:
         ]
         body = chunk.text
         heading = "TEXT"
+        chunk_id = chunk.id
+        can_navigate = True
+        prefix = f"{chunk.source}_chunk_"
+        suffix = chunk.id.removeprefix(prefix)
+        prev_disabled = chunk.id != suffix and suffix == "0"
+        next_disabled = False
         if chunk.line_range:
             head = str(chunk.line_range).split("-", 1)[0].strip()
             if head.isdigit():
@@ -156,6 +171,50 @@ def _serialize(res: object) -> dict[str, object]:
         "heading": heading,
         "body": body,
         "src_start": src_start,
+        "chunk_id": chunk_id,
+        "can_navigate": can_navigate,
+        "prev_disabled": prev_disabled,
+        "next_disabled": next_disabled,
+    }
+
+
+def _serialize_adjacent_chunk(
+    chunk: Chunk,
+    *,
+    engine: str,
+    direction: str,
+    boundary: str | None,
+) -> dict[str, object]:
+    """Serialize an unranked neighboring document chunk for the detail pane."""
+    src_start: int | None = None
+    line_range = getattr(chunk, "line_range", None)
+    if line_range:
+        head = str(line_range).split("-", 1)[0].strip()
+        if head.isdigit():
+            src_start = int(head)
+
+    chunk_id = chunk.id
+    source = chunk.source
+    text = chunk.text
+    rows = [
+        ("Source", source),
+        ("Chunk cursor", chunk_id),
+        ("Content hash", chunk.content_hash),
+        ("Node type", chunk.node_type),
+        ("Parent scope", chunk.parent_scope),
+        ("Line range", line_range),
+    ]
+    return {
+        "summary": f"{source}  {text[:100].replace(chr(10), ' ')}",
+        "header": [[label, "" if value is None else str(value)] for label, value in rows],
+        "heading": "TEXT",
+        "body": text,
+        "src_start": src_start,
+        "chunk_id": chunk_id,
+        "can_navigate": True,
+        "prev_disabled": direction == "previous" and boundary == "start",
+        "next_disabled": direction == "next" and boundary == "end",
+        "engine": engine,
     }
 
 
@@ -186,13 +245,55 @@ def _handle_search(payload: dict[str, object]) -> dict[str, object]:
     deps = _get_deps(engine)
     service = build_search_service(engine, deps=deps)
     response = service.execute_query(query, limit=limit)
+    results = [_serialize(r) for r in response.results]
+    for result in results:
+        result["engine"] = engine
     return {
-        "results": [_serialize(r) for r in response.results],
+        "results": results,
         "floor": response.floor,
         "inspected": response.inspected,
         "best_rejected": (
             response.best_rejected.model_dump(mode="json") if response.best_rejected else None
         ),
+    }
+
+
+def _handle_chunk(payload: dict[str, object]) -> dict[str, object]:
+    """Read one previous/next document chunk without embedding or search."""
+    engine = str(payload.get("engine") or "")
+    if engine not in STATE.settings.engines:  # type: ignore[attr-defined]
+        raise ValueError(f"Unknown engine: {engine!r}")
+    cfg = STATE.settings.engines[engine]  # type: ignore[attr-defined]
+    if cfg.resolved_family != "document":
+        raise ValueError(f"Engine '{engine}' does not support document chunk navigation.")
+
+    chunk_id = str(payload.get("chunk_id") or "").strip()
+    if not chunk_id:
+        raise ValueError("chunk_id is required")
+    direction = str(payload.get("direction") or "")
+    if direction not in ("previous", "next"):
+        raise ValueError("direction must be 'previous' or 'next'")
+
+    from dbs_vector.services.bootstrap import build_search_service
+
+    deps = _get_deps(engine)
+    service = build_search_service(engine, deps=deps)
+    page = service.read_adjacent_chunks(chunk_id, direction, count=1)
+    record = (
+        _serialize_adjacent_chunk(
+            page.chunks[0],
+            engine=engine,
+            direction=direction,
+            boundary=page.boundary,
+        )
+        if page.chunks
+        else None
+    )
+    return {
+        "chunk": record,
+        "boundary": page.boundary,
+        "has_more": page.has_more,
+        "continuation_cursor": page.continuation_cursor,
     }
 
 
@@ -280,7 +381,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": f"bad JSON: {exc}"}, code=400)
             return
 
-        handlers = {"/api/search": _handle_search, "/api/update": _handle_update}
+        handlers = {
+            "/api/search": _handle_search,
+            "/api/chunk": _handle_chunk,
+            "/api/update": _handle_update,
+        }
         handler = handlers.get(self.path)
         if handler is None:
             self._send_json({"error": "not found"}, code=404)
@@ -323,6 +428,13 @@ PAGE = """<!DOCTYPE html>
   table.meta { border-collapse:collapse; margin-bottom:10px; }
   table.meta td { padding:2px 10px 2px 0; vertical-align:top; font:12px/1.4 Menlo, monospace; }
   table.meta td.k { color:#6b7280; white-space:nowrap; }
+  .chunk-nav { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+  .chunk-nav button { font:inherit; padding:5px 9px; border:1px solid var(--bd);
+                      border-radius:6px; background:#fff; cursor:pointer; }
+  .chunk-nav button:hover:not(:disabled) { border-color:var(--accent); }
+  .chunk-nav button:disabled { opacity:.45; cursor:default; }
+  .chunk-nav span { color:#6b7280; font:12px Menlo, monospace; overflow:hidden;
+                    text-overflow:ellipsis; white-space:nowrap; }
   .heading { color:#6b7280; font:12px Menlo, monospace; margin:6px 0; }
   pre.body { white-space:pre-wrap; word-break:break-word; margin:0;
              font:12px/1.5 Menlo, monospace;
@@ -357,6 +469,7 @@ const $ = (id) => document.getElementById(id);
 let META = {};            // engine -> {chunker_type, api_base_url}
 let RESULTS = [];         // last search results (serialized)
 let currentQuery = "";    // query behind RESULTS, used for highlighting
+let currentDetail = null; // selected result or adjacent chunk displayed on the right
 let busy = false;
 
 function setStatus(msg, err=false) {
@@ -368,6 +481,9 @@ function setBusy(b) {
   busy = b;
   $("searchBtn").disabled = b;
   $("updateBtn").disabled = b;
+  const prev = $("prevChunk"), next = $("nextChunk");
+  if (prev) prev.disabled = b || !!currentDetail?.prev_disabled;
+  if (next) next.disabled = b || !!currentDetail?.next_disabled;
 }
 function escapeHtml(s) {
   return s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
@@ -445,11 +561,20 @@ function renderList() {
 }
 
 function renderDetail(r) {
+  currentDetail = r;
   const headerHtml = r.header
     .map(([k, v]) => `<tr><td class="k">${escapeHtml(k)}</td><td class="v">${escapeHtml(v)}</td></tr>`)
     .join("");
   const { html, line } = highlightBody(r.body, currentQuery);
+  const navHtml = r.can_navigate
+    ? `<div class="chunk-nav">
+         <button id="prevChunk"${busy || r.prev_disabled ? " disabled" : ""}>← Previous chunk</button>
+         <button id="nextChunk"${busy || r.next_disabled ? " disabled" : ""}>Next chunk →</button>
+         <span>${escapeHtml(r.chunk_id || "")}</span>
+       </div>`
+    : "";
   $("detail").innerHTML =
+    navHtml +
     `<table class="meta">${headerHtml}</table>` +
     `<div class="heading" id="chunk-heading">── ${escapeHtml(r.heading)} ──</div>` +
     `<pre class="body">${html}</pre>`;
@@ -467,6 +592,10 @@ function renderDetail(r) {
     setStatus(currentQuery
       ? "Semantic match — no literal term in this chunk; jumped to the chunk."
       : "");
+  }
+  if (r.can_navigate) {
+    $("prevChunk").onclick = () => doChunk("previous");
+    $("nextChunk").onclick = () => doChunk("next");
   }
 }
 
@@ -493,6 +622,7 @@ async function doSearch() {
   try {
     const data = await postJSON("/api/search", { engine, query, limit });
     RESULTS = data.results;
+    currentDetail = null;
     renderList();
     $("detail").innerHTML = RESULTS.length
       ? '<div class="empty">Select a result to see its detail.</div>'
@@ -500,6 +630,33 @@ async function doSearch() {
     setStatus(`${RESULTS.length} result(s)`);
   } catch (e) {
     setStatus("Search failed: " + e.message, true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function doChunk(direction) {
+  if (busy || !currentDetail?.can_navigate || !currentDetail.chunk_id) return;
+  const anchor = currentDetail;
+  setBusy(true);
+  setStatus(`Loading ${direction} chunk…`);
+  try {
+    const data = await postJSON("/api/chunk", {
+      engine: anchor.engine,
+      chunk_id: anchor.chunk_id,
+      direction,
+    });
+    if (data.chunk) {
+      renderDetail(data.chunk);
+      setStatus(`Loaded ${direction} chunk.`);
+    } else {
+      if (direction === "previous") anchor.prev_disabled = true;
+      else anchor.next_disabled = true;
+      renderDetail(anchor);
+      setStatus(`Reached the ${data.boundary || (direction === "previous" ? "start" : "end")} of the document.`);
+    }
+  } catch (e) {
+    setStatus("Chunk navigation failed: " + e.message, true);
   } finally {
     setBusy(false);
   }

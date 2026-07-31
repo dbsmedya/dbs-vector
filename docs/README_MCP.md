@@ -559,3 +559,9 @@ tail -f ~/Library/Logs/Claude/mcp.log
   (transport-agnostic — `initialize_services()` is in
   `dbs_vector.mcp.state`). Each `dbs-vector mcp` process loads its own
   engine instances.
+
+## Version 1.4.0
+
+Version 1.4.0 adds on-demand document context navigation: MCP clients can use
+each search result's chunk cursor with `read_<engine>`, while the bundled web UI
+offers Previous/Next buttons backed by the same exact, non-embedding read path.
