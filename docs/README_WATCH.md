@@ -109,8 +109,23 @@ reconcile, searches may queue behind at most one watcher embed batch.
    turn a config typo into a table wipe.)
 4. Identical-content files are indexed once globally. Deleting the indexed copy
    heals at the next reconcile.
-5. `md` + `md-granite` watching one vault embed each change once per engine —
-   the price of A/B parity.
+5. **One watcher per directory per process.** Two engines cannot watch the same
+   root at once: watchdog's FSEvents backend registers watches by path
+   process-wide and refuses the second one. Enable `watch` on **one** engine;
+   the others are reported at startup and left unwatched:
+
+   ```
+   ERROR  Engines 'md' and 'md-granite' both watch /path/to/vault. Only 'md'
+          will receive events — one watcher per directory per process is a
+          watchdog/FSEvents limit. 'md-granite' will go stale until re-ingested…
+   ```
+
+   The config is **not** rejected for this, so nothing needs editing if the
+   limit is lifted later. When A/B-ing two embedding models over one corpus,
+   watch the engine you are actively using and re-ingest the other with
+   `--rebuild --force` when you switch — otherwise its index silently drifts
+   from disk. Separate `dbs-vector mcp` processes watching the same directory
+   are unaffected; the limit is per process.
 6. Symlinked roots work (FSEvents reports real paths). Symlinked
    *subdirectories* are not traversed. Anything beyond that: rebuild if the
    index drifts.

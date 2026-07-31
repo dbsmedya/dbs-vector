@@ -169,7 +169,7 @@ def build_watcher_service() -> Any:
             path_filter=deps.path_filter,
             store=deps.store,
             debounce_seconds=settings.engines[name].watch.debounce_seconds,
-            backend=WatchdogBackend(),
+            backend=WatchdogBackend(owner=name),
         )
     return WatcherService(engines)
 

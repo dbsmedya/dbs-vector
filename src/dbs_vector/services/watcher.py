@@ -194,6 +194,35 @@ class WatcherService:
 
     # ---- lifecycle ------------------------------------------------------
 
+    def _warn_on_shared_roots(self) -> None:
+        """Name the engines that will lose a root before any backend starts.
+
+        One watcher per directory per process is a watchdog/FSEvents limit. The
+        config is deliberately NOT rejected for it: watching several engines
+        over one corpus is a legitimate thing to want (A/B-ing two embedding
+        models over the same vault), and the day it is supported no one should
+        have to edit a config that was correct all along. So the config stays
+        valid and the runtime states plainly what it could not honour.
+        """
+        owner: dict[str, str] = {}
+        for watched in self._engines.values():
+            for root in watched.path_filter.active_roots():
+                key = str(root)
+                first = owner.setdefault(key, watched.name)
+                if first != watched.name:
+                    logger.error(
+                        "Engines '{}' and '{}' both watch {}. Only '{}' will "
+                        "receive events — one watcher per directory per process "
+                        "is a watchdog/FSEvents limit. '{}' will go stale until "
+                        "re-ingested; watch one engine and rebuild the other "
+                        "when you switch. See docs/README_WATCH.md.",
+                        first,
+                        watched.name,
+                        key,
+                        first,
+                        watched.name,
+                    )
+
     def start(self) -> None:
         """Start the backends and the worker. Startup reconciliation is
         MANDATORY and runs on the worker, so MCP answers requests immediately."""
@@ -203,6 +232,8 @@ class WatcherService:
                 self._state.reconcile_due[watched.name] = now
         self._next_fts = now + self._fts_interval
 
+        self._warn_on_shared_roots()
+
         for watched in self._engines.values():
             roots = [str(r) for r in watched.path_filter.active_roots()]
             if not roots:
@@ -211,9 +242,15 @@ class WatcherService:
             try:
                 watched.backend.start(roots, self._callback_for(watched.name))
             except Exception as e:  # noqa: BLE001 — one bad root must not kill MCP startup
-                logger.warning(
-                    "Watch backend failed to start for '{}': {}. That engine is "
-                    "unwatched for this run; search is unaffected.",
+                # ERROR, not warning: this engine's index now drifts from disk
+                # for the whole run. Searches keep answering, which is exactly
+                # what makes it dangerous — the results are quietly stale, not
+                # obviously broken.
+                logger.error(
+                    "Engine '{}' is NOT being watched this run: {} Its index "
+                    "will drift from disk as files change; searches keep "
+                    "answering from increasingly stale rows. Re-ingest it with "
+                    "`--rebuild --force` to resync.",
                     watched.name,
                     e,
                 )
