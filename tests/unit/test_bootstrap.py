@@ -1,5 +1,5 @@
 # tests/unit/test_bootstrap.py
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -30,12 +30,17 @@ def mock_settings():
     profile.chunk_max_tokens = 1024
     profile.batch_size = 64
 
-    with patch("dbs_vector.services.bootstrap.settings") as s:
+    with (
+        patch("dbs_vector.services.bootstrap.settings") as s,
+        patch("dbs_vector.services.bootstrap.configure_mlx_memory_limits"),
+    ):
         s.engines = {"md": engine_config}
         s.profiles = {"test-profile": profile}
         s.db_path = "./test.db"
         s.nprobes = 10
         s.memory_budget_gb = 22.0
+        s.mlx_memory_limit_gb = None
+        s.mlx_cache_limit_gb = None
         yield s, engine_config, profile
 
 
@@ -57,6 +62,44 @@ def test_returns_engine_deps_with_batch_size(mock_settings):
     assert isinstance(deps, EngineDeps)
     assert deps.batch_size == 64
     assert deps.workflow == "default"
+
+
+def test_applies_mlx_limits_before_constructing_embedder(mock_settings):
+    settings, _, _ = mock_settings
+    settings.mlx_memory_limit_gb = 16.0
+    settings.mlx_cache_limit_gb = 2.0
+
+    with (
+        patch("dbs_vector.services.bootstrap.configure_mlx_memory_limits") as configure,
+        patch("dbs_vector.services.bootstrap.MLXEmbedder") as embedder,
+        patch("dbs_vector.services.bootstrap.LanceDBStore"),
+        patch("dbs_vector.services.bootstrap.ComponentRegistry") as registry,
+    ):
+        calls = MagicMock()
+        calls.attach_mock(configure, "configure")
+        calls.attach_mock(embedder, "embedder")
+        registry.get_mapper.return_value = MagicMock()
+        registry.get_chunker.return_value = MagicMock()
+        build_dependencies("md")
+
+    configure.assert_called_once_with(
+        memory_budget_gb=22.0,
+        memory_limit_gb=16.0,
+        cache_limit_gb=2.0,
+    )
+    assert calls.mock_calls[0] == call.configure(
+        memory_budget_gb=22.0,
+        memory_limit_gb=16.0,
+        cache_limit_gb=2.0,
+    )
+    assert calls.mock_calls[1] == call.embedder(
+        model_name="mlx-community/embeddinggemma-300m-bf16",
+        max_token_length=2048,
+        dimension=768,
+        passage_prefix="P:",
+        query_prefix="Q:",
+        attention_mask_dtype="float16",
+    )
 
 
 def test_resolves_via_model_registry(mock_settings):
@@ -223,7 +266,11 @@ def _install_engines(monkeypatch, engines):
     }
     fake.db_path = "./unused_db"
     fake.nprobes = 20
+    fake.memory_budget_gb = 22.0
+    fake.mlx_memory_limit_gb = None
+    fake.mlx_cache_limit_gb = None
     monkeypatch.setattr(bootstrap_module, "settings", fake)
+    monkeypatch.setattr(bootstrap_module, "configure_mlx_memory_limits", MagicMock())
     monkeypatch.setattr(bootstrap_module, "MLXEmbedder", MagicMock())
     monkeypatch.setattr(bootstrap_module, "LanceDBStore", MagicMock())
 

@@ -26,10 +26,9 @@ async def _list_engines() -> str:
 
     Returns a JSON-encoded list of engine metadata: name, family, model,
     description, table name, profile knobs (max_token_length,
-    chunk_max_chars, batch_size), MCP tool name, and whether a runtime
-    service object is currently registered for that engine. Useful for A/B
-    testing harnesses and for clients that want to enumerate available
-    variants programmatically.
+    chunk_max_chars, batch_size), search/read MCP tool names, and whether a
+    runtime service object is currently registered for that engine. Useful
+    for A/B testing harnesses and clients enumerating variants programmatically.
     """
     from dbs_vector.core.model_registry import ModelRegistry
     from dbs_vector.mcp.state import _services
@@ -53,6 +52,11 @@ async def _list_engines() -> str:
                     "batch_size": profile.batch_size,
                 },
                 "mcp_tool": normalize_tool_name(name),
+                "read_tool": (
+                    normalize_tool_name(name, verb="read")
+                    if engine.resolved_family == "document"
+                    else None
+                ),
                 "loaded": name in _services,
             }
         )

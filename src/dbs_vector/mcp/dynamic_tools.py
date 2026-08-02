@@ -1,4 +1,4 @@
-"""Dynamic MCP tool registration: one tool per engine in settings.engines.
+"""Dynamic MCP tool registration from settings.engines.
 
 Reads the populated dbs_vector.config.settings singleton. Tests monkey-patch
 this module's `settings` import for isolation.
@@ -10,7 +10,7 @@ from mcp.server.fastmcp import FastMCP
 
 from dbs_vector.config import settings
 from dbs_vector.core.naming import ENGINE_NAME_PATTERN, normalize_tool_name
-from dbs_vector.mcp.families.base import BrowseFamily, TriageFamily
+from dbs_vector.mcp.families.base import BrowseFamily, ReadFamily, TriageFamily
 from dbs_vector.mcp.families.registry import FamilyRegistry
 
 
@@ -90,6 +90,57 @@ def register_search_tools(mcp: FastMCP, allow_raw_queries: bool = False) -> None
             handler,
             name=tool_name,
             description=family.search_description(engine_name, engine),
+        )
+        registrations[tool_name] = current
+
+
+def register_read_tools(mcp: FastMCP) -> None:
+    """Register one exact adjacent-chunk reader per read-capable engine."""
+    mcp_any: Any = mcp
+    if not hasattr(mcp_any, "_dbs_vector_registrations"):
+        mcp_any._dbs_vector_registrations = {}
+    registrations: dict[str, tuple] = mcp_any._dbs_vector_registrations
+
+    seen: dict[str, str] = {}
+    resolved: list[tuple[str, str, str, Any]] = []
+    for engine_name, engine in settings.engines.items():
+        if not ENGINE_NAME_PATTERN.match(engine_name):
+            raise ValueError(
+                f"Engine name '{engine_name}' must match {ENGINE_NAME_PATTERN.pattern}."
+            )
+        family_key = engine.resolved_family
+        family = FamilyRegistry.get(family_key)
+        if not isinstance(family, ReadFamily):
+            continue
+        tool_name = normalize_tool_name(engine_name, verb="read")
+        if tool_name in seen:
+            raise ValueError(
+                f"MCP tool name collision: '{seen[tool_name]}' and '{engine_name}' "
+                f"both normalize to '{tool_name}'."
+            )
+        seen[tool_name] = engine_name
+        resolved.append((engine_name, tool_name, family_key, engine))
+
+    for engine_name, tool_name, family_key, engine in resolved:
+        family = FamilyRegistry.get(family_key)
+        if not isinstance(family, ReadFamily):  # defensive against registry mutation
+            raise RuntimeError(
+                f"Family '{family_key}' for engine '{engine_name}' no longer supports read."
+            )
+        current = (engine_name, family_key, "read")
+        prior = registrations.get(tool_name)
+        if prior is not None:
+            if prior == current:
+                continue
+            raise RuntimeError(
+                f"Stale read tool registration for '{tool_name}': previously "
+                f"{prior}, now {current}. Reset the FastMCP instance instead "
+                f"of re-registering with different settings."
+            )
+        mcp.add_tool(
+            family.make_read_handler(engine_name),
+            name=tool_name,
+            description=family.read_description(engine_name, engine),
         )
         registrations[tool_name] = current
 

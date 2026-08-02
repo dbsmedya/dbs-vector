@@ -77,6 +77,8 @@ def _make_fake_new_settings():
     fake.engines = {"md": object()}
     fake.profiles = {"gemma-md": object()}
     fake.memory_budget_gb = 22.0
+    fake.mlx_memory_limit_gb = 16.0
+    fake.mlx_cache_limit_gb = 2.0
     fake.log_level = "DEBUG"
     fake.log_serialize = True
     return fake
@@ -94,6 +96,8 @@ def test_populate_singleton_copies_profiles_and_memory_budget():
     assert settings.engines == new.engines
     assert settings.profiles == new.profiles
     assert settings.memory_budget_gb == 22.0
+    assert settings.mlx_memory_limit_gb == 16.0
+    assert settings.mlx_cache_limit_gb == 2.0
     assert settings.log_level == "DEBUG"
     assert settings.log_serialize is True
 

@@ -149,16 +149,16 @@ team needs Cursor support, you can wrap stdio with an external bridge
 
 `dbs-vector` registers tools dynamically from `config.yaml`, plus one
 `list_engines` discovery tool. Tool names follow `<verb>_<engine_name>`
-with dashes (`-`) replaced by underscores. Each **document** engine gets a
-`search_` tool; each **SQL** engine gets three — `search_` (semantic),
+with dashes (`-`) replaced by underscores. Each **document** engine gets
+`search_` and `read_` tools; each **SQL** engine gets three — `search_` (semantic),
 `browse_` (analytical), and `top_impacting_` (triage).
 
 For the default `config.yaml` shipped with the project:
 
 | Engine | Family | Tools |
 |--------|--------|-------|
-| `md` | document | `search_md` |
-| `md-granite` | document | `search_md_granite` |
+| `md` | document | `search_md`, `read_md` |
+| `md-granite` | document | `search_md_granite`, `read_md_granite` |
 | `sql` | sql | `search_sql`, `browse_sql`, `top_impacting_sql` |
 | `sql-api` | sql | `search_sql_api`, `browse_sql_api`, `top_impacting_sql_api` |
 | `sql-granite` | sql | `search_sql_granite`, `browse_sql_granite`, `top_impacting_sql_granite` |
@@ -182,6 +182,22 @@ diagnosis (below).
 | `source_filter` | string | no | Restrict to part of the corpus. Resolved in precedence order: the full stored path, then a trailing path fragment (`specs/api.md`, `api.md`), then a directory to scope to (`specs`, `docs/specs`) which matches every source beneath it. Still not a glob — no `*` or `%`. A value that resolves to nothing returns an explicit "matched no indexed source" message with the closest candidates, **never** a silent empty result. |
 | `min_similarity` | float | no | Per-call admission floor override (range `[-1, 1]`). Takes precedence over the engine's configured `similarity_floor`. See [Similarity, ranking, and admission](#similarity-ranking-and-admission). |
 | `disable_similarity_floor` | bool | no | Bypass admission filtering entirely — the exact unfloored baseline (no floor **and** the original, non-oversampled candidate pool). `min_similarity=0` is **not** equivalent. |
+
+Every document result includes a `Chunk cursor`. The corresponding `read_`
+tool performs an exact stored-text read when the caller needs surrounding
+context:
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `chunk_id` | string | yes | A `Chunk cursor` returned by the matching `search_` or prior `read_` tool. |
+| `direction` | `previous` or `next` | yes | Which side of the anchor chunk to read. Navigation never crosses into another source document. |
+| `count` | int | no | Number of adjacent chunks (default 1, maximum 3). |
+
+The read tool does not embed text, invoke vector/FTS search, or include the
+anchor again. It returns chunks in natural document order plus
+`has_more`, `continuation_cursor`, and boundary metadata. Use it only when
+the initially retrieved chunk needs more context; otherwise it adds no token
+cost beyond the short cursor shown in each search result.
 
 **SQL family** (`search_sql`, `search_sql_granite`, `search_sql_api_granite`) takes:
 
@@ -530,7 +546,9 @@ tail -f ~/Library/Logs/Claude/mcp.log
   `register_triage_tools(mcp, allow_raw_queries)` registers a
   `top_impacting_<engine>` tool for each SQL-family engine; and
   `register_discovery_tool(mcp)` adds the `list_engines` tool.
-- All four registration helpers run inside
+- `register_read_tools(mcp)` registers a `read_<engine>` tool for each
+  read-capable document family.
+- All five registration helpers run inside
   `start_stdio_server(allow_raw_queries=...)` before `mcp.run()`. The
   `allow_raw_queries` flag (from the CLI `--allow-raw-queries` option) is
   threaded into the search, browse, and triage registrars, so `raw_query` egress
@@ -541,3 +559,9 @@ tail -f ~/Library/Logs/Claude/mcp.log
   (transport-agnostic — `initialize_services()` is in
   `dbs_vector.mcp.state`). Each `dbs-vector mcp` process loads its own
   engine instances.
+
+## Version 1.4.0
+
+Version 1.4.0 adds on-demand document context navigation: MCP clients can use
+each search result's chunk cursor with `read_<engine>`, while the bundled web UI
+offers Previous/Next buttons backed by the same exact, non-embedding read path.

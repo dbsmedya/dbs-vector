@@ -164,6 +164,113 @@ def test_count_matching_delegates_to_store():
     )
 
 
+class TestReadAdjacentChunks:
+    @staticmethod
+    def _chunks(source: str = "docs/guide.md", total: int = 6) -> dict[str, Chunk]:
+        return {
+            f"{source}_chunk_{index}": Chunk(
+                id=f"{source}_chunk_{index}",
+                text=f"chunk {index}",
+                source=source,
+                content_hash=f"h{index}",
+            )
+            for index in range(total)
+        }
+
+    def _install(self, store, chunks):
+        store.get_chunks_by_ids.side_effect = lambda ids: [chunks[i] for i in ids if i in chunks]
+
+    def test_next_page_uses_lookahead_and_continuation_cursor(
+        self, search_service, mock_vector_store, mock_embedder
+    ):
+        chunks = self._chunks()
+        self._install(mock_vector_store, chunks)
+
+        page = search_service.read_adjacent_chunks("docs/guide.md_chunk_1", "next", count=2)
+
+        assert [chunk.id for chunk in page.chunks] == [
+            "docs/guide.md_chunk_2",
+            "docs/guide.md_chunk_3",
+        ]
+        assert page.has_more is True
+        assert page.continuation_cursor == "docs/guide.md_chunk_3"
+        assert page.boundary is None
+        assert mock_vector_store.get_chunks_by_ids.call_args_list[1].args[0] == [
+            "docs/guide.md_chunk_2",
+            "docs/guide.md_chunk_3",
+            "docs/guide.md_chunk_4",
+        ]
+        mock_embedder.embed_query.assert_not_called()
+
+    def test_previous_page_is_returned_in_document_order(self, search_service, mock_vector_store):
+        chunks = self._chunks()
+        self._install(mock_vector_store, chunks)
+
+        page = search_service.read_adjacent_chunks("docs/guide.md_chunk_4", "previous", count=2)
+
+        assert [chunk.id for chunk in page.chunks] == [
+            "docs/guide.md_chunk_2",
+            "docs/guide.md_chunk_3",
+        ]
+        assert page.has_more is True
+        assert page.continuation_cursor == "docs/guide.md_chunk_2"
+
+    @pytest.mark.parametrize(
+        ("anchor", "direction", "boundary"),
+        [
+            ("docs/guide.md_chunk_0", "previous", "start"),
+            ("docs/guide.md_chunk_5", "next", "end"),
+        ],
+    )
+    def test_document_boundaries(
+        self, search_service, mock_vector_store, anchor, direction, boundary
+    ):
+        chunks = self._chunks()
+        self._install(mock_vector_store, chunks)
+
+        page = search_service.read_adjacent_chunks(anchor, direction)
+
+        assert page.chunks == []
+        assert page.has_more is False
+        assert page.continuation_cursor is None
+        assert page.boundary == boundary
+
+    def test_never_requests_ids_from_another_source(self, search_service, mock_vector_store):
+        chunks = self._chunks(source="docs/a_chunk_notes.md")
+        self._install(mock_vector_store, chunks)
+
+        search_service.read_adjacent_chunks("docs/a_chunk_notes.md_chunk_2", "next")
+
+        requested = mock_vector_store.get_chunks_by_ids.call_args_list[1].args[0]
+        assert requested == [
+            "docs/a_chunk_notes.md_chunk_3",
+            "docs/a_chunk_notes.md_chunk_4",
+        ]
+
+    def test_stale_cursor_raises(self, search_service, mock_vector_store):
+        mock_vector_store.get_chunks_by_ids.return_value = []
+
+        with pytest.raises(ValueError, match="Run a new search"):
+            search_service.read_adjacent_chunks("missing.md_chunk_1", "next")
+
+    def test_malformed_stored_cursor_raises(self, search_service, mock_vector_store):
+        mock_vector_store.get_chunks_by_ids.return_value = [
+            Chunk(id="opaque-id", text="x", source="docs/a.md", content_hash="h")
+        ]
+
+        with pytest.raises(ValueError, match="valid document position"):
+            search_service.read_adjacent_chunks("opaque-id", "next")
+
+    @pytest.mark.parametrize("count", [0, 4])
+    def test_count_is_bounded(self, search_service, count):
+        with pytest.raises(ValueError, match="count must be within"):
+            search_service.read_adjacent_chunks("docs/a.md_chunk_0", "next", count=count)
+
+    def test_direction_is_validated_at_runtime(self, search_service):
+        with pytest.raises(ValueError, match="direction must be"):
+            search_service.read_adjacent_chunks("docs/a.md_chunk_0", "sideways")  # type: ignore[arg-type]
+
+
 class TestUnmatchedSourceFilter:
     """A filter that names nothing must never look like an empty corpus."""
 

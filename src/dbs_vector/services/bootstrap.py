@@ -7,6 +7,7 @@ from dbs_vector.config import settings
 from dbs_vector.core.model_registry import ModelRegistry
 from dbs_vector.core.registry import ComponentRegistry
 from dbs_vector.infrastructure.embeddings.mlx_engine import MLXEmbedder
+from dbs_vector.infrastructure.hardware import configure_mlx_memory_limits
 from dbs_vector.infrastructure.storage.lancedb_engine import LanceDBStore
 from dbs_vector.services.search import SearchService
 
@@ -51,6 +52,14 @@ def build_dependencies(
             f"'{engine.tuning_profile}'. Known: {sorted(settings.profiles)}"
         )
     profile = settings.profiles[engine.tuning_profile]
+
+    # MLX allocator limits are process-wide. Apply them before loading model
+    # weights; the helper is idempotent across engines sharing this process.
+    configure_mlx_memory_limits(
+        memory_budget_gb=settings.memory_budget_gb,
+        memory_limit_gb=settings.mlx_memory_limit_gb,
+        cache_limit_gb=settings.mlx_cache_limit_gb,
+    )
 
     embedder = MLXEmbedder(
         model_name=contract.model_name,

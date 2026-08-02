@@ -19,6 +19,8 @@ class TestSettingsDefaults:
         assert settings.db_path == "./lancedb_dbs_vector"
         assert settings.nprobes == 20
         assert settings.memory_budget_gb is None
+        assert settings.mlx_memory_limit_gb is None
+        assert settings.mlx_cache_limit_gb is None
         assert settings.profiles == {}
         assert settings.engines == {}
 
@@ -28,11 +30,15 @@ class TestSettingsDefaults:
             db_path="/custom/path",
             nprobes=50,
             memory_budget_gb=22.0,
+            mlx_memory_limit_gb=16.0,
+            mlx_cache_limit_gb=2.0,
         )
 
         assert settings.db_path == "/custom/path"
         assert settings.nprobes == 50
         assert settings.memory_budget_gb == 22.0
+        assert settings.mlx_memory_limit_gb == 16.0
+        assert settings.mlx_cache_limit_gb == 2.0
 
 
 class TestLoadSettings:
@@ -74,6 +80,41 @@ system:
 
             assert settings.db_path == "./custom_db"
             assert settings.nprobes == 100
+
+    def test_load_settings_with_optional_mlx_limits(self):
+        """MLX limits are optional system settings and accept fractional GiB."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = os.path.join(tmp_dir, "config.yaml")
+            Path(config_path).write_text(
+                """
+system:
+  memory_budget_gb: 22.0
+  mlx_memory_limit_gb: 16.0
+  mlx_cache_limit_gb: 1.5
+"""
+            )
+
+            settings = load_settings(config_path)
+
+            assert settings.memory_budget_gb == 22.0
+            assert settings.mlx_memory_limit_gb == 16.0
+            assert settings.mlx_cache_limit_gb == 1.5
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("mlx_memory_limit_gb", 0),
+            ("mlx_memory_limit_gb", -1),
+            ("mlx_cache_limit_gb", -1),
+        ],
+    )
+    def test_load_settings_rejects_invalid_mlx_limits(self, key, value):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = os.path.join(tmp_dir, "config.yaml")
+            Path(config_path).write_text(f"system:\n  {key}: {value}\n")
+
+            with pytest.raises(ValueError):
+                load_settings(config_path)
 
     def test_load_settings_with_engines(self):
         """Test loading settings with engine configurations."""

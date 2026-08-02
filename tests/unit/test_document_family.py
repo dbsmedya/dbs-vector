@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from dbs_vector.core.models import Chunk, RejectedCandidate, SearchResponse, SearchResult
+from dbs_vector.core.models import Chunk, ChunkPage, RejectedCandidate, SearchResponse, SearchResult
 from dbs_vector.mcp.families.document import DocumentFamily
 
 
@@ -49,6 +49,7 @@ def test_format_results_includes_source_and_text():
     out = fam.format_results(SearchResponse(results=results, inspected=len(results)), query="q")
     assert "Found 1 results for 'q'" in out
     assert "Source: doc.md" in out
+    assert "Chunk cursor: x_0" in out
     assert "hello world" in out
     assert "similarity 0.12" in out
     assert "retrieved by: vector-only" in out
@@ -110,6 +111,57 @@ def test_make_handler_signature_has_expected_parameters():
     assert params["disable_similarity_floor"].default is False
 
 
+def test_make_read_handler_signature_has_cursor_direction_and_bounded_count():
+    handler = DocumentFamily().make_read_handler("md-test")
+    params = inspect.signature(handler).parameters
+
+    assert list(params) == ["chunk_id", "direction", "count"]
+    assert params["chunk_id"].annotation is str
+    assert params["count"].default == 1
+
+
+def test_format_chunk_page_includes_navigation_metadata_and_content():
+    chunk = Chunk(
+        id="docs/a.md_chunk_2",
+        text="next content",
+        source="docs/a.md",
+        content_hash="h2",
+        parent_scope="Guide > Setup",
+        line_range="20-30",
+    )
+    page = ChunkPage(
+        anchor_id="docs/a.md_chunk_1",
+        direction="next",
+        chunks=[chunk],
+        continuation_cursor="docs/a.md_chunk_2",
+        has_more=True,
+    )
+
+    out = DocumentFamily().format_chunk_page(page)
+
+    assert "direction: next" in out
+    assert "has_more: true" in out
+    assert "continuation_cursor: docs/a.md_chunk_2" in out
+    assert "Chunk cursor: docs/a.md_chunk_2" in out
+    assert "Section: Guide > Setup" in out
+    assert "Lines: 20-30" in out
+    assert "next content" in out
+
+
+def test_format_empty_chunk_page_reports_document_boundary():
+    page = ChunkPage(
+        anchor_id="docs/a.md_chunk_0",
+        direction="previous",
+        chunks=[],
+        boundary="start",
+    )
+
+    out = DocumentFamily().format_chunk_page(page)
+
+    assert "Reached the start of the document" in out
+    assert "no previous chunk exists" in out
+
+
 @pytest.mark.asyncio
 async def test_make_handler_returns_error_when_service_missing(monkeypatch):
     """Handler reports a clear error if _services has no entry for the engine."""
@@ -164,6 +216,49 @@ async def test_make_handler_rejects_out_of_range_min_similarity(monkeypatch):
 
     assert out == "min_similarity must be within [-1, 1]; got 2.0."
     service.execute_query.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_make_read_handler_reads_and_formats_page(monkeypatch):
+    import dbs_vector.mcp.state as state_mod
+
+    service = MagicMock()
+    service.read_adjacent_chunks.return_value = ChunkPage(
+        anchor_id="docs/a.md_chunk_0",
+        direction="next",
+        chunks=[
+            Chunk(
+                id="docs/a.md_chunk_1",
+                text="next content",
+                source="docs/a.md",
+                content_hash="h1",
+            )
+        ],
+        boundary="end",
+    )
+    monkeypatch.setattr(state_mod, "_services", {"md-test": service})
+
+    out = await DocumentFamily().make_read_handler("md-test")(
+        chunk_id="docs/a.md_chunk_0", direction="next"
+    )
+
+    service.read_adjacent_chunks.assert_called_once_with("docs/a.md_chunk_0", "next", 1)
+    assert "next content" in out
+
+
+@pytest.mark.asyncio
+async def test_make_read_handler_reports_stale_cursor(monkeypatch):
+    import dbs_vector.mcp.state as state_mod
+
+    service = MagicMock()
+    service.read_adjacent_chunks.side_effect = ValueError("Run a new search")
+    monkeypatch.setattr(state_mod, "_services", {"md-test": service})
+
+    out = await DocumentFamily().make_read_handler("md-test")(
+        chunk_id="stale_chunk_1", direction="next"
+    )
+
+    assert out == "Chunk read failed: Run a new search"
 
 
 def test_document_family_caps_oversized_response():

@@ -3,7 +3,7 @@
 import asyncio
 from typing import TYPE_CHECKING, Any
 
-from dbs_vector.core.models import SearchResponse
+from dbs_vector.core.models import ChunkDirection, ChunkPage, SearchResponse
 from dbs_vector.mcp.families.base import (
     RESPONSE_BUDGET_BYTES,
     embeddings_phrase,
@@ -63,12 +63,17 @@ class DocumentFamily:
 
         def _block(res: Any) -> str:
             chunk = res.chunk
-            return (
+            metadata = (
                 f"--- Result (similarity {res.similarity:.2f}, "
                 f"retrieved by: {retrieved_by_label(res.retrieved_by)}) ---\n"
                 f"Source: {chunk.source}\n"
-                f"Content:\n{chunk.text}\n"
+                f"Chunk cursor: {chunk.id}\n"
             )
+            if chunk.parent_scope:
+                metadata += f"Section: {chunk.parent_scope}\n"
+            if chunk.line_range:
+                metadata += f"Lines: {chunk.line_range}\n"
+            return metadata + f"Content:\n{chunk.text}\n"
 
         return render_with_budget(
             header,
@@ -100,7 +105,76 @@ class DocumentFamily:
             f"An empty response means no "
             f"inspected candidate passed admission — a low-confidence signal "
             f"for this attempt, NOT proof the corpus lacks relevant content."
+            f" Each result includes a `Chunk cursor`; call `read_{engine_name.replace('-', '_')}` "
+            f"with that cursor only when adjacent context is needed."
         )
+
+    def format_chunk_page(self, page: ChunkPage) -> str:
+        """Render an adjacent page while retaining every continuation signal."""
+        if not page.chunks:
+            edge = "start" if page.direction == "previous" else "end"
+            return (
+                f"Reached the {edge} of the document at chunk cursor "
+                f"'{page.anchor_id}'; no {page.direction} chunk exists."
+            )
+
+        header = (
+            f"Adjacent document chunks (direction: {page.direction}, "
+            f"anchor: {page.anchor_id}, has_more: {str(page.has_more).lower()}, "
+            f"continuation_cursor: {page.continuation_cursor or 'none'}, "
+            f"boundary: {page.boundary or 'none'}):\n"
+        )
+
+        def _block(chunk: Any) -> str:
+            metadata = f"--- Chunk ---\nSource: {chunk.source}\nChunk cursor: {chunk.id}\n"
+            if chunk.parent_scope:
+                metadata += f"Section: {chunk.parent_scope}\n"
+            if chunk.line_range:
+                metadata += f"Lines: {chunk.line_range}\n"
+            return metadata + f"Content:\n{chunk.text}\n"
+
+        return render_with_budget(
+            header,
+            (_block(chunk) for chunk in page.chunks),
+            RESPONSE_BUDGET_BYTES,
+            total=len(page.chunks),
+        )
+
+    def read_description(self, engine_name: str, engine: "EngineConfig") -> str:
+        search_tool = f"search_{engine_name.replace('-', '_')}"
+        return (
+            f"Read previous or next chunks from the same document in engine "
+            f"'{engine_name}'. Pass a `chunk_id` returned as `Chunk cursor` by "
+            f"`{search_tool}`. This is an exact stored-text read: it performs no "
+            f"embedding or semantic search. Use it only when a search result needs "
+            f"adjacent context. `count` defaults to 1 and is limited to 3."
+        )
+
+    def make_read_handler(self, engine_name: str) -> Any:
+        family = self
+
+        async def handler(
+            chunk_id: str,
+            direction: ChunkDirection,
+            count: int = 1,
+        ) -> str:
+            from dbs_vector.mcp.state import _services
+
+            service = _services.get(engine_name)
+            if service is None:
+                return f"Error: search service '{engine_name}' is not initialized."
+            try:
+                page = await asyncio.to_thread(
+                    service.read_adjacent_chunks,
+                    chunk_id,
+                    direction,
+                    count,
+                )
+                return family.format_chunk_page(page)
+            except Exception as e:
+                return f"Chunk read failed: {e}"
+
+        return handler
 
     def make_handler(self, engine_name: str, allow_raw_queries: bool = False) -> Any:
         # documents have no raw_query; the egress flag is accepted for

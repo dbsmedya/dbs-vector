@@ -15,6 +15,6 @@ ENGINE_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 def normalize_tool_name(engine_name: str, verb: str = "search") -> str:
     """Convert an engine name to its MCP tool name (dashes → underscores).
 
-    `verb` selects the tool family prefix: "search" (default) or "browse".
+    `verb` selects the tool family prefix, such as "search", "read", or "browse".
     """
     return f"{verb}_{engine_name.replace('-', '_')}"

@@ -72,7 +72,17 @@ class DocumentMapper:
         retrieved_by: RetrievedBy,
         rrf_score: float | None,
     ) -> Any:
-        chunk = Chunk(
+        chunk = self.from_storage_row(row)
+        return SearchResult(
+            chunk=chunk,
+            similarity=similarity,
+            retrieved_by=retrieved_by,
+            rrf_score=rrf_score,
+        )
+
+    def from_storage_row(self, row: dict[str, Any]) -> Chunk:
+        """Map an unranked document row without fabricating search scores."""
+        return Chunk(
             id=row["id"],
             text=row["text"],
             source=row["source"],
@@ -80,12 +90,6 @@ class DocumentMapper:
             node_type=row.get("node_type"),
             parent_scope=row.get("parent_scope"),
             line_range=row.get("line_range"),
-        )
-        return SearchResult(
-            chunk=chunk,
-            similarity=similarity,
-            retrieved_by=retrieved_by,
-            rrf_score=rrf_score,
         )
 
 
@@ -175,7 +179,17 @@ class SqlMapper:
         retrieved_by: RetrievedBy,
         rrf_score: float | None,
     ) -> Any:
-        chunk = SqlChunk(
+        chunk = self.from_storage_row(row)
+        return SqlSearchResult(
+            chunk=chunk,
+            similarity=similarity,
+            retrieved_by=retrieved_by,
+            rrf_score=rrf_score,
+        )
+
+    def from_storage_row(self, row: dict[str, Any]) -> SqlChunk:
+        """Map an unranked SQL row without fabricating search scores."""
+        return SqlChunk(
             id=row["id"],
             text=row["text"],
             raw_query=row["raw_query"],
@@ -190,10 +204,4 @@ class SqlMapper:
             rows_sent=row.get("rows_sent"),
             rows_examined=row.get("rows_examined"),
             lock_time_sec=row.get("lock_time_sec"),
-        )
-        return SqlSearchResult(
-            chunk=chunk,
-            similarity=similarity,
-            retrieved_by=retrieved_by,
-            rrf_score=rrf_score,
         )

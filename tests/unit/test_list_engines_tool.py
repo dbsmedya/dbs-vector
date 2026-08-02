@@ -89,6 +89,16 @@ async def test_list_engines_includes_mcp_tool_name():
     assert md["mcp_tool"] == "search_md"
 
 
+@pytest.mark.asyncio
+async def test_list_engines_advertises_read_tool_only_for_documents():
+    out = json.loads(await discovery_mod._list_engines())
+    md = next(e for e in out if e["name"] == "md")
+    sql = next(e for e in out if e["name"] == "sql")
+
+    assert md["read_tool"] == "read_md"
+    assert sql["read_tool"] is None
+
+
 def test_register_discovery_tool_registers_list_engines(fresh_mcp):
     discovery_mod.register_discovery_tool(fresh_mcp)
     tool_names = {t.name for t in fresh_mcp._tool_manager.list_tools()}

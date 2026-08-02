@@ -18,6 +18,7 @@ def stub_registration(monkeypatch):
     for name in (
         "initialize_services",
         "register_search_tools",
+        "register_read_tools",
         "register_browse_tools",
         "register_triage_tools",
         "register_discovery_tool",

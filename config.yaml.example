@@ -31,8 +31,14 @@ system:
   log_serialize: false
 
   # Metal memory budget override (GB). Auto-detected on Apple Silicon.
-  # Set explicitly if auto-detection over-reports, or to cap headroom.
+  # Set explicitly if auto-detection over-reports, or to reserve headroom.
   # memory_budget_gb: 22.0
+
+  # Optional process-wide MLX allocator caps (GiB). If the total limit is
+  # omitted, memory_budget_gb (or its auto-detected value) is used. If the
+  # cache limit is omitted, it defaults to the resolved total limit.
+  # mlx_memory_limit_gb: 22.0
+  # mlx_cache_limit_gb: 4.0
 
 
 # -----------------------------------------------------------------------------

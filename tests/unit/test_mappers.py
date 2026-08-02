@@ -137,6 +137,24 @@ class TestDocumentMapper:
         assert result.retrieved_by == "both"
         assert result.rrf_score == 0.0125
 
+    def test_from_storage_row_returns_unranked_chunk(self, mapper):
+        row = {
+            "id": "docs/readme.md_chunk_2",
+            "text": "Adjacent content",
+            "source": "docs/readme.md",
+            "content_hash": "abc_2",
+            "node_type": "section",
+            "parent_scope": "Guide > Setup",
+            "line_range": "20-35",
+        }
+
+        chunk = mapper.from_storage_row(row)
+
+        assert isinstance(chunk, Chunk)
+        assert chunk.id == "docs/readme.md_chunk_2"
+        assert chunk.text == "Adjacent content"
+        assert chunk.parent_scope == "Guide > Setup"
+
     def test_from_polars_row_carries_similarity_channel_and_rrf(self, mapper):
         """New annotation fields flow through from_polars_row unchanged."""
         row = {

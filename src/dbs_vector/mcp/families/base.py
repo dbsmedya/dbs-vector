@@ -165,6 +165,19 @@ class BrowseFamily(Protocol):
 
 
 @runtime_checkable
+class ReadFamily(Protocol):
+    """A family that exposes deterministic adjacent-chunk reads."""
+
+    def make_read_handler(self, engine_name: str) -> Any:
+        """Build a per-engine adjacent-chunk handler for FastMCP."""
+        ...
+
+    def read_description(self, engine_name: str, engine: "EngineConfig") -> str:
+        """Compose the LLM-facing description for this engine's read tool."""
+        ...
+
+
+@runtime_checkable
 class TriageFamily(Protocol):
     """A family that additionally exposes a top_impacting triage MCP tool.
 
