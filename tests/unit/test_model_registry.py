@@ -48,3 +48,28 @@ def test_keys_returns_sorted():
     assert "gemma-bf16" in keys
     assert "granite-r2" in keys
     assert keys == sorted(keys)
+
+
+def test_gemma_carries_search_result_prefixes():
+    contract = ModelRegistry.get("gemma-bf16")
+    assert contract.default_passage_prefix == "title: none | text: "
+    assert contract.default_query_prefix == "task: search result | query: "
+
+
+def test_granite_carries_no_prefixes():
+    """Granite R2 is a symmetric bi-encoder trained without instruction prefixes."""
+    contract = ModelRegistry.get("granite-r2")
+    assert contract.default_passage_prefix == ""
+    assert contract.default_query_prefix == ""
+
+
+def test_prefix_fields_default_to_empty():
+    """Existing registrations must not need updating: both fields default to ''."""
+    contract = ModelContract(
+        model_name="x",
+        vector_dimension=1,
+        model_max_token_length=1024,
+        attention_mask_dtype=None,
+    )
+    assert contract.default_passage_prefix == ""
+    assert contract.default_query_prefix == ""

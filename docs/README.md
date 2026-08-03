@@ -90,6 +90,7 @@ uv run dbs-vector search "SELECT * FROM users" --type sql --min-time 1000
 
 ## Docs Index
 
+- [README_CONFIGURATION.md](README_CONFIGURATION.md) — configuration reference: config-file resolution, the model/profile/engine layers, and every field
 - [README_DOCS.md](README_DOCS.md) — Markdown document engine, chunking strategy, asymmetric embeddings
 - [README_SQL.md](README_SQL.md) — SQL slow-query log engine (JSON format)
 - [README_REMOTE_SQL_API.md](README_REMOTE_SQL_API.md) — Remote HTTP API ingestion (ApiChunker)

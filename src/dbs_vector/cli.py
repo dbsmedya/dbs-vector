@@ -56,6 +56,13 @@ def main(
     if ctx.invoked_subcommand is None:
         return
 
+    # `init` GENERATES the config, so it must not require a loadable one.
+    # An absent config.yaml is already survivable (no engines -> the validator
+    # returns early), but a malformed one raises here - which is exactly when
+    # a user reaches for init.
+    if ctx.invoked_subcommand == "init":
+        return
+
     import os
 
     from dbs_vector.config import _populate_singleton_from, load_settings, settings
@@ -405,6 +412,79 @@ def mcp(
     except Exception as e:
         logger.error("Failed to initialize search services: {}", e)
         raise
+
+
+class TyperPromptIO:
+    """PromptIO backed by typer. The only implementation that touches a TTY."""
+
+    def echo(self, message: str) -> None:
+        typer.echo(message)
+
+    def ask_text(self, prompt: str, default: str = "") -> str:
+        return str(typer.prompt(prompt, default=default, show_default=True))
+
+    def ask_choice(self, prompt: str, options: list[tuple[str, str]], default: str) -> str:
+        typer.echo(f"\n{prompt}:")
+        width = max((len(key) for key, _ in options), default=0)
+        for key, label in options:
+            typer.echo(f"  {key:<{width}}    {label}")
+        valid = [key for key, _ in options]
+        while True:
+            choice = str(typer.prompt("  choice", default=default, show_default=True)).strip()
+            if choice in valid:
+                return choice
+            typer.echo(f"  Please choose one of: {', '.join(valid)}")
+
+    def ask_multi(self, prompt: str, options: list[str], default: list[str]) -> list[str]:
+        typer.echo(f"\n{prompt} (comma-separated; available: {', '.join(options)}):")
+        while True:
+            raw = str(typer.prompt("  values", default=",".join(default), show_default=True))
+            chosen = [v.strip() for v in raw.split(",") if v.strip()]
+            unknown = [v for v in chosen if v not in options]
+            if not unknown:
+                return chosen
+            typer.echo(f"  Unknown: {', '.join(unknown)}. Available: {', '.join(options)}")
+
+    def ask_bool(self, prompt: str, default: bool) -> bool:
+        return bool(typer.confirm(prompt, default=default))
+
+
+@app.command()
+def init() -> None:
+    """Interactively generate a config.yaml and a Claude-format .mcp.json."""
+    from pathlib import Path as _Path
+
+    from dbs_vector.services.initializer import run_init
+
+    io = TyperPromptIO()
+    io.echo("dbs-vector init - generating a single-engine configuration.\n")
+    try:
+        result = run_init(io, cwd=_Path.cwd())
+    except ValueError as e:
+        typer.echo(f"\n[!] {e}", err=True)
+        raise typer.Exit(code=1) from e
+
+    io.echo("")
+    for note in result.notes:
+        io.echo(f"  note: {note}")
+    io.echo(f"\nWrote {result.config_path}")
+    if result.config_backup:
+        io.echo(f"  previous version saved to {result.config_backup}")
+    io.echo(f"Wrote {result.mcp_path}")
+    if result.mcp_backup:
+        io.echo(f"  previous version saved to {result.mcp_backup}")
+    # `ingest` has NO --all flag, and its engine default is `md` via --type.
+    # An arbitrary generated engine name must be passed explicitly, or the
+    # command fails with "Unknown engine type". The path argument is omitted
+    # deliberately: a document engine with no path ingests its configured
+    # `paths:` roots.
+    # `uv run` requires uv, which a `pip install`/installed user may not have.
+    prefix = "uv run dbs-vector" if result.used_checkout else "dbs-vector"
+    io.echo(
+        f"\nNext: {prefix} --config-file {result.config_path} "
+        f"ingest --type {result.engine_name}\n"
+        f"Then restart your MCP client to pick up {result.mcp_path}."
+    )
 
 
 if __name__ == "__main__":

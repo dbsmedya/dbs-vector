@@ -12,6 +12,16 @@ class ModelContract:
     attention_mask_dtype: str | None
     compute_dtype_bytes: int = 2
 
+    # Prefix defaults are a property of the MODEL: an instruction-tuned
+    # encoder needs them, a symmetric bi-encoder does not. Carrying them here
+    # (rather than in a lookup keyed by model name) is what lets `init` skip
+    # the prefix prompt automatically for models that need none, and what
+    # keeps a newly registered model from silently getting no prefixes.
+    # Engines may still override both in config.yaml — the same model is used
+    # with different prefixes by different workflows.
+    default_passage_prefix: str = ""
+    default_query_prefix: str = ""
+
 
 class ModelRegistry:
     """Open/closed registry of model contracts. Adding a model = register() call."""
@@ -45,6 +55,8 @@ ModelRegistry.register(
         model_max_token_length=2048,
         attention_mask_dtype="float16",
         compute_dtype_bytes=2,
+        default_passage_prefix="title: none | text: ",
+        default_query_prefix="task: search result | query: ",
     ),
 )
 

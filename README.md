@@ -1,197 +1,127 @@
 # ⚡️ dbs-vector
 
-**A High-Performance, Arrow-Native Local Codebase Search Engine and MCP Stdio Server for Apple Silicon.**
+Local RAG search and MCP server for your text documents, markdown files and MySQL
+slow-query logs — very fast, completely offline, LLM-native and optimized for Mac.
 
-`dbs-vector` is a optimized Retrieval-Augmented Generation (RAG) search engine designed specifically for macOS (M-Series chips). It bypasses traditional Python serialization bottlenecks by utilizing Apple's Unified Memory Architecture (UMA) and pure Apache Arrow data pipelines.
+> **Requires Apple Silicon (M-series) + macOS.** Embeddings run on Metal via MLX.
+> Other accelerators: see [Roadmap](#-roadmap).
 
-It enables lightning-fast, hybrid (Vector + Full-Text) search across your local codebase, entirely offline.
+Point it at a directory or a slow-query log, and your LLM gets a search tool over it.
 
 ---
 
-## ✨ Features
-
-*   **Zero-Copy Memory Pipelines**: Uses **MLX** to compute embeddings on the Mac GPU, casting the resulting tensors instantly into NumPy arrays via Unified Memory without costly `float` object instantiation.
-*   **Arrow-Native Storage**: Uses **LanceDB** to stream ingestion batches directly to disk via PyArrow, avoiding the massive memory overhead of JSON and dictionary comprehensions.
-*   **Hybrid Retrieval**: Simultaneously executes Approximate Nearest Neighbor (ANN) cosine vector search and native **Tantivy** Full-Text Search (FTS).
-*   **Code-Aware Chunking**: Intelligently splits documentation and code, respecting markdown fences so that code blocks are indexed as atomic units.
-*   **Production Robustness**: Features dynamic `IVF_PQ` indexing, Rust-level predicate pushdown (metadata filtering), and dataset compaction for delta-updates.
-*   **Remote SQL API Ingestion**: `ApiChunker` pulls pre-aggregated slow-query records from any networked backend over HTTP, replacing local files with a paginated REST API — no changes to the embedding or storage layers.
-*   **Dynamic MCP Tools**: `dbs-vector mcp` exposes one stdio MCP tool per configured engine from `config.yaml`; SQL engines additionally get an analytical `browse_` tool and an impact-triage `top_impacting_` tool for slow-query diagnosis.
-*   **Directory Watch**: document engines can re-ingest file changes from configured roots while `dbs-vector mcp` is running (uses the resident embedder). See [docs/README_WATCH.md](docs/README_WATCH.md).
-
-## 🚀 Installation
-
-This project is built using `uv`, an extremely fast Python package manager.
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/dbsmedya/dbs-vector.git
-   cd dbs-vector
-   ```
-
-2. **Install the CLI package:**
-   ```bash
-   uv sync
-   ```
-   *This automatically sets up the environment and creates the `dbs-vector` executable in your path.*
-
-   Optional extras unlock additional ingestion sources:
-
-   ```bash
-   uv sync --extra sql  # DuckDB ingestion
-   uv sync --extra api  # Remote HTTP API ingestion
-   ```
-
-## 💻 Usage
-
-The application is entirely configuration-driven via `config.yaml`. It supports multiple data types (Engines) such as Markdown and SQL.
-
-### Global Options
-*   `--config-file` / `-c`: Path to your custom `config.yaml` (Defaults to `./config.yaml`).
-
-### Ingesting Documents
-Index markdown files, JSON SQL logs, DuckDB analytical files, or a remote HTTP slow-query API into the local vector store.
+## 🚀 Quick start
 
 ```bash
-# Ingest all markdown files (default)
-uv run dbs-vector ingest "docs/"
-
-# Ingest every configured root for a document engine (paths: in config.yaml)
-uv run dbs-vector ingest --type md
-
-# Ingest SQL slow query logs (JSON format)
-uv run dbs-vector ingest "slow_queries.json" --type sql
-
-# Ingest SQL slow queries from DuckDB (High-Performance Columnar)
-uv run dbs-vector ingest "slow_queries.duckdb" --type sql --rebuild
-
-# Ingest from a remote HTTP API (paginated GET) — uses api_base_url from config.yaml
-uv run dbs-vector ingest --type sql-api
-
-# Or override the URL on the fly (without editing config.yaml):
-uv run dbs-vector ingest "https://slow-log-api.internal/api/v1" --type sql-api
-
-# Ingest via a custom SELECT sent to the remote API
-uv run dbs-vector ingest "https://slow-log-api.internal/api/v1" --type sql-api \
-  --query "SELECT fingerprint_id AS id, sanitized_sql AS text, db AS source, ..."
+uv tool install dbs-vector                    # or: pip install dbs-vector
+dbs-vector init                               # asks what to index, writes the config
+dbs-vector ingest --type md                   # index it (init prints this exact line)
+dbs-vector search "how does dedupe work?"     # ask it something
 ```
 
-### Searching the Codebase
-Execute queries against your chosen engine.
+`init` interviews you and writes a `config.yaml` plus a Claude-format `.mcp.json`.
+Every field it sets is explained in
+[docs/README_CONFIGURATION.md](docs/README_CONFIGURATION.md).
 
-```bash
-# Semantic hybrid search across markdown
-uv run dbs-vector search "What is MLX?"
+---
 
-# Limit results and restrict to a single source file/database
-uv run dbs-vector search "What is MLX?" --limit 10 --source docs/architecture.md
+## 🤖 What it gives an LLM
 
-# Find similar slow queries (SQL clustering)
-uv run dbs-vector search "SELECT * FROM users" --type sql --min-time 1000
+**MCP server.** `dbs-vector mcp` exposes one `search_<engine>` tool per configured
+engine over stdio, plus `list_engines` for discovery. Works with Claude Code, Claude
+Desktop, and any stdio MCP client. → [MCP guide](docs/README_MCP.md)
 
-# Emit full results (score, source, full text, metadata) as JSON to stdout.
-# Logs go to stderr, so stdout stays clean JSON and pipes safely into jq.
-uv run dbs-vector search "SELECT * FROM users" --type sql --json | jq '.[].chunk.source'
-```
+**Hybrid search you can trust.** Vector and full-text retrieval run together and fuse
+into one ranking. Every result carries a true cosine similarity, so an empty result
+means *low confidence*, not *nothing indexed*. → [Scoring & calibration](docs/README_CALIBRATE_CORPUS.md)
 
-Search options:
+**Chunk navigation.** A hit is a starting point, not a dead end — the model can read the
+chunks on either side of a match to recover context the chunker split apart.
+→ [MCP guide](docs/README_MCP.md)
 
-| Option | Alias | Description |
-| --- | --- | --- |
-| `--type` | `-t` | Engine to search (`md`, `sql`, `md-granite`, …). Default: `md`. |
-| `--source` | `-s` | Restrict results to a single file or database. |
-| `--limit` | `-l` | Maximum number of results. Default: `5`. |
-| `--min-time` | | (SQL only) Minimum execution time in ms. |
-| `--json` | | Dump full results as a JSON array to stdout instead of the human-readable summary. Nothing is truncated. |
+**A live index.** Watched engines re-ingest changed files while the MCP server runs, so
+answers follow your edits without a manual re-index. → [Watch guide](docs/README_WATCH.md)
 
-> **Indexes are built automatically at the end of every `ingest` run.** Two indexes are created:
-> - **IVF_PQ** vector index (only when the table has > 256 rows)
-> - **Tantivy FTS** inverted index (required for hybrid search)
->
-> If you see a *"Cannot perform full text search unless an INVERTED index has been created"* error, it means the FTS index was never built for your table. Fix it by re-running ingestion — use `--rebuild` to wipe and re-index from scratch:
-> ```bash
-> uv run dbs-vector ingest "docs/" --rebuild
-> uv run dbs-vector ingest "slow_queries.json" --type sql --rebuild
-> ```
+**Slow-query triage.** Point it at a MySQL slow-query log and one call returns the
+costliest query fingerprints ranked by `calls × execution_time`, each with a
+paste-ready exemplar for `EXPLAIN`. → [SQL guide](docs/README_SQL.md)
 
-For detailed specifications on each ingestion source, see:
-👉 **[SQL Engine Documentation](docs/README_SQL.md)**
-👉 **[DuckDB Ingestion Documentation](docs/README_duckdb.md)**
-👉 **[Remote SQL API Ingestion](docs/README_REMOTE_SQL_API.md)**
+**Your data never leaves the machine.** No dependency on an external embedding API: the
+model you choose is pulled once from Hugging Face and installed locally, and every
+embedding after that runs on your own GPU — with Hugging Face telemetry disabled in code.
+No third-party service is contacted. Pair it with a local LLM and the whole chain stays
+on-premise, which is the point when the corpus is production SQL; verbatim queries
+(`raw_query`, often PII) stay hidden unless you opt in with `--allow-raw-queries`.
+→ [MCP guide](docs/README_MCP.md)
 
-### Model Context Protocol (MCP) Server
-`dbs-vector` includes a built-in FastMCP server compatible with stdio-based MCP clients such as Claude Desktop and Claude Code.
+**Bundled skills.** Two read-only Claude skills ship under `skills/`:
+`find-impacting-queries` (triage → index recommendation) and `query-rewrite`, its
+handoff partner for when no index will help.
+→ [Skill workflow](docs/README_MCP.md#diagnostic-skills-find-impacting-queries--query-rewrite)
 
-```bash
-# stdio — each client spawns its own dbs-vector process
-uv run dbs-vector mcp
-```
+---
 
-Each configured engine registers a tool named `search_<engine_name>` with dashes replaced by underscores, for example `search_md`, `search_sql`, and `search_md_granite`. Use the `list_engines` tool to inspect loaded engines, model contracts, profiles, and table names.
+## ⚡ Why it's fast
 
-**SQL engines get two additional analytical tools.** `browse_<engine>` provides non-semantic access — point-lookup by `id`, ranking by a scalar column (`calls`, `execution_time_ms`) with no query string, and grouping/aggregation ("which table or user burns the most DB time"), plus derived `impact_score` and `selectivity` columns. `top_impacting_<engine>` is a one-call **impact triage** that returns the heaviest slow-query fingerprints ranked by `impact_score = calls × execution_time_ms`, each with a paste-ready exemplar SQL for `EXPLAIN`. Verbatim production SQL (`raw_query`, possibly PII) is exposed only when the server is launched with `--allow-raw-queries` (fail-closed by default). See the MCP documentation for the full per-tool reference.
+**Metal, not CPU.** Embeddings run on the Mac GPU through MLX, and tensors cross into
+NumPy through unified memory instead of being rebuilt value by value.
+→ [Architecture](docs/README_ARCHITECTURE.md)
 
-For setup instructions, see:
-👉 **[MCP Server Documentation](docs/README_MCP.md)**
+**Arrow end to end, Rust underneath.** Chunks stream to LanceDB as Arrow record batches;
+vector indexing and full-text search are Rust, not Python.
+→ [Architecture](docs/README_ARCHITECTURE.md)
 
-### Bundled Claude Skills
+**Sized to your GPU.** dbs-vector reads your Metal memory budget and derives chunk and
+batch settings that fit it — and when a config doesn't fit, it tells you which numbers
+would. → [Profiles & memory](docs/README_PROFILES.md)
 
-`dbs-vector` ships two read-only SQL-performance skills under `skills/` that
-combine its slow-query MCP tools with a live MySQL MCP (e.g. `mysql-mcp-server`):
+---
 
-*   **`find-impacting-queries`** — finds and diagnoses the costliest queries:
-    a one-call `top_impacting_<engine>` triage → live `EXPLAIN` + `list_indexes`
-    + `table_size` → an index recommendation, an *already-optimal / contention*
-    verdict, or a *rewrite-candidate* handoff. Index-first; no business
-    knowledge required.
-*   **`query-rewrite`** — the handoff partner: rewrites a query when an index
-    won't help (full-table aggregates, `SELECT *` + deep pagination, redundant
-    joins, ORM noise), interviewing the domain owner first so a rewrite never
-    silently changes results.
+## 🔧 Make it yours
 
-See **[MCP Server Documentation](docs/README_MCP.md#diagnostic-skills-find-impacting-queries--query-rewrite)** for the end-to-end workflow.
+**What it can index.** Plain text, Markdown, MySQL slow-query logs (JSON or DuckDB), and
+any paginated HTTP API. Markdown is parsed with `markdown-it-py` and split along real
+document structure — headings, lists, tables, fenced code — so a chunk ends where a
+section does and a code block is never cut in half.
+→ [Chunking](docs/README_DOCS.md) · [SQL](docs/README_SQL.md) · [DuckDB](docs/README_duckdb.md) · [API](docs/README_REMOTE_SQL_API.md)
 
-## 🏗 Architecture & Roadmap
+**Swap the embedding model.** Models are declared, not hardcoded. Two ship today — a
+2K-context English-first model and a 32K multilingual one — and adding a third is a
+single registration. → [Embedding models](docs/README_EMBEDDINGS.md)
 
-`dbs-vector` is built upon strict **Clean Architecture** and **SOLID** principles. It utilizes a **Configuration-Driven Registry Pattern**, allowing new data engines (e.g., LibCST, Logs) to be added by simply updating `config.yaml` and registering new mappers/chunkers without modifying core orchestration logic.
+**Model-specific workflows.** Instruction-tuned models want one prompt for documents,
+another for queries, and another again for clustering. That is configuration, not code.
+→ [Workflows](docs/README_WORKFLOW.md)
 
-### Engines
+**Configure everything else.** Engines, chunk sizes, batch sizes, ignore patterns, watch
+behaviour and result filtering all live in `config.yaml`. `init` hands you a working
+one; the guide explains every field. → [Configuration guide](docs/README_CONFIGURATION.md)
 
-| Type | Model | Notes |
-|---|---|---|
-| `md` | embeddinggemma-300m-bf16 | Markdown/prose, default |
-| `sql` | embeddinggemma-300m-bf16 | DuckDB slow-query log |
-| `sql-api` | embeddinggemma-300m-bf16 | Remote slow-query API |
-| `md-granite` | granite-embedding-311m-multilingual-r2 | 32K context, multilingual |
-| `sql-granite` | granite-embedding-311m-multilingual-r2 | DuckDB log, Granite |
-| `sql-api-granite` | granite-embedding-311m-multilingual-r2 | Remote API, Granite |
+---
 
-See `docs/README_EMBEDDINGS.md` for model details.
+## 🗺 Roadmap
 
-### Gemma vs Granite — which to use
+**Other accelerators.** Embedding sits behind a single `IEmbedder` protocol, so CUDA or
+CPU support means writing one new embedder that returns NumPy arrays — no change to
+ingestion, storage, the CLI, or MCP. Not implemented; no CUDA hardware on hand.
 
-Gemma engines (`md`, `sql`, `sql-api`) are the recommended default for most workloads: instruction-tuned with asymmetric search/clustering prefixes, fast on Apple Silicon, and consistently the strongest on English documentation. Reach for Granite engines (`md-granite`, `sql-granite`, `sql-api-granite`) when your corpus contains substantial non-English content (Granite R2 supports 200+ languages, Gemma 100+), when individual documents exceed Gemma's 2K-token context (Granite handles up to 32K), or when you want to A/B test chunk-size profiles against the Gemma baseline. Granite is a symmetric bi-encoder trained without instruction prefixes — leave `passage_prefix` and `query_prefix` empty when wiring a Granite engine. See [`docs/README_granite.md`](docs/README_granite.md) for tuning recipes and the rationale.
+Longer-range plans (AST-aware chunking, context assembly) are in
+[docs/README.md](docs/README.md).
 
-### Specialized Gemma Workflows
-The project is optimized for instruction-tuned models like `embeddinggemma`. It supports asymmetric task-based workflows defined in `config.yaml`:
-*   **Markdown (Search Result)**: Uses the `task: search result` prefix for queries and `title: none | text: ` for documents, maximizing retrieval accuracy for RAG.
-*   **SQL (Clustering)**: Uses the `task: clustering` prefix for both ingestion and search, enabling high-precision semantic grouping of logically similar slow queries.
-
-### Future Hardware Support (CUDA/TPU)
-Because the core RAG orchestration relies exclusively on the `IEmbedder` Protocol, the application is strictly hardware-agnostic at its core. While currently optimized for Apple Silicon via `MLXEmbedder`, future deployment to cloud GPUs or Linux environments simply requires implementing a new `CudaEmbedder` (using PyTorch/Transformers) that returns standard NumPy arrays. No changes to the ingestion, storage, CLI, or MCP layers are necessary to support new hardware accelerators. No access to a CUDA hardware at the moment.
-
-For a deep dive into the engineering, the Apache Arrow ingestion lifecycle, and the blueprint for AST/LibCST integration, see the official documentation:
-
-👉 **[Architecture & Engineering Documentation](docs/README.md)**
+---
 
 ## 🛠 Development
 
-To contribute to `dbs-vector`, the project utilizes `poethepoet` as a task runner and implements strict quality gates (Ruff & Mypy).
-
 ```bash
-# Run the entire validation suite (Format, Lint, Typecheck, Pytest)
-uv run poe check
-
-# Run tests with coverage
-uv run poe test-cov
+git clone https://github.com/dbsmedya/dbs-vector.git && cd dbs-vector
+uv sync
+uv run poe check     # format, lint, typecheck, test
 ```
+
+---
+
+## 📄 Status & license
+
+In development for six months and in daily use across several organizations. Licensed
+[GPL-3.0-or-later](LICENSE.md), which disclaims warranty and liability — you run it at
+your own risk. Issues and pull requests are welcome.
