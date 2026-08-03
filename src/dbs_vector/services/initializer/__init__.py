@@ -37,6 +37,10 @@ def _ask_engine_name(io: PromptIO) -> str:
     bad name must supply a good one after it; ScriptedIO's repeat guard turns
     a missing follow-up into a clear failure rather than a hang.
     """
+    io.echo(
+        "\nPick any name you like - it becomes the MCP tool your client sees "
+        "(e.g. 'docs' gives you search_docs)."
+    )
     while True:
         name = io.ask_text("Engine name", default="md").strip()
         if ENGINE_NAME_PATTERN.match(name):
@@ -121,7 +125,7 @@ def run_init(
 
     kind = EngineKindRegistry.get(kind_key)
     contract = ModelRegistry.get(model_key)
-    kind_answers = kind.ask(io)
+    kind_answers = kind.ask(io, cwd)
 
     for path in kind_answers.paths:
         if not Path(path).is_dir():

@@ -146,9 +146,17 @@ def test_aborting_on_an_unreadable_mcp_file_writes_nothing(tmp_path, scripted_io
 
 
 def test_nothing_is_written_when_a_prompt_raises(tmp_path, scripted_io):
-    """All writes happen after the last question."""
+    """All writes happen after the last question.
+
+    Relative paths used to be the trigger here, but Task 13 Part C made them
+    valid (resolved against cwd). Watch-without-paths is still a genuine
+    prompt-time ValueError from DocumentKind.ask, so it still proves the
+    guarantee: nothing is written once a prompt raises.
+    """
     _prepare(tmp_path)
-    io = scripted_io(_answers(tmp_path, **{PATH_PROMPT: ["relative/path"]}))
+    io = scripted_io(
+        _answers(tmp_path, **{PATH_PROMPT: [], "Watch these paths for changes?": True})
+    )
     with pytest.raises(ValueError):
         run_init(io, cwd=tmp_path, memory_budget_gb=BUDGET)
     assert not (tmp_path / "config.yaml").exists()
@@ -295,6 +303,13 @@ def test_engine_name_with_dashes_produces_safe_table_and_workflow(tmp_path, scri
     result = run_init(io, cwd=tmp_path, memory_budget_gb=BUDGET)
     config = yaml.safe_load(result.config_path.read_text(encoding="utf-8"))
     assert config["engines"]["my-docs"]["table_name"] == "my_docs_vault"
+
+
+def test_engine_name_prompt_explains_the_mcp_tool_naming(tmp_path, scripted_io):
+    _prepare(tmp_path)
+    io = scripted_io(_answers(tmp_path))
+    run_init(io, cwd=tmp_path, memory_budget_gb=BUDGET)
+    assert any("search_docs" in line for line in io.echoed)
 
 
 @pytest.mark.skipif(not _CASE_INSENSITIVE_FS, reason="case-sensitive filesystem")

@@ -425,8 +425,9 @@ class TyperPromptIO:
 
     def ask_choice(self, prompt: str, options: list[tuple[str, str]], default: str) -> str:
         typer.echo(f"\n{prompt}:")
+        width = max((len(key) for key, _ in options), default=0)
         for key, label in options:
-            typer.echo(f"  {key:<10} {label}")
+            typer.echo(f"  {key:<{width}}    {label}")
         valid = [key for key, _ in options]
         while True:
             choice = str(typer.prompt("  choice", default=default, show_default=True)).strip()

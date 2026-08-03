@@ -6,6 +6,7 @@ indexing?" only when more than one kind is registered, so the branch already
 exists with a single arm.
 """
 
+from pathlib import Path
 from typing import Protocol
 
 from dbs_vector.core.model_registry import ModelContract
@@ -37,7 +38,7 @@ class EngineKind(Protocol):
     mapper_type: str
     supports_watch: bool
 
-    def ask(self, io: PromptIO) -> KindAnswers:
+    def ask(self, io: PromptIO, cwd: Path) -> KindAnswers:
         """Collect this kind's engine-specific answers."""
         ...
 
@@ -61,17 +62,23 @@ class DocumentKind:
     mapper_type = "document"
     supports_watch = True
 
-    def ask(self, io: PromptIO) -> KindAnswers:
+    def ask(self, io: PromptIO, cwd: Path) -> KindAnswers:
         from dbs_vector.infrastructure.chunking.filters import FilterRegistry
 
+        io.echo(f"\nCurrent directory: {cwd}")
         paths: list[str] = []
         while True:
             raw = io.ask_text(PROMPT_PATH, default="").strip()
             if not raw:
                 break
-            if not raw.startswith("/"):
-                raise ValueError(f"Path '{raw}' must be an absolute directory path.")
-            paths.append(raw)
+            candidate = Path(raw).expanduser()
+            if not candidate.is_absolute():
+                # Relative to where the user is standing, not to wherever the
+                # process happens to be. Echo the result so the stored value is
+                # never a surprise.
+                candidate = (cwd / candidate).resolve()
+                io.echo(f"  -> {candidate}")
+            paths.append(str(candidate))
 
         extra = io.ask_text(PROMPT_IGNORE, default="").strip()
         extra_patterns = [p.strip() for p in extra.split(",") if p.strip()]

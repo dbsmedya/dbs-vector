@@ -107,3 +107,17 @@ def test_a_terminal_refusal_exits_one_without_a_traceback(tmp_path):
     assert result.exit_code == 1
     assert "pyproject.toml" in result.output
     assert "Traceback" not in result.output
+
+
+def test_choice_columns_are_separated(tmp_path):
+    """Both model keys are exactly 10 chars, so the old fixed `:<10` rendered
+    them one space from their labels. Padding is now computed from the longest
+    key plus a four-space gutter."""
+    _prepare(tmp_path)
+    result = runner.invoke(app, ["init"], input=_answers(tmp_path))
+    assert result.exit_code == 0, result.output
+    option_line = next(ln for ln in result.output.splitlines() if ln.startswith("  granite-r2"))
+    assert (
+        option_line
+        == "  granite-r2    ibm-granite/granite-embedding-311m-multilingual-r2 (32768-token context, 768-dim)"
+    )

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from dbs_vector.core.model_registry import ModelRegistry
@@ -31,21 +33,41 @@ def test_build_profile_delegates_to_document_derivation():
     assert profile["chunk_max_tokens"] == 1536
 
 
-def test_ask_collects_multiple_paths_until_blank(scripted_io):
+def test_ask_collects_multiple_paths_until_blank(scripted_io, tmp_path):
     """The list is consumed one answer per call; exhaustion yields the blank
     default that ends the loop."""
     io = scripted_io({PATH_PROMPT: ["/tmp/a", "/tmp/b"]})
-    answers = DocumentKind().ask(io)
+    answers = DocumentKind().ask(io, tmp_path)
     assert answers.paths == ["/tmp/a", "/tmp/b"]
 
 
-def test_ask_rejects_a_relative_path(scripted_io):
-    io = scripted_io({PATH_PROMPT: ["relative/dir"]})
-    with pytest.raises(ValueError, match="must be an absolute"):
-        DocumentKind().ask(io)
+def test_ask_resolves_a_relative_path_against_cwd(scripted_io, tmp_path):
+    io = scripted_io({PATH_PROMPT: ["notes"]})
+    answers = DocumentKind().ask(io, tmp_path)
+    assert answers.paths == [str((tmp_path / "notes").resolve())]
+    assert any(str((tmp_path / "notes").resolve()) in line for line in io.echoed)
 
 
-def test_ask_appends_extra_ignore_patterns_to_the_defaults(scripted_io):
+def test_ask_expands_a_tilde_path(scripted_io, tmp_path):
+    io = scripted_io({PATH_PROMPT: ["~/notes"]})
+    answers = DocumentKind().ask(io, tmp_path)
+    assert answers.paths == [str(Path("~/notes").expanduser())]
+
+
+def test_ask_stores_an_absolute_path_verbatim(scripted_io, tmp_path):
+    """No .resolve() on absolute input: /tmp would become /private/tmp here."""
+    io = scripted_io({PATH_PROMPT: ["/tmp/deneme"]})
+    answers = DocumentKind().ask(io, tmp_path)
+    assert answers.paths == ["/tmp/deneme"]
+
+
+def test_ask_announces_the_working_directory(scripted_io, tmp_path):
+    io = scripted_io({PATH_PROMPT: [str(tmp_path / "a")]})
+    DocumentKind().ask(io, tmp_path)
+    assert any(str(tmp_path) in line for line in io.echoed)
+
+
+def test_ask_appends_extra_ignore_patterns_to_the_defaults(scripted_io, tmp_path):
     """Setting ignore_patterns REPLACES the defaults in config.py, so the
     wizard must always emit the full list."""
     io = scripted_io(
@@ -54,40 +76,40 @@ def test_ask_appends_extra_ignore_patterns_to_the_defaults(scripted_io):
             "Additional ignore patterns (comma-separated)": ".ayder/archived/*",
         }
     )
-    answers = DocumentKind().ask(io)
+    answers = DocumentKind().ask(io, tmp_path)
     assert answers.ignore_patterns == [*DEFAULT_IGNORE_PATTERNS, ".ayder/archived/*"]
 
 
-def test_ask_defaults_ignore_patterns_to_exactly_the_config_defaults(scripted_io):
+def test_ask_defaults_ignore_patterns_to_exactly_the_config_defaults(scripted_io, tmp_path):
     io = scripted_io({PATH_PROMPT: ["/tmp/a"]})
-    answers = DocumentKind().ask(io)
+    answers = DocumentKind().ask(io, tmp_path)
     assert answers.ignore_patterns == [".#*", "*~", "*.tmp", ".DS_Store"]
 
 
-def test_ask_defaults_exclusion_filters_to_the_shipped_pair(scripted_io):
+def test_ask_defaults_exclusion_filters_to_the_shipped_pair(scripted_io, tmp_path):
     io = scripted_io({PATH_PROMPT: ["/tmp/a"]})
-    answers = DocumentKind().ask(io)
+    answers = DocumentKind().ask(io, tmp_path)
     assert answers.exclusion_filters == ["excalidraw", "compressed_json"]
 
 
-def test_ask_does_not_prompt_for_debounce_when_watch_is_off(scripted_io):
+def test_ask_does_not_prompt_for_debounce_when_watch_is_off(scripted_io, tmp_path):
     io = scripted_io({PATH_PROMPT: ["/tmp/a"]})
-    DocumentKind().ask(io)
+    DocumentKind().ask(io, tmp_path)
     assert "Debounce seconds" not in io.asked
 
 
-def test_ask_prompts_for_debounce_when_watch_is_on(scripted_io):
+def test_ask_prompts_for_debounce_when_watch_is_on(scripted_io, tmp_path):
     io = scripted_io({PATH_PROMPT: ["/tmp/a"], "Watch these paths for changes?": True})
-    answers = DocumentKind().ask(io)
+    answers = DocumentKind().ask(io, tmp_path)
     assert answers.watch_enabled is True
     assert answers.watch_debounce_seconds == 3.0
 
 
-def test_ask_refuses_watch_without_paths(scripted_io):
+def test_ask_refuses_watch_without_paths(scripted_io, tmp_path):
     """config.py rule 10: watch.enabled requires a non-empty paths list."""
     io = scripted_io({"Watch these paths for changes?": True})
     with pytest.raises(ValueError, match="at least one directory"):
-        DocumentKind().ask(io)
+        DocumentKind().ask(io, tmp_path)
 
 
 def test_build_engine_block_emits_watch_only_when_enabled():
