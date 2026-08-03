@@ -1,10 +1,14 @@
+import unicodedata
+
 import pytest
 
 from dbs_vector.services.initializer.render import (
+    _CASE_INSENSITIVE_FS,
     DestinationPlan,
     DestinationPlanner,
     commit_plan,
     plan_destination,
+    reservation_key,
     write_atomic,
 )
 
@@ -246,8 +250,8 @@ def test_planner_reserves_each_plans_claims(tmp_path, scripted_io):
     plan = planner.plan(target, alt_name="config.1.yaml")
 
     assert planner.reserved == {
-        target.resolve(),
-        (tmp_path / "config.yaml.bak").resolve(),
+        reservation_key(target),
+        reservation_key(tmp_path / "config.yaml.bak"),
     }
     assert plan.backup_to == tmp_path / "config.yaml.bak"
 
@@ -310,3 +314,44 @@ def test_write_atomic_replaces_existing_content(tmp_path):
     target.write_text("old", encoding="utf-8")
     write_atomic(target, "new")
     assert target.read_text(encoding="utf-8") == "new"
+
+
+def test_reservation_key_nfc_normalizes(tmp_path):
+    """macOS stores decomposed forms; the same name typed two ways is one file."""
+    composed = tmp_path / unicodedata.normalize("NFC", "café.yaml")
+    decomposed = tmp_path / unicodedata.normalize("NFD", "café.yaml")
+    assert reservation_key(composed) == reservation_key(decomposed)
+
+
+@pytest.mark.skipif(not _CASE_INSENSITIVE_FS, reason="case-sensitive filesystem")
+def test_reservation_key_folds_case_where_the_filesystem_does(tmp_path):
+    assert reservation_key(tmp_path / "config.yaml") == reservation_key(tmp_path / "CONFIG.YAML")
+
+
+@pytest.mark.skipif(not _CASE_INSENSITIVE_FS, reason="case-sensitive filesystem")
+def test_case_variant_destinations_collide(tmp_path, scripted_io):
+    """Regression: config.yaml and CONFIG.YAML are ONE file here. resolve()
+    reports them as distinct, so only a normalized key catches it. Neither
+    exists yet, so the existence check cannot help."""
+    planner = DestinationPlanner(scripted_io({"New filename": "mcp.json"}))
+
+    first = planner.plan(tmp_path / "config.yaml", alt_name="config.1.yaml")
+    second = planner.plan(tmp_path / "CONFIG.YAML", alt_name=".mcp.1.json")
+
+    assert first.path == tmp_path / "config.yaml"
+    assert second.path == tmp_path / "mcp.json"
+
+
+@pytest.mark.skipif(not _CASE_INSENSITIVE_FS, reason="case-sensitive filesystem")
+def test_a_case_variant_backup_is_also_refused(tmp_path, scripted_io):
+    """The same flaw in the backup arm: a later plan's backup must not land on
+    an earlier plan's primary output spelled with different case."""
+    mcp = tmp_path / ".mcp.json"
+    mcp.write_text('{"OLD": "MCP"}', encoding="utf-8")
+    planner = DestinationPlanner(scripted_io({f"{mcp} exists. What should init do?": "overwrite"}))
+
+    first = planner.plan(tmp_path / ".MCP.JSON.BAK", alt_name="config.1.yaml")
+    second = planner.plan(mcp, alt_name=".mcp.1.json")
+
+    assert first.path == tmp_path / ".MCP.JSON.BAK"
+    assert second.backup_to != tmp_path / ".mcp.json.bak"

@@ -4,6 +4,7 @@ import pytest
 import yaml
 
 from dbs_vector.services.initializer import run_init
+from dbs_vector.services.initializer.render import _CASE_INSENSITIVE_FS
 
 BUDGET = 21.0
 PATH_PROMPT = "Directory to index (blank when done)"
@@ -292,3 +293,27 @@ def test_engine_name_with_dashes_produces_safe_table_and_workflow(tmp_path, scri
     result = run_init(io, cwd=tmp_path, memory_budget_gb=BUDGET)
     config = yaml.safe_load(result.config_path.read_text(encoding="utf-8"))
     assert config["engines"]["my-docs"]["table_name"] == "my_docs_vault"
+
+
+@pytest.mark.skipif(not _CASE_INSENSITIVE_FS, reason="case-sensitive filesystem")
+def test_case_variant_destinations_cannot_destroy_the_config(tmp_path, scripted_io):
+    """End-to-end reproduction of the reported blocker: both destinations
+    named the same file in different case; the MCP commit overwrote the YAML
+    while InitResult still reported two distinct paths."""
+    _prepare(tmp_path)
+    io = scripted_io(
+        _answers(
+            tmp_path,
+            **{
+                "Write config to": str(tmp_path / "config.yaml"),
+                "Write MCP config to": str(tmp_path / "CONFIG.YAML"),
+                "New filename": "mcp.json",
+            },
+        )
+    )
+
+    result = run_init(io, cwd=tmp_path, memory_budget_gb=BUDGET)
+
+    assert result.mcp_path == tmp_path / "mcp.json"
+    assert yaml.safe_load(result.config_path.read_text(encoding="utf-8"))["engines"]
+    assert json.loads(result.mcp_path.read_text(encoding="utf-8"))["mcpServers"]

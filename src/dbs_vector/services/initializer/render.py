@@ -2,7 +2,9 @@
 
 import json
 import os
+import sys
 import tempfile
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -202,6 +204,30 @@ def merge_mcp_config(
     return merged
 
 
+# Reservation keys are an IDENTITY function for collision detection only.
+# Files are still written with exactly the name the user typed.
+#
+# Path.resolve() cannot serve as that identity: for an ABSENT path it is a
+# pure string operation, so `config.yaml` and `CONFIG.YAML` resolve to
+# different strings while naming ONE inode on APFS/HFS+/NTFS. Reproduced:
+# both destinations were accepted, the MCP commit overwrote the generated
+# YAML, and InitResult still reported two distinct paths.
+#
+# os.path.normcase() is a no-op on macOS and therefore cannot be used here.
+#
+# The ambiguous case is resolved asymmetrically. A FALSE collision costs one
+# extra "choose another name" prompt; a MISSED collision destroys a file. So
+# we casefold by platform rather than probing the filesystem - probing means
+# writing, which would break the guarantee that planning touches no disk.
+_CASE_INSENSITIVE_FS = sys.platform in ("darwin", "win32")
+
+
+def reservation_key(path: Path) -> str:
+    """Normalized identity of `path` for collision detection."""
+    text = unicodedata.normalize("NFC", str(path.resolve()))
+    return text.casefold() if _CASE_INSENSITIVE_FS else text
+
+
 @dataclass(frozen=True)
 class DestinationPlan:
     """A DECISION about where to write. Nothing has happened on disk yet.
@@ -223,7 +249,7 @@ class DestinationPlan:
         return (self.path, self.backup_to)
 
 
-def _free_backup_path(target: Path, reserved: set[Path]) -> Path:
+def _free_backup_path(target: Path, reserved: set[str]) -> Path:
     """`config.yaml.bak`, or `.bak.1`, `.bak.2`...
 
     Skips a candidate that EXISTS (so a second run does not destroy the first
@@ -234,20 +260,20 @@ def _free_backup_path(target: Path, reserved: set[Path]) -> Path:
     """
     candidate = target.with_suffix(target.suffix + ".bak")
     counter = 1
-    while candidate.exists() or candidate.resolve() in reserved:
+    while candidate.exists() or reservation_key(candidate) in reserved:
         candidate = target.with_suffix(f"{target.suffix}.bak.{counter}")
         counter += 1
     return candidate
 
 
 def _ask_free_name(
-    io: PromptIO, target: Path, alt_name: str, reserved: set[Path]
+    io: PromptIO, target: Path, alt_name: str, reserved: set[str]
 ) -> DestinationPlan:
     """Prompt until a name is free on disk AND unclaimed by this run."""
     while True:
         name = io.ask_text("New filename", default=alt_name).strip() or alt_name
         candidate = target.parent / name
-        if candidate.resolve() in reserved:
+        if reservation_key(candidate) in reserved:
             io.echo(f"  {candidate} is already being written by this run - choose another name.")
         elif candidate.exists():
             io.echo(f"  {candidate} already exists - choose another name.")
@@ -260,7 +286,7 @@ def plan_destination(
     target: Path,
     alt_name: str,
     allow_overwrite: bool = True,
-    reserved: tuple[Path, ...] = (),
+    reserved: tuple[Path | str, ...] = (),
 ) -> DestinationPlan:
     """Decide where to write, asking only when the target is unavailable.
 
@@ -271,18 +297,19 @@ def plan_destination(
     existing file could not be read, where overwriting would destroy content
     init was unable to see.
 
-    `reserved` holds paths an earlier plan in this same run already claimed.
-    Without it, answering both destination prompts with the same absent
-    filename produces two plans for one path, and the second commit silently
-    overwrites the first - the generated config would be replaced by the MCP
-    JSON. A reserved path is never offered for overwrite; the only resolution
-    is a different name.
+    `reserved` holds paths (or already-normalized reservation keys, as
+    `DestinationPlanner` passes) an earlier plan in this same run already
+    claimed. Without it, answering both destination prompts with the same
+    absent filename produces two plans for one path, and the second commit
+    silently overwrites the first - the generated config would be replaced by
+    the MCP JSON. A reserved path is never offered for overwrite; the only
+    resolution is a different name.
     """
-    reserved_paths = {Path(r).resolve() for r in reserved}
+    reserved_keys = {reservation_key(Path(r)) for r in reserved}
 
-    if target.resolve() in reserved_paths:
+    if reservation_key(target) in reserved_keys:
         io.echo(f"  {target} is already being written by this run - choose another name.")
-        return _ask_free_name(io, target, alt_name, reserved_paths)
+        return _ask_free_name(io, target, alt_name, reserved_keys)
 
     if not target.exists():
         return DestinationPlan(path=target, backup_from=None)
@@ -302,12 +329,12 @@ def plan_destination(
         return DestinationPlan(
             path=target,
             backup_from=target,
-            backup_to=_free_backup_path(target, reserved_paths),
+            backup_to=_free_backup_path(target, reserved_keys),
         )
 
     # Re-prompt rather than raise: one taken filename must not discard the
     # whole interview.
-    return _ask_free_name(io, target, alt_name, reserved_paths)
+    return _ask_free_name(io, target, alt_name, reserved_keys)
 
 
 class DestinationPlanner:
@@ -323,7 +350,7 @@ class DestinationPlanner:
 
     def __init__(self, io: PromptIO) -> None:
         self._io = io
-        self._reserved: set[Path] = set()
+        self._reserved: set[str] = set()
 
     def plan(
         self,
@@ -338,12 +365,11 @@ class DestinationPlanner:
             allow_overwrite=allow_overwrite,
             reserved=tuple(self._reserved),
         )
-        # Resolved, because plan_destination compares resolved candidates.
-        self._reserved.update(path.resolve() for path in plan.claims())
+        self._reserved.update(reservation_key(p) for p in plan.claims())
         return plan
 
     @property
-    def reserved(self) -> frozenset[Path]:
+    def reserved(self) -> frozenset[str]:
         """Every path this run has already claimed. Read-only."""
         return frozenset(self._reserved)
 
