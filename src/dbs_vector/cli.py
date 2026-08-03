@@ -477,8 +477,10 @@ def init() -> None:
     # command fails with "Unknown engine type". The path argument is omitted
     # deliberately: a document engine with no path ingests its configured
     # `paths:` roots.
+    # `uv run` requires uv, which a `pip install`/installed user may not have.
+    prefix = "uv run dbs-vector" if result.used_checkout else "dbs-vector"
     io.echo(
-        f"\nNext: uv run dbs-vector --config-file {result.config_path} "
+        f"\nNext: {prefix} --config-file {result.config_path} "
         f"ingest --type {result.engine_name}\n"
         f"Then restart your MCP client to pick up {result.mcp_path}."
     )

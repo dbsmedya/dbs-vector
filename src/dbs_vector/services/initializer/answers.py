@@ -27,7 +27,10 @@ class InitAnswers:
     passage_prefix: str
     query_prefix: str
     db_path: str
-    install_dir: str
+    # None when dbs-vector is installed (already on PATH) rather than a
+    # source checkout - the published wheel ships no pyproject.toml, so
+    # there is no directory for `uv --directory <dir>` to resolve.
+    install_dir: str | None
     config_path: str
     mcp_path: str
     kind: KindAnswers
@@ -46,3 +49,7 @@ class InitResult:
     config_backup: Path | None = None
     mcp_backup: Path | None = None
     notes: list[str] = field(default_factory=list)
+    # False when dbs-vector was detected as an installed package rather than
+    # a source checkout - `uv run` requires uv, which a `pip install` user
+    # may not have, so the CLI's next-step hint must not assume it.
+    used_checkout: bool = True

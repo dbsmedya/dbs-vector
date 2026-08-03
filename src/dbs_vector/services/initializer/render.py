@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import tomllib
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,29 @@ from dbs_vector.services.initializer.io import PromptIO
 from dbs_vector.services.initializer.kinds import EngineKind
 
 _DEFAULT_NPROBES = 20
+
+DISTRIBUTION_NAME = "dbs-vector"
+
+
+def is_dbs_vector_checkout(directory: Path) -> bool:
+    """True when `directory` is a dbs-vector SOURCE CHECKOUT.
+
+    The presence of pyproject.toml is not sufficient: every Python project has
+    one, and `uv --directory <dir> run dbs-vector mcp` against a foreign
+    project fails later, at MCP-client startup, where it is hard to diagnose.
+    Verify the project name.
+    """
+    manifest = directory / "pyproject.toml"
+    if not manifest.is_file():
+        return False
+    try:
+        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return False
+    project = data.get("project")
+    if not isinstance(project, dict):
+        return False
+    return project.get("name") == DISTRIBUTION_NAME
 
 
 def table_name_for(engine_name: str) -> str:
@@ -165,7 +189,7 @@ def read_mcp_config(path: Path) -> dict[str, Any] | None:
 
 def merge_mcp_config(
     existing: dict[str, Any] | None,
-    install_dir: str,
+    install_dir: str | None,
     config_path: str,
     server_name: str = "dbs-vector",
 ) -> dict[str, Any]:
@@ -176,6 +200,11 @@ def merge_mcp_config(
     the Typer callback first with its own `config.yaml` default, so the
     spawned server loads and validates whatever config.yaml happens to sit in
     its cwd before the override applies.
+
+    `install_dir=None` means dbs-vector is INSTALLED (already on PATH), not a
+    source checkout - the published wheel ships no pyproject.toml, so `uv
+    --directory <dir> run dbs-vector` has nothing to resolve. The launch line
+    then invokes the binary directly with no `uv` and no `--directory`.
 
     `--allow-raw-queries` is deliberately not emitted: it exposes literal PII
     from the SQL raw_query column and has no effect on a document engine.
@@ -189,19 +218,33 @@ def merge_mcp_config(
     if not isinstance(servers, dict):
         servers = {}
     merged["mcpServers"] = servers
-    servers[server_name] = {
-        "command": "uv",
-        "args": [
-            "--directory",
-            install_dir,
-            "run",
-            "dbs-vector",
-            "--config-file",
-            config_path,
-            "mcp",
-        ],
-    }
+    if install_dir is None:
+        servers[server_name] = {
+            "command": "dbs-vector",
+            "args": ["--config-file", config_path, "mcp"],
+        }
+    else:
+        servers[server_name] = {
+            "command": "uv",
+            "args": [
+                "--directory",
+                install_dir,
+                "run",
+                "dbs-vector",
+                "--config-file",
+                config_path,
+                "mcp",
+            ],
+        }
     return merged
+
+
+def detect_install_mode() -> tuple[str, Path | None]:
+    """("checkout", repo_root) or ("installed", None)."""
+    candidate = Path(__file__).resolve().parents[4]
+    if is_dbs_vector_checkout(candidate):
+        return ("checkout", candidate)
+    return ("installed", None)
 
 
 # Reservation keys are an IDENTITY function for collision detection only.

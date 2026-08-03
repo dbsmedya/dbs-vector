@@ -37,7 +37,9 @@ def _answers(tmp_path, install_dir: str | None = None) -> str:
 def _prepare(tmp_path):
     (tmp_path / "notes").mkdir()
     (tmp_path / "repo").mkdir()
-    (tmp_path / "repo" / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (tmp_path / "repo" / "pyproject.toml").write_text(
+        '[project]\nname = "dbs-vector"\n', encoding="utf-8"
+    )
 
 
 def test_init_writes_a_loadable_config(tmp_path):

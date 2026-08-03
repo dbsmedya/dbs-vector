@@ -17,8 +17,10 @@ from dbs_vector.services.initializer.render import (
     DestinationPlanner,
     build_config_dict,
     commit_plan,
+    detect_install_mode,
     dump_config_yaml,
     dump_mcp_json,
+    is_dbs_vector_checkout,
     merge_mcp_config,
     read_mcp_config,
     validate_rendered_config,
@@ -90,14 +92,13 @@ def _ask_tier(io: PromptIO, model_key: str) -> str:
     )
 
 
-def _ask_install_dir(io: PromptIO, cwd: Path) -> str:
-    detected = Path(__file__).resolve().parents[4]
-    raw = io.ask_text("Where is dbs-vector installed?", default=str(detected)).strip()
+def _ask_install_dir(io: PromptIO, detected_root: Path) -> str:
+    raw = io.ask_text("Where is dbs-vector installed?", default=str(detected_root)).strip()
     install = Path(raw).expanduser().resolve()
-    if not (install / "pyproject.toml").is_file():
+    if not is_dbs_vector_checkout(install):
         raise ValueError(
             f"{install} does not look like a dbs-vector checkout "
-            f"(no pyproject.toml). The MCP server is launched from there."
+            f"(no dbs-vector pyproject.toml). The MCP server is launched from there."
         )
     return str(install)
 
@@ -138,7 +139,13 @@ def run_init(
     ).strip()
     db_path = str(Path(db_raw).expanduser().resolve())
 
-    install_dir = _ask_install_dir(io, cwd)
+    mode, detected_root = detect_install_mode()
+    if mode == "checkout":
+        assert detected_root is not None  # guaranteed by detect_install_mode()
+        install_dir: str | None = _ask_install_dir(io, detected_root)
+    else:
+        install_dir = None
+        notes.append("dbs-vector is installed on PATH; the MCP entry launches it directly.")
 
     config_target = Path(
         io.ask_text("Write config to", default=str(cwd / "config.yaml")).strip()
@@ -219,4 +226,5 @@ def run_init(
         config_backup=config_backup,
         mcp_backup=mcp_backup,
         notes=notes,
+        used_checkout=(mode == "checkout"),
     )

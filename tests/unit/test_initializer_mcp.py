@@ -152,3 +152,23 @@ def test_dump_is_stable_and_newline_terminated():
     text = dump_mcp_json(merge_mcp_config(None, "/repo", "/abs/config.yaml"))
     assert text.endswith("\n")
     assert json.loads(text)["mcpServers"]["dbs-vector"]["command"] == "uv"
+
+
+def test_installed_mode_launches_the_binary_directly():
+    """install_dir=None means "on PATH" - no uv, no --directory, no checkout."""
+    merged = merge_mcp_config(None, None, "/abs/config.yaml")
+    entry = merged["mcpServers"]["dbs-vector"]
+    assert entry["command"] == "dbs-vector"
+    assert entry["args"] == ["--config-file", "/abs/config.yaml", "mcp"]
+    assert "--directory" not in entry["args"]
+
+
+def test_checkout_mode_is_unchanged():
+    entry = merge_mcp_config(None, "/repo", "/abs/config.yaml")["mcpServers"]["dbs-vector"]
+    assert entry["command"] == "uv"
+    assert entry["args"][:2] == ["--directory", "/repo"]
+
+
+def test_config_file_precedes_mcp_in_installed_mode_too():
+    args = merge_mcp_config(None, None, "/abs/config.yaml")["mcpServers"]["dbs-vector"]["args"]
+    assert args.index("--config-file") < args.index("mcp")

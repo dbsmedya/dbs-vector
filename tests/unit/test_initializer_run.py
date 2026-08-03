@@ -30,7 +30,9 @@ def _answers(tmp_path, **overrides):
 def _prepare(tmp_path):
     (tmp_path / "notes").mkdir()
     (tmp_path / "repo").mkdir()
-    (tmp_path / "repo" / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (tmp_path / "repo" / "pyproject.toml").write_text(
+        '[project]\nname = "dbs-vector"\n', encoding="utf-8"
+    )
 
 
 def test_writes_both_files(tmp_path, scripted_io):
@@ -317,3 +319,19 @@ def test_case_variant_destinations_cannot_destroy_the_config(tmp_path, scripted_
     assert result.mcp_path == tmp_path / "mcp.json"
     assert yaml.safe_load(result.config_path.read_text(encoding="utf-8"))["engines"]
     assert json.loads(result.mcp_path.read_text(encoding="utf-8"))["mcpServers"]
+
+
+def test_installed_mode_skips_the_install_dir_question(tmp_path, scripted_io, monkeypatch):
+    """A PyPI install has no checkout, so the question is meaningless - not
+    merely hard to answer. It must not be asked, and init must still finish."""
+    import dbs_vector.services.initializer as init_mod
+
+    _prepare(tmp_path)
+    monkeypatch.setattr(init_mod, "detect_install_mode", lambda: ("installed", None))
+    io = scripted_io(_answers(tmp_path))
+
+    result = run_init(io, cwd=tmp_path, memory_budget_gb=BUDGET)
+
+    assert "Where is dbs-vector installed?" not in io.asked
+    merged = json.loads(result.mcp_path.read_text(encoding="utf-8"))
+    assert merged["mcpServers"]["dbs-vector"]["command"] == "dbs-vector"

@@ -8,6 +8,7 @@ from dbs_vector.services.initializer.kinds import EngineKindRegistry
 from dbs_vector.services.initializer.render import (
     build_config_dict,
     dump_config_yaml,
+    is_dbs_vector_checkout,
     profile_name_for,
     table_name_for,
     validate_rendered_config,
@@ -206,3 +207,27 @@ def test_validate_rejects_incoherent_chunk_budgets():
     text = dump_config_yaml(config, model_key="granite-r2", budget_gb=BUDGET)
     with pytest.raises(ValueError, match="chunk_max_tokens"):
         validate_rendered_config(text)
+
+
+def test_a_foreign_project_is_not_a_dbs_vector_checkout(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "some-other-app"\n', encoding="utf-8"
+    )
+    assert is_dbs_vector_checkout(tmp_path) is False
+
+
+def test_a_real_checkout_is_recognised(tmp_path):
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "dbs-vector"\n', encoding="utf-8")
+    assert is_dbs_vector_checkout(tmp_path) is True
+
+
+def test_a_nameless_project_is_rejected(tmp_path):
+    """What every fixture used to write, and what the old check accepted."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    assert is_dbs_vector_checkout(tmp_path) is False
+
+
+def test_a_missing_or_unparseable_manifest_is_not_a_checkout(tmp_path):
+    assert is_dbs_vector_checkout(tmp_path) is False
+    (tmp_path / "pyproject.toml").write_text("{ not toml", encoding="utf-8")
+    assert is_dbs_vector_checkout(tmp_path) is False
