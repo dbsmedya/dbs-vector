@@ -109,3 +109,92 @@ def write_atomic(path: Path, text: str) -> None:
 
 def dump_mcp_json(config: dict[str, Any]) -> str:
     return json.dumps(config, indent=2) + "\n"
+
+
+def read_mcp_config(path: Path) -> dict[str, Any] | None:
+    """Load an existing MCP config. None when absent.
+
+    A malformed file RAISES rather than being treated as empty: silently
+    starting from scratch would drop the user's other servers. run_init
+    catches this and offers a different destination (Task 8) - the recovery
+    path §9 promises - rather than letting it abort the wizard.
+    """
+    if not path.exists():
+        return None
+
+    # Every failure mode must surface as ValueError: run_init's recovery
+    # prompt and the CLI's handler both catch ValueError only. Verified to
+    # escape a JSONDecodeError-only guard: IsADirectoryError (path is a
+    # directory), UnicodeDecodeError (invalid UTF-8), PermissionError
+    # (unreadable) - each of which would otherwise reach the user as a
+    # traceback.
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            f"{path} could not be read ({exc}). Fix it, or choose a different "
+            f"destination, so your other MCP servers are not lost."
+        ) from exc
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"{path} could not be parsed as JSON ({exc}). Fix it, or choose a "
+            f"different destination, so your other MCP servers are not lost."
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must contain a JSON object at the top level.")
+
+    # `{"mcpServers": []}` parses fine but would blow up at assignment time:
+    # dict.setdefault returns the EXISTING list, and list["dbs-vector"] = ...
+    # raises TypeError, which no caller catches.
+    servers = data.get("mcpServers")
+    if servers is not None and not isinstance(servers, dict):
+        raise ValueError(
+            f'{path} has an "mcpServers" key of type {type(servers).__name__}, '
+            f"but it must be a JSON object."
+        )
+    return data
+
+
+def merge_mcp_config(
+    existing: dict[str, Any] | None,
+    install_dir: str,
+    config_path: str,
+    server_name: str = "dbs-vector",
+) -> dict[str, Any]:
+    """Add or replace one server, preserving every other key verbatim.
+
+    `--config-file` is passed as the GLOBAL option, BEFORE the `mcp`
+    subcommand. The subcommand-level form (`mcp --config-file X`) still runs
+    the Typer callback first with its own `config.yaml` default, so the
+    spawned server loads and validates whatever config.yaml happens to sit in
+    its cwd before the override applies.
+
+    `--allow-raw-queries` is deliberately not emitted: it exposes literal PII
+    from the SQL raw_query column and has no effect on a document engine.
+    """
+    merged: dict[str, Any] = json.loads(json.dumps(existing)) if existing else {}
+    # NOT setdefault: it returns the existing value even when that value is a
+    # list, and the assignment below would then raise TypeError. read_mcp_config
+    # already rejects a non-object mcpServers; this keeps merge total for any
+    # other caller.
+    servers = merged.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = {}
+    merged["mcpServers"] = servers
+    servers[server_name] = {
+        "command": "uv",
+        "args": [
+            "--directory",
+            install_dir,
+            "run",
+            "dbs-vector",
+            "--config-file",
+            config_path,
+            "mcp",
+        ],
+    }
+    return merged
