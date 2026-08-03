@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ import yaml
 
 from dbs_vector.core.model_registry import ModelContract
 from dbs_vector.services.initializer.answers import InitAnswers
+from dbs_vector.services.initializer.io import PromptIO
 from dbs_vector.services.initializer.kinds import EngineKind
 
 _DEFAULT_NPROBES = 20
@@ -198,3 +200,161 @@ def merge_mcp_config(
         ],
     }
     return merged
+
+
+@dataclass(frozen=True)
+class DestinationPlan:
+    """A DECISION about where to write. Nothing has happened on disk yet.
+
+    `backup_from` is the file to copy aside; `backup_to` is where that copy
+    lands. The backup destination is resolved HERE rather than at commit time
+    so it can be reserved against later plans - otherwise a second artifact
+    can be routed onto it and silently destroy the backup.
+    """
+
+    path: Path
+    backup_from: Path | None
+    backup_to: Path | None = None
+
+    def claims(self) -> tuple[Path, ...]:
+        """Every path this plan will write. All of them must be reserved."""
+        if self.backup_to is None:
+            return (self.path,)
+        return (self.path, self.backup_to)
+
+
+def _free_backup_path(target: Path, reserved: set[Path]) -> Path:
+    """`config.yaml.bak`, or `.bak.1`, `.bak.2`...
+
+    Skips a candidate that EXISTS (so a second run does not destroy the first
+    run's backup) or that is RESERVED by an earlier plan in this run. The
+    reserved check is not redundant with the existence check: an earlier plan
+    can claim a path that is still absent on disk, and a backup written there
+    would overwrite that artifact the moment both commits run.
+    """
+    candidate = target.with_suffix(target.suffix + ".bak")
+    counter = 1
+    while candidate.exists() or candidate.resolve() in reserved:
+        candidate = target.with_suffix(f"{target.suffix}.bak.{counter}")
+        counter += 1
+    return candidate
+
+
+def _ask_free_name(
+    io: PromptIO, target: Path, alt_name: str, reserved: set[Path]
+) -> DestinationPlan:
+    """Prompt until a name is free on disk AND unclaimed by this run."""
+    while True:
+        name = io.ask_text("New filename", default=alt_name).strip() or alt_name
+        candidate = target.parent / name
+        if candidate.resolve() in reserved:
+            io.echo(f"  {candidate} is already being written by this run - choose another name.")
+        elif candidate.exists():
+            io.echo(f"  {candidate} already exists - choose another name.")
+        else:
+            return DestinationPlan(path=candidate, backup_from=None)
+
+
+def plan_destination(
+    io: PromptIO,
+    target: Path,
+    alt_name: str,
+    allow_overwrite: bool = True,
+    reserved: tuple[Path, ...] = (),
+) -> DestinationPlan:
+    """Decide where to write, asking only when the target is unavailable.
+
+    PURE: touches no files. run_init resolves every destination before any
+    write, so abandoning the wizard midway leaves nothing behind.
+
+    `allow_overwrite=False` suppresses the overwrite option - used when the
+    existing file could not be read, where overwriting would destroy content
+    init was unable to see.
+
+    `reserved` holds paths an earlier plan in this same run already claimed.
+    Without it, answering both destination prompts with the same absent
+    filename produces two plans for one path, and the second commit silently
+    overwrites the first - the generated config would be replaced by the MCP
+    JSON. A reserved path is never offered for overwrite; the only resolution
+    is a different name.
+    """
+    reserved_paths = {Path(r).resolve() for r in reserved}
+
+    if target.resolve() in reserved_paths:
+        io.echo(f"  {target} is already being written by this run - choose another name.")
+        return _ask_free_name(io, target, alt_name, reserved_paths)
+
+    if not target.exists():
+        return DestinationPlan(path=target, backup_from=None)
+
+    choice = "new-name"
+    if allow_overwrite:
+        choice = io.ask_choice(
+            f"{target} exists. What should init do?",
+            [
+                ("overwrite", f"Overwrite it (the current file is copied to {target.name}.bak)"),
+                ("new-name", f"Write to a different file (default {alt_name})"),
+            ],
+            default="new-name",
+        )
+
+    if choice == "overwrite":
+        return DestinationPlan(
+            path=target,
+            backup_from=target,
+            backup_to=_free_backup_path(target, reserved_paths),
+        )
+
+    # Re-prompt rather than raise: one taken filename must not discard the
+    # whole interview.
+    return _ask_free_name(io, target, alt_name, reserved_paths)
+
+
+class DestinationPlanner:
+    """Plans every destination for one run, accumulating reservations.
+
+    Threading `reserved=` by hand is correct for two artifacts and silently
+    wrong for three - a call that omits an earlier plan's claims reintroduces
+    the collision matrix with nothing failing. This object owns the set, so a
+    plan physically cannot skip it.
+
+    Still pure: it decides, it never writes. commit_plan does the writing.
+    """
+
+    def __init__(self, io: PromptIO) -> None:
+        self._io = io
+        self._reserved: set[Path] = set()
+
+    def plan(
+        self,
+        target: Path,
+        alt_name: str,
+        allow_overwrite: bool = True,
+    ) -> DestinationPlan:
+        plan = plan_destination(
+            self._io,
+            target,
+            alt_name,
+            allow_overwrite=allow_overwrite,
+            reserved=tuple(self._reserved),
+        )
+        # Resolved, because plan_destination compares resolved candidates.
+        self._reserved.update(path.resolve() for path in plan.claims())
+        return plan
+
+    @property
+    def reserved(self) -> frozenset[Path]:
+        """Every path this run has already claimed. Read-only."""
+        return frozenset(self._reserved)
+
+
+def commit_plan(plan: DestinationPlan, text: str) -> Path | None:
+    """Perform the backup (if planned) and write. The ONLY disk mutation.
+
+    The backup destination was fixed at plan time, so it is covered by
+    `claims()` and cannot have been handed to another artifact.
+    """
+    if plan.backup_from is not None and plan.backup_to is not None:
+        plan.backup_to.write_bytes(plan.backup_from.read_bytes())
+    write_atomic(plan.path, text)
+    return plan.backup_to
