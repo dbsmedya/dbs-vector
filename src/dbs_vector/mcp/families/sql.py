@@ -212,11 +212,10 @@ class SqlFamily:
 
             logger.warning(
                 "format_results: len(results)={} exceeds total_matching={} "
-                "for query={!r} — count_matching and search disagreed on the "
-                "filter set. Investigate the filter pipeline.",
+                "— count_matching and search disagreed on the filter set. "
+                "Investigate the filter pipeline.",
                 len(results),
                 total_matching,
-                query,
             )
             header = (
                 f"Showing {len(results)} results for '{query}' "
@@ -461,8 +460,9 @@ class SqlFamily:
                 return format_browse(result)
             except BrowseValidationError as e:
                 return str(e)  # safe, author-controlled
-            except Exception as e:  # infra: log full, return generic
-                logger.warning("browse '{}' failed: {}", engine_name, e)
+            except Exception as e:  # infra: log full at DEBUG, warn generic
+                logger.warning("browse '{}' failed (see DEBUG for detail)", engine_name)
+                logger.debug("browse '{}' failure detail: {}", engine_name, e)
                 return "browse execution failed (see server logs)."
 
         return handler
@@ -541,8 +541,9 @@ class SqlFamily:
                 return format_triage(result)
             except BrowseValidationError as e:
                 return str(e)  # safe, author-controlled
-            except Exception as e:  # infra: log full, return generic
-                logger.warning("triage '{}' failed: {}", engine_name, e)
+            except Exception as e:  # infra: log full at DEBUG, warn generic
+                logger.warning("triage '{}' failed (see DEBUG for detail)", engine_name)
+                logger.debug("triage '{}' failure detail: {}", engine_name, e)
                 return "triage execution failed (see server logs)."
 
         return handler

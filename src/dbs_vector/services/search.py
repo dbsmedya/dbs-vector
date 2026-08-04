@@ -162,7 +162,7 @@ class SearchService:
             raise ValueError(f"limit must be within [1, {_MAX_LIMIT}]; got {limit}")
         if min_similarity is not None and not (-1.0 <= min_similarity <= 1.0):
             raise ValueError(f"min_similarity must be within [-1, 1]; got {min_similarity}")
-        logger.info("Executing query: {}", query)
+        logger.debug("Executing query: {}", query)
         if extra_filters is None:
             extra_filters = {}
 
