@@ -25,12 +25,23 @@ Before using the MCP server, ensure you have:
 
 ## Transport
 
-`dbs-vector` ships an MCP **stdio** transport only. The AI assistant
-spawns `dbs-vector mcp` as a subprocess and communicates over its
-standard input/output. No network ports are opened. Each client process
-loads its own copy of the MLX models (~1.2 GB GPU memory each).
+`dbs-vector` ships two MCP transports:
 
-Streamable-HTTP MCP transport is not currently shipped.
+- **stdio** (default) — the AI assistant spawns `dbs-vector mcp` as a
+  subprocess and communicates over its standard input/output. No network
+  ports are opened. Each client process loads its own copy of the MLX
+  models (~1.2 GB GPU memory each). Unchanged by everything below: no
+  auth, the full tool list, and byte-identical prose output.
+- **streamable HTTP** (`dbs-vector mcp --http`) — one shared, long-lived
+  daemon serves every engine from every project over one port, with
+  per-engine bearer tokens. See [HTTP server](#http-server) below.
+
+The one change that applies to **both** transports: document `search_`
+tools now additionally return `structuredContent` (the same envelope as
+`search --json`) alongside the unchanged prose text, with the envelope
+declared as the tool's `outputSchema`. Text-only clients keep reading the
+prose exactly as before; structured-aware clients can read the envelope
+from a standard `tools/call` response instead of parsing prose.
 
 ---
 
@@ -138,10 +149,176 @@ claude mcp remove dbs-vector
 
 ## Integrating with Cursor
 
-Cursor's MCP integration currently expects an HTTP endpoint. Since
-`dbs-vector` ships only stdio, Cursor cannot connect directly. If your
-team needs Cursor support, you can wrap stdio with an external bridge
-(e.g., `mcp-proxy`) — but this is not officially supported.
+Cursor's MCP integration expects an HTTP endpoint. Point it at a running
+`dbs-vector mcp --http` daemon (see [HTTP server](#http-server) below) —
+Cursor's `mcp.json` uses the same `type: "http"`, `url`, and `headers`
+shape shown there.
+
+---
+
+## HTTP server
+
+`dbs-vector mcp --http` runs the same bootstrap as stdio — load engines,
+register tools, start the watcher — but serves MCP's **streamable HTTP**
+transport instead of stdio, from one shared, long-lived daemon. Every
+consumer of stdio today spawns its own subprocess and its own copy of the
+MLX models; with `--http`, one daemon serves every project's engines from
+every client, so the embedding models are resident once
+(`gemma-bf16` + `granite-r2` cost the same GPU memory regardless of how
+many engines or clients use them) and every search after the first is a
+warm, sub-second round trip instead of a cold CLI spawn.
+
+Plain `dbs-vector mcp` (stdio) is unaffected: no auth, the same tool
+list, and byte-identical prose. The `server:` block and every `token:`
+field are inert data until `--http` reads them — the process spawn is
+still the trust boundary for stdio. The only change visible under stdio
+at all is the `structuredContent`/`outputSchema` addition described
+above, which applies uniformly in both transports.
+
+### The `server:` block
+
+```yaml
+server:
+  bind: "127.0.0.1"   # default; non-loopback binds require TLS (below)
+  port: 8765           # default
+  tls_cert: null        # both required together for a non-loopback bind
+  tls_key: null
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `bind` | `127.0.0.1` | Interface to listen on. |
+| `port` | `8765` | TCP port. |
+| `tls_cert` | unset | Path to a PEM certificate. |
+| `tls_key` | unset | Path to the matching PEM private key. |
+
+**Loopback/TLS rule, stated exactly:** any non-loopback `bind` (including
+`0.0.0.0` or a LAN IP) **refuses to start** unless both `tls_cert` and
+`tls_key` are set and readable. A self-signed certificate is fine —
+clients may skip TLS verification in their `.mcp.json`, or pin the CA
+later. `127.0.0.1`/`localhost` with no TLS files is the default and needs
+no certificate.
+
+### Per-engine `token:`
+
+Auth is one bearer token per engine, not a separate client registry:
+
+```yaml
+engines:
+  obsidian-md:
+    # ...existing engine fields...
+    token: "${DBS_TOKEN_OBSIDIAN}"
+  projspec-md:
+    token: "${DBS_TOKEN_DEV}"
+  private-md:
+    {}                     # no token → stdio-only, never served over HTTP
+```
+
+- `${VAR}` is expanded against the environment at HTTP startup (never at
+  plain config load, so stdio stays inert even when the variable is
+  unset). Inline literal tokens are also accepted; if you use one, `chmod
+  600` the config file and never share it as a sample.
+- The resolved token must be at least **32 characters**. Generate one
+  with `openssl rand -hex 32`.
+- **Fail-closed:** an engine with no `token:` is **never** served over
+  HTTP, regardless of the `server:` block — it stays reachable over
+  stdio only.
+- A connection's scope is exactly the set of engines carrying the bearer
+  token it presents. Give two engines the **same** token and they form
+  one scope, sharing one `tools/list`; different tokens are structurally
+  disjoint — a token's sub-app never contains another scope's engines.
+
+### Client configuration (`.mcp.json`)
+
+```json
+"dbs-vector": {
+  "type": "http",
+  "url": "http://127.0.0.1:8765/mcp",
+  "headers": {
+    "Authorization": "Bearer ${DBS_TOKEN_DEV}",
+    "X-DBS-Allow-Raw-Queries": "true"
+  }
+}
+```
+
+Claude Code (and every other MCP HTTP client) expands `${VAR}` inside
+`.mcp.json`, so a committed file carries no secrets. `Authorization:
+Bearer <token>` is required on every request. `X-DBS-Allow-Raw-Queries`
+is the client's own declared intent for raw-query egress — see below;
+omit the header (or set it to anything other than `true`) to keep raw
+queries off.
+
+**Raw-query egress is a per-request client header on HTTP, not the
+stdio flag.** The stdio `--allow-raw-queries` CLI flag has no HTTP
+equivalent — `dbs-vector mcp --http --allow-raw-queries` is refused at
+startup with a message pointing here. Instead, each HTTP request carries
+its own `X-DBS-Allow-Raw-Queries: true` (or omits it, the fail-closed
+default). The server does not police this beyond the token: the token is
+the access boundary, the header is declared intent. **Accepted model:**
+any holder of a SQL engine's token can request raw queries for that
+engine — hand SQL tokens only to clients you trust with raw query text
+(which may contain PII).
+
+### Structured output
+
+Document `search_<engine>` tools return, in every mode, prose text
+**plus** `structuredContent` carrying the same envelope as
+`search --json` (`floor`, `inspected`, `best_rejected`,
+`source_resolution`, `results`), with the envelope declared as the
+tool's `outputSchema`. SQL search/browse/triage tools stay text-only in
+this release. HTTP responses use `json_response` mode — plain JSON
+bodies, no SSE framing — the simplest shape for every client this
+project serves.
+
+### Running as a daemon (launchd)
+
+A sample `launchd` LaunchAgent — `RunAtLoad` keeps it running across
+reboots, `KeepAlive` restarts it if it crashes:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.yourname.dbs-vector-mcp</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/ABSOLUTE/PATH/TO/uv</string>
+    <string>tool</string>
+    <string>run</string>
+    <string>dbs-vector</string>
+    <string>--config-file</string>
+    <string>/ABSOLUTE/PATH/TO/config.yaml</string>
+    <string>mcp</string>
+    <string>--http</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>DBS_TOKEN_OBSIDIAN</key>
+    <string>REPLACE_ME</string>
+    <key>DBS_TOKEN_DEV</key>
+    <string>REPLACE_ME</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardErrorPath</key>
+  <string>/ABSOLUTE/PATH/TO/dbs-vector-mcp.log</string>
+</dict>
+</plist>
+```
+
+```bash
+# Install and start
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.yourname.dbs-vector-mcp.plist
+
+# Reload after a config edit (registrations are immutable per running
+# process, so a new engine or token needs a restart)
+launchctl kickstart -k gui/$UID/com.yourname.dbs-vector-mcp
+```
 
 ---
 

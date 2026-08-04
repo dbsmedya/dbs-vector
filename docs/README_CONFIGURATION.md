@@ -257,6 +257,7 @@ with dashes converted to underscores: `my-docs` exposes `search_my_docs`.
 | `api_timeout_sec` | `30` | Per-request timeout. |
 | `api_min_execution_ms` | `0.0` | Skip queries faster than this. |
 | `api_database` | `""` | Restrict to one database. |
+| `token` | unset | HTTP-only bearer token for `dbs-vector mcp --http`. Inert on stdio. `${VAR}` form recommended (expanded at HTTP startup); if you set a literal, `chmod 600` the config and never share it as a sample. No token = the engine is never served over HTTP, only stdio. See [README_MCP.md](README_MCP.md#http-server). |
 
 #### The `ignore_patterns` trap
 
@@ -310,6 +311,23 @@ Requires `chunker_type: document`, a non-empty `paths:`, and a table no other
 engine shares. **After any config change to a watched engine, run one
 `ingest --rebuild --force`** — the index is a rebuildable cache, and stale
 settings persist in it otherwise. See [README_WATCH.md](README_WATCH.md).
+
+### `server:`
+
+HTTP-transport-only; stdio ignores this block entirely.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `bind` | `127.0.0.1` | Interface `dbs-vector mcp --http` listens on. |
+| `port` | `8765` | TCP port. |
+| `tls_cert` | unset | Path to a PEM certificate. |
+| `tls_key` | unset | Path to the matching PEM private key. |
+
+**TLS rule:** any non-loopback `bind` (e.g. `0.0.0.0` or a LAN IP)
+refuses to start unless both `tls_cert` and `tls_key` are set and
+readable; a self-signed pair is fine. `127.0.0.1`/`localhost` needs
+neither. See [README_MCP.md](README_MCP.md#http-server) for the full
+HTTP workflow, per-engine `token:`, and client `.mcp.json` setup.
 
 ---
 
