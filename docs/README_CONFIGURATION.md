@@ -407,7 +407,7 @@ apart; `--no-similarity-floor` confirms it directly.
 ### Indexes are built during ingestion
 
 Two indexes are created at the end of every `ingest` run: an `IVF_PQ` vector
-index (only once the table exceeds 256 rows) and a Tantivy full-text index, which
+index (only once the table exceeds 256 rows) and a native full-text index, which
 hybrid search requires.
 
 If you see **"Cannot perform full text search unless an INVERTED index has been

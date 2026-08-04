@@ -11,6 +11,10 @@ uv sync
 # Run full validation suite (format, lint, typecheck, test)
 uv run poe check
 
+# REQUIRED before opening any PR — re-resolve every dependency to the newest
+# version pyproject allows, then run the full gate against that resolution.
+uv run poe refresh-deps
+
 # Run tests only
 uv run poe test
 
@@ -42,6 +46,57 @@ uv run dbs-vector ingest "slow_log.duckdb" --type sql-granite
 uv run dbs-vector ingest "http://<host>/api/v1" --type sql-api-granite
 ```
 
+## Dependency Policy
+
+Every dependency range in `pyproject.toml` is capped at the next major. Two
+releases have shipped broken because an uncapped `>=` admitted a breaking
+upstream version — transformers 5.13.0, then mcp 2.0.0 — and CI saw neither,
+because CI installs `uv sync --frozen` (the pinned lockfile) while users get a
+fresh resolution from these constraints.
+
+Two guards close that gap, and both must stay:
+
+- **The caps** stop a breaking major from resolving at all.
+- **`uv run poe refresh-deps`** — mirrored by the `fresh-resolution` CI job,
+  which also runs daily — re-resolves every dependency to the newest allowed
+  version and runs the full gate against it. This is what catches a bad *minor*
+  inside an allowed range, which is what transformers 5.13.0 was.
+
+Run `refresh-deps` before opening a PR. If it fails, fix or pin the offender in
+the same PR — never merge against a resolution users cannot install.
+
+## Release Policy
+
+Versions are `1.MINOR.PATCH`. **The middle number is the reindex signal.**
+
+- **Minor (`1.7.0`)** — required for any change to what is *stored*. Ships with
+  release notes naming the affected engines and stating `--rebuild --force`.
+- **Patch (`1.7.1`)** — everything else. **A patch release must never change
+  stored data.** Consumers rely on that to adopt fix releases immediately.
+- **Major (`2.0.0`)** — breaking CLI, config-file, or MCP contract changes.
+
+**Cut a minor if the change touches any of these.** The list is the test; when
+unsure, it is a minor:
+
+- chunker logic that can move a chunk boundary. Note the failure mode is silent:
+  chunk hashes key on file content plus position, never chunk content, so when
+  boundaries change but file bytes do not, both the full-ingest and watch/upsert
+  paths skip every file and write nothing while logging success.
+- embedding model, `passage_prefix` / `query_prefix`, or any `ModelRegistry` field
+- LanceDB schema — this one is at least loud: `LanceDBStore` raises on mismatch and
+  the CLI surfaces a `--rebuild --force` hint
+- profile knobs feeding chunking (`chunk_target_tokens`, `chunk_max_tokens`,
+  `chunk_max_chars`)
+- stored-value normalization (table names, content hashing)
+
+**Safe in a patch:** dependency pins and caps, docs, logging, error messages, and
+CLI/MCP surface fixes that do not alter stored rows. `v1.2.1` (transformers cap
+relaxed) and `v1.6.1` (dependency caps, tantivy and sqlglot dropped) are the
+reference examples.
+
+A reindex release also invalidates `similarity_floor` calibration. Say so in the
+notes — that evidence is deployment-local, so only its owner can re-measure it.
+
 ## Architecture
 
 This is a Clean Architecture, configuration-driven RAG search engine for Apple Silicon (MLX). The dependency flow is: **CLI/MCP → Services → Core Protocols → Infrastructure**.
@@ -55,7 +110,7 @@ This is a Clean Architecture, configuration-driven RAG search engine for Apple S
 
 **`infrastructure/`** — Concrete implementations of the core protocols.
 - `embeddings/mlx_engine.py`: `MLXEmbedder` — runs models on Apple GPU via MLX, casts tensors to NumPy via Unified Memory. Includes a process-level `_MODEL_CACHE` dict to avoid reloading models.
-- `storage/lancedb_engine.py`: `LanceDBStore` — Arrow-native storage; uses `IVF_PQ` vector index + Tantivy FTS. Schema mismatch on startup means `--rebuild --force` is needed.
+- `storage/lancedb_engine.py`: `LanceDBStore` — Arrow-native storage; uses `IVF_PQ` vector index + LanceDB native FTS. Schema mismatch on startup means `--rebuild --force` is needed.
 - `storage/mappers.py`: `DocumentMapper` and `SqlMapper` convert domain chunks ↔ PyArrow `RecordBatch` for zero-copy ingestion and back to domain models on retrieval.
 - `chunking/document.py`: `DocumentChunker` — uses `markdown-it-py` to parse `.md` semantically (code fences are kept atomic); falls back to naive splitting for `.txt`.
 - `chunking/sql.py`: `SqlChunker` — parses JSON slow query log format.

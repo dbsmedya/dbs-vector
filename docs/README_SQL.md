@@ -75,9 +75,10 @@ path**.
 `browse` runs a **read-only SQL `SELECT`** over a SQL engine's table (no
 embedder). Two front-ends share one execution core:
 
-- **CLI — raw SQL.** You write the `SELECT`; polars executes it. A `sqlglot`
-  guard rejects anything but a single read-only `SELECT` (so a typo can't mutate
-  the table), and a safety `LIMIT 1000` is appended if you omit one.
+- **CLI — raw SQL.** You write the `SELECT`; polars executes it against an
+  in-memory frame read from the table, so nothing you write can reach the stored
+  data. Nothing is capped either — `SELECT * FROM t` is a full export, so include
+  your own `LIMIT` when you want one.
 - **MCP — structured params** (`where` / `group_by` / `order_by` / `select` /
   `limit`) that an LLM fills in; the handler compiles them to the same SQL.
 
