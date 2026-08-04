@@ -23,6 +23,7 @@ dependencies = [
     "pydantic>=2.13.3",
     "pyyaml>=6.0.3",
     "sqlglot>=27.0.0",
+    "starlette>=0.40",
     "tantivy==0.25.1",
     # transformers 5.13.0 broke AutoTokenizer.register(str, ...), which mlx-lm 0.31.3
     # (still the latest release) relies on at import time. transformers 5.13.1 fixed the
@@ -30,6 +31,7 @@ dependencies = [
     "transformers>=5.0,!=5.13.0",
     "typer>=0.15.1",
     "types-pyyaml>=6.0.12.20260408",
+    "uvicorn>=0.30",
     "watchdog>=6.0.0",
 ]
 
