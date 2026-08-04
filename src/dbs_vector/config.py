@@ -277,6 +277,8 @@ def _validate_config(settings: Settings, config_file: str) -> None:
      10. watch.enabled requires non-empty paths and chunker_type == "document".
      11. A watched engine's table_name must not be shared with any other engine
          (prune is root-scoped; a shared table would cross-delete).
+     12. Two watch-enabled engines must not claim the same resolved root
+         (watchdog/FSEvents allows one watcher per directory per process).
 
     Memory budget is resolved lazily (only when rule 4 actually runs) so a
     config with an unknown model/profile fails on rule 1/2 BEFORE we attempt
@@ -442,6 +444,29 @@ def _validate_config(settings: Settings, config_file: str) -> None:
                     f"needs an exclusive table (reconciliation prunes rows under "
                     f"its roots). Give it its own table_name in {config_file}."
                 )
+
+    # Rule 12: watch-root exclusivity. watchdog/FSEvents allows ONE watcher
+    # per directory per process (see _SCHEDULED_ROOTS in
+    # infrastructure/watch/watchdog_backend.py). In a consolidated server a
+    # collision means one engine silently drifts behind an ERROR log, so
+    # refuse at load instead. Nested-but-distinct roots stay legal — two
+    # engines may ingest overlapping trees into their own tables.
+    claimed_roots: dict[str, str] = {}
+    for engine_name, engine in settings.engines.items():
+        if not engine.watch.enabled:
+            continue
+        for root in engine.paths:
+            key = str(Path(root).resolve())
+            owner = claimed_roots.get(key)
+            if owner is not None:
+                raise ValueError(
+                    f"Engines '{owner}' and '{engine_name}' both set watch.enabled "
+                    f"over the same directory '{key}'. watchdog allows one watcher "
+                    f"per directory per process — disable watch on one of them "
+                    f"(the unwatched engine can still be ingested manually). "
+                    f"Edit {config_file}."
+                )
+            claimed_roots[key] = engine_name
 
 
 def load_settings(config_file: str | None = None, validate: bool = False) -> Settings:
