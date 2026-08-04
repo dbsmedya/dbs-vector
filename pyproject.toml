@@ -27,7 +27,6 @@ dependencies = [
     "pydantic-settings>=2.14.0,<3",
     "pydantic>=2.13.3,<3",
     "pyyaml>=6.0.3,<7",
-    "sqlglot>=27.0.0,<31",
     "starlette>=0.40,<1",
     # transformers 5.13.0 broke AutoTokenizer.register(str, ...), which mlx-lm 0.31.3
     # (still the latest release) relies on at import time. transformers 5.13.1 fixed the
@@ -132,9 +131,7 @@ module = [
     "mlx",
     "mlx.*",
     "mlx_embeddings",
-    "mlx_embeddings.*",
-    "sqlglot",
-    "sqlglot.*"
+    "mlx_embeddings.*"
 ]
 ignore_missing_imports = true
 ignore_errors = true

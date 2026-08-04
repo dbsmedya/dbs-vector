@@ -551,7 +551,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyyaml" },
-    { name = "sqlglot" },
     { name = "starlette" },
     { name = "transformers" },
     { name = "typer" },
@@ -596,7 +595,6 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.13.3,<3" },
     { name = "pydantic-settings", specifier = ">=2.14.0,<3" },
     { name = "pyyaml", specifier = ">=6.0.3,<7" },
-    { name = "sqlglot", specifier = ">=27.0.0,<31" },
     { name = "starlette", specifier = ">=0.40,<1" },
     { name = "transformers", specifier = ">=5.0,!=5.13.0,<6" },
     { name = "typer", specifier = ">=0.15.1,<1" },
@@ -2627,15 +2625,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/88/a1/d19dd9889cd4bce2e233c4fac007cd8daaf5b9fe6e6a5d432cf17be0b807/sounddevice-0.5.5-py3-none-win32.whl", hash = "sha256:1234cc9b4c9df97b6cbe748146ae0ec64dd7d6e44739e8e42eaa5b595313a103", size = 317765, upload-time = "2026-01-23T18:36:39.047Z" },
     { url = "https://files.pythonhosted.org/packages/c3/0e/002ed7c4c1c2ab69031f78989d3b789fee3a7fba9e586eb2b81688bf4961/sounddevice-0.5.5-py3-none-win_amd64.whl", hash = "sha256:cfc6b2c49fb7f555591c78cb8ecf48d6a637fd5b6e1db5fec6ed9365d64b3519", size = 365324, upload-time = "2026-01-23T18:36:40.496Z" },
     { url = "https://files.pythonhosted.org/packages/4e/39/a61d4b83a7746b70d23d9173be688c0c6bfc7173772344b7442c2c155497/sounddevice-0.5.5-py3-none-win_arm64.whl", hash = "sha256:3861901ddd8230d2e0e8ae62ac320cdd4c688d81df89da036dcb812f757bb3e6", size = 317115, upload-time = "2026-01-23T18:36:42.235Z" },
-]
-
-[[package]]
-name = "sqlglot"
-version = "30.14.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/3a/cd/39a94f0f98076ee8e7c7c38fd4bba8d7845b0c629ff967057c64ef2c0989/sqlglot-30.14.0.tar.gz", hash = "sha256:df2ef5d2b8ca814313781f4ff35bf63e58f821ef517eeddbd523c19a61fa9bb9", size = 5944410, upload-time = "2026-07-27T11:23:30.698Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/33/ec/a729883ceda22dcd9117ce182f64d884bf494e72c4dfce00c2ad0a5978e1/sqlglot-30.14.0-py3-none-any.whl", hash = "sha256:fc768e24889d63a5e1237dea7ad305e5ffb4356a98b0bed828f89591ebcd3636", size = 719007, upload-time = "2026-07-27T11:23:28.637Z" },
 ]
 
 [[package]]
