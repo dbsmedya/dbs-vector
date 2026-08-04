@@ -22,6 +22,22 @@ class TuningProfile(BaseModel):
     chunk_max_tokens: int = Field(default=0, ge=0)
 
 
+class ServerConfig(BaseModel):
+    """`dbs-vector mcp --http` transport settings. Inert for stdio.
+
+    A non-loopback bind refuses to start without both tls_cert and tls_key —
+    enforced in build_http_plan (mcp/http_config.py), not here, so plain
+    parsing (and stdio) never trips on it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    bind: str = "127.0.0.1"
+    port: int = Field(default=8765, gt=0, lt=65536)
+    tls_cert: str | None = None
+    tls_key: str | None = None
+
+
 class WatchConfig(BaseModel):
     """Watch MECHANICS only. All filtering/scoping lives on EngineConfig."""
 
@@ -55,6 +71,11 @@ class EngineConfig(BaseModel):
     # baseline default for every engine) = no floor = today's behavior.
     # Default values ship with the calibration companion spec.
     similarity_floor: float | None = Field(default=None, ge=-1.0, le=1.0)
+
+    # HTTP-only bearer token (mcp --http). `${VAR}` full-value env expansion
+    # is resolved at HTTP startup, never at load: stdio must stay inert even
+    # when the variable is unset. None = engine is NEVER served over HTTP.
+    token: str | None = None
 
     # Per-engine content exclusion (default: exclude nothing):
     exclusion_filters: list[str] = []
@@ -154,6 +175,9 @@ class Settings(BaseSettings):
 
     # Engines dictionary (shape changes in Task 7)
     engines: dict[str, EngineConfig] = {}
+
+    # `server:` block — HTTP transport only; stdio ignores it entirely.
+    server: ServerConfig = Field(default_factory=ServerConfig)
 
     # REMOVED: batch_size (now per-profile)
 
@@ -457,6 +481,13 @@ def load_settings(config_file: str | None = None, validate: bool = False) -> Set
         except ValidationError as e:
             _raise_migration_hint(e, config_file, where="engines")
 
+    # Server block (HTTP transport; inert for stdio)
+    if "server" in data and isinstance(data["server"], dict):
+        try:
+            base_settings.server = ServerConfig(**data["server"])
+        except ValidationError as e:
+            _raise_migration_hint(e, config_file, where="server")
+
     if validate:
         _validate_config(base_settings, config_file)
     return base_settings
@@ -473,6 +504,7 @@ _PROPAGATED_SETTINGS_FIELDS: set[str] = {
     "mlx_cache_limit_gb",
     "log_level",
     "log_serialize",
+    "server",
 }
 # Fields deliberately NOT propagated to the runtime singleton. Empty today; a
 # future field that must keep its import-time default goes here EXPLICITLY.
