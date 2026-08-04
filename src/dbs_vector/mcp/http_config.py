@@ -52,6 +52,12 @@ def resolve_token(raw: str, engine_name: str) -> str:
             )
         raw = value
     token = raw.strip()
+    if not token.isascii():
+        raise ValueError(
+            f"Engine '{engine_name}': resolved token contains non-ASCII "
+            f"characters, which HTTP Authorization headers cannot carry "
+            f"reliably. Generate one with e.g. `openssl rand -hex 32`."
+        )
     if len(token) < MIN_TOKEN_CHARS:
         raise ValueError(
             f"Engine '{engine_name}': resolved token is shorter than "

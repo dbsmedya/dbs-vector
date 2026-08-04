@@ -20,7 +20,10 @@ class TokenRouterMiddleware:
     def __init__(self, app: ASGIApp, routes: list[tuple[str, str]]) -> None:
         """routes: (resolved_token, internal_mount_prefix) pairs."""
         self._app = app
-        self._routes = routes
+        # Bytes, not str: compare_digest raises TypeError on non-ASCII str
+        # input, and header bytes are attacker-controlled — a 500 here would
+        # break the bare-401 contract.
+        self._routes = [(token.encode("utf-8"), prefix) for token, prefix in routes]
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -34,7 +37,7 @@ class TokenRouterMiddleware:
             await PlainTextResponse("not found", status_code=404)(scope, receive, send)
             return
         auth = headers.get("authorization", "")
-        presented = auth[7:] if auth.startswith("Bearer ") else ""
+        presented = (auth[7:] if auth.startswith("Bearer ") else "").encode("utf-8")
         matched: str | None = None
         for token, prefix in self._routes:
             # Compare EVERY route (no early break): uniform timing.

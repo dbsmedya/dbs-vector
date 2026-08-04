@@ -127,6 +127,19 @@ def test_wrong_or_missing_token_is_401(client):
     assert r.status_code == 401
 
 
+def test_non_ascii_credentials_get_401_not_500(client):
+    # compare_digest raises TypeError on non-ASCII str input; header bytes are
+    # attacker-controlled, so a 500 here would break the bare-401 contract.
+    # httpx refuses non-ASCII str header values, so send raw bytes — exactly
+    # what a hostile client would put on the wire.
+    r = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+        headers={b"accept": ACCEPT.encode(), b"authorization": b"Bearer " + "é".encode() * 32},
+    )
+    assert r.status_code == 401
+
+
 def test_browser_origin_is_rejected(client):
     r = _post(
         client,

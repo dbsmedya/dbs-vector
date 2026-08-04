@@ -71,6 +71,14 @@ def test_short_token_is_an_error() -> None:
         build_http_plan(s)
 
 
+def test_non_ascii_token_is_an_error() -> None:
+    # A non-ASCII token cannot travel in an Authorization header reliably —
+    # refuse at startup instead of serving eternal 401s.
+    s = _settings(engines={"a-md": _engine("ta", "é" * 32)})
+    with pytest.raises(ValueError, match="ASCII"):
+        build_http_plan(s)
+
+
 def test_zero_tokened_engines_is_an_error() -> None:
     s = _settings(engines={"a-md": _engine("ta", None)})
     with pytest.raises(ValueError, match="[Nn]o engine has a token"):
