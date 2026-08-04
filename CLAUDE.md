@@ -11,6 +11,10 @@ uv sync
 # Run full validation suite (format, lint, typecheck, test)
 uv run poe check
 
+# REQUIRED before opening any PR — re-resolve every dependency to the newest
+# version pyproject allows, then run the full gate against that resolution.
+uv run poe refresh-deps
+
 # Run tests only
 uv run poe test
 
@@ -42,6 +46,25 @@ uv run dbs-vector ingest "slow_log.duckdb" --type sql-granite
 uv run dbs-vector ingest "http://<host>/api/v1" --type sql-api-granite
 ```
 
+## Dependency Policy
+
+Every dependency range in `pyproject.toml` is capped at the next major. Two
+releases have shipped broken because an uncapped `>=` admitted a breaking
+upstream version — transformers 5.13.0, then mcp 2.0.0 — and CI saw neither,
+because CI installs `uv sync --frozen` (the pinned lockfile) while users get a
+fresh resolution from these constraints.
+
+Two guards close that gap, and both must stay:
+
+- **The caps** stop a breaking major from resolving at all.
+- **`uv run poe refresh-deps`** — mirrored by the `fresh-resolution` CI job,
+  which also runs daily — re-resolves every dependency to the newest allowed
+  version and runs the full gate against it. This is what catches a bad *minor*
+  inside an allowed range, which is what transformers 5.13.0 was.
+
+Run `refresh-deps` before opening a PR. If it fails, fix or pin the offender in
+the same PR — never merge against a resolution users cannot install.
+
 ## Architecture
 
 This is a Clean Architecture, configuration-driven RAG search engine for Apple Silicon (MLX). The dependency flow is: **CLI/MCP → Services → Core Protocols → Infrastructure**.
@@ -55,7 +78,7 @@ This is a Clean Architecture, configuration-driven RAG search engine for Apple S
 
 **`infrastructure/`** — Concrete implementations of the core protocols.
 - `embeddings/mlx_engine.py`: `MLXEmbedder` — runs models on Apple GPU via MLX, casts tensors to NumPy via Unified Memory. Includes a process-level `_MODEL_CACHE` dict to avoid reloading models.
-- `storage/lancedb_engine.py`: `LanceDBStore` — Arrow-native storage; uses `IVF_PQ` vector index + Tantivy FTS. Schema mismatch on startup means `--rebuild --force` is needed.
+- `storage/lancedb_engine.py`: `LanceDBStore` — Arrow-native storage; uses `IVF_PQ` vector index + LanceDB native FTS. Schema mismatch on startup means `--rebuild --force` is needed.
 - `storage/mappers.py`: `DocumentMapper` and `SqlMapper` convert domain chunks ↔ PyArrow `RecordBatch` for zero-copy ingestion and back to domain models on retrieval.
 - `chunking/document.py`: `DocumentChunker` — uses `markdown-it-py` to parse `.md` semantically (code fences are kept atomic); falls back to naive splitting for `.txt`.
 - `chunking/sql.py`: `SqlChunker` — parses JSON slow query log format.

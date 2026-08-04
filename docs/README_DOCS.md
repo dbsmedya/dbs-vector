@@ -61,7 +61,7 @@ LanceDB automatically builds an **Inverted File with Product Quantization (IVF-P
 *   **Cosine Similarity:** The engine explicitly enforces `metric="cosine"` to match the training objective of modern embedding models.
 
 ### 2. Full-Text Search (FTS)
-A native **Tantivy** Full-Text index is built on the raw text column. 
+A native **inverted-index** Full-Text index is built on the raw text column. 
 
 When you execute a search:
 ```bash

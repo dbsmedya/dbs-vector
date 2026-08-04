@@ -24,3 +24,6 @@ calibration_reports/
 
 # Config
 config.yaml
+
+# Left behind if `poe github-release-test` is interrupted before its EXIT trap.
+config.yaml.release-test-hidden

@@ -86,7 +86,7 @@ class LanceDBStore:
         self.table.optimize()
 
     def create_indices(self) -> None:
-        """Generates dynamic IVF_PQ vector indices and Tantivy FTS indices."""
+        """Generates dynamic IVF_PQ vector indices and native FTS indices."""
         total_rows = len(self.table)
 
         # 1. Vector Indexing (Cosine)
@@ -101,17 +101,17 @@ class LanceDBStore:
                 num_sub_vectors=min(16, self.vector_dimension // 8),
             )
 
-        # 2. Tantivy FTS Indexing (Hybrid Search)
+        # 2. Native FTS Indexing (Hybrid Search)
         try:
             self.table.create_fts_index("text", replace=True)
         except Exception as e:
-            logger.warning("FTS indexing failed (tantivy missing?): {}", e)
+            logger.warning("FTS indexing failed: {}", e)
 
         # FTS index may now exist (or have been replaced) — allow hybrid retry.
         self._hybrid_ok = None
 
     def refresh_fts(self) -> None:
-        """Rebuild ONLY the Tantivy FTS index (no IVF_PQ work).
+        """Rebuild ONLY the FTS index (no IVF_PQ work).
 
         Called on the watcher's 60s timer so newly written rows reach the FTS
         leg of hybrid search within a minute. The vector leg finds them
@@ -320,11 +320,12 @@ class LanceDBStore:
                 used_fallback = False
             except (ValueError, RuntimeError, ImportError, OSError) as e:
                 # Narrowed from bare Exception so a programming error doesn't
-                # silently degrade to vector-only. Verified against LanceDB
-                # 0.30.2: FTS-absent raises RuntimeError ("Cannot perform full
+                # silently degrade to vector-only. Re-verified against LanceDB
+                # 0.36.0: FTS-absent raises RuntimeError ("Cannot perform full
                 # text search unless an INVERTED index has been created");
-                # ImportError covers a legacy tantivy index dir when the
-                # tantivy wheel fails to import (lancedb/query.py:1556-1561);
+                # ImportError is vestigial — it covered the legacy tantivy index
+                # path that LanceDB 0.32 deleted — and is kept only as cheap
+                # breadth until someone confirms no import can reach here;
                 # OSError (incl. FileNotFoundError) covers corrupt/missing
                 # index files mapped from LanceError(IO). Degrading the HYBRID
                 # leg on IO errors is safe: if the dataset itself is broken,

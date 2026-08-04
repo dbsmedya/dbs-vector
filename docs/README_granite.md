@@ -287,7 +287,7 @@ noting if you ever ship a low-latency retrieval mode.
 
 ### 5.3 Tune hybrid (vector + FTS) weights
 
-`SearchService` performs hybrid retrieval (vector + Tantivy FTS). The
+`SearchService` performs hybrid retrieval (vector + native FTS). The
 weighting is currently implicit in the LanceDB hybrid search; if you
 find Granite's vector recall is weaker than FTS for keyword-dominant
 queries, biasing the hybrid score toward FTS is more effective than

@@ -2,7 +2,7 @@
 
 `dbs-vector` is a production-grade, local, high-performance Retrieval-Augmented Generation (RAG) search engine built specifically for Apple Silicon. 
 
-It indexes text, code, and database logs into a **LanceDB (Apache Arrow)** store using **MLX** for batched GPU inference. It utilizes **Unified Memory Architecture (UMA)** to bypass Python-object serialization bottlenecks, and performs native Rust-level **Hybrid Search** (Vector + Full-Text Search via Tantivy).
+It indexes text, code, and database logs into a **LanceDB (Apache Arrow)** store using **MLX** for batched GPU inference. It utilizes **Unified Memory Architecture (UMA)** to bypass Python-object serialization bottlenecks, and performs native Rust-level **Hybrid Search** (Vector + Full-Text Search via LanceDB's native inverted index).
 
 ---
 

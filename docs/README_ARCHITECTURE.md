@@ -64,7 +64,7 @@ The architecture supports specialized parallel pipelines:
 Before running expensive GPU embeddings, `IngestionService` queries the database for all existing `content_hash` values. Any chunk that hasn't changed is skipped entirely, preventing index bloat and accelerating re-ingestion.
 
 ### C. Hybrid Search & Rust-Level Pushdown
-LanceDB simultaneously executes an Approximate Nearest Neighbor (ANN) vector search (enforced `metric="cosine"`) alongside a native **Tantivy** Full-Text Search (FTS). Metadata filters (like `--min-time` for SQL) are pushed down to the Rust layer *before* the vector scan.
+LanceDB simultaneously executes an Approximate Nearest Neighbor (ANN) vector search (enforced `metric="cosine"`) alongside LanceDB's native **inverted-index** Full-Text Search (FTS). Metadata filters (like `--min-time` for SQL) are pushed down to the Rust layer *before* the vector scan.
 
 ### D. MCP Stdio Presentation
 `dbs-vector mcp` is the only server surface. It registers one FastMCP stdio tool per configured engine using the family registry (`document`, `sql`, and future families). Because MLX inference is synchronous and locks the GPU, `MLXEmbedder` keeps a strict `threading.Lock` around model execution so concurrent tool calls cannot overlap GPU inference unsafely.

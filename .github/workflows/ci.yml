@@ -5,13 +5,17 @@ on:
     branches: [main]
   push:
     branches: [main]
+  schedule:
+    # Daily, so a breaking upstream release surfaces on its own schedule instead
+    # of on the next unrelated PR.
+    - cron: "0 6 * * *"
 
 permissions:
   contents: read
 
 jobs:
   checks:
-    name: Lint, Typecheck, Tests
+    name: Lint, Typecheck, Tests (locked)
     runs-on: macos-14
     steps:
       - name: Checkout
@@ -25,8 +29,43 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@v4
 
+      - name: Verify uv.lock is in sync with pyproject.toml
+        run: uv lock --check
+
       - name: Install dependencies
         run: uv sync --frozen
+
+      - name: Run quality checks
+        run: uv run poe github-release-test
+
+  fresh-resolution:
+    # The job above installs the pinned lockfile — a dependency set no user ever
+    # receives. `uv tool install` and `pip install` resolve fresh from the
+    # pyproject constraints, which is how both the transformers 5.13.0 and the
+    # mcp 2.0.0 breakages reached a release while CI stayed green. This job
+    # tests the resolution users actually get.
+    name: Lint, Typecheck, Tests (fresh resolution)
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Resolve the newest versions pyproject allows
+        run: uv lock --upgrade
+
+      - name: Report what resolved differently from the committed lock
+        run: git --no-pager diff --stat -- uv.lock
+
+      - name: Install dependencies
+        run: uv sync
 
       - name: Run quality checks
         run: uv run poe github-release-test
