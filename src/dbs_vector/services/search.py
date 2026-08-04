@@ -100,6 +100,33 @@ def format_admission_empty(query: str, response: SearchResponse) -> str:
     return msg
 
 
+def envelope_payload(response: SearchResponse) -> dict[str, Any]:
+    """The search envelope, one implementation.
+
+    Serves both `search --json` (via results_to_json) and the MCP
+    structuredContent of document search tools. Nothing is truncated: every
+    result carries its similarity, retrieved_by, rrf_score, source, full
+    text, and all chunk metadata.
+    """
+    return {
+        "floor": response.floor,
+        "inspected": response.inspected,
+        "best_rejected": (
+            response.best_rejected.model_dump(mode="json")
+            if response.best_rejected is not None
+            else None
+        ),
+        # Present whenever a source_filter was supplied, so a JSON consumer
+        # can tell an unmatched filter from an empty corpus too.
+        "source_resolution": (
+            response.source_resolution.model_dump(mode="json")
+            if response.source_resolution is not None
+            else None
+        ),
+        "results": [res.model_dump(mode="json") for res in response.results],
+    }
+
+
 class SearchService:
     """Orchestrates hybrid vector search and formats results."""
 
@@ -135,7 +162,7 @@ class SearchService:
             raise ValueError(f"limit must be within [1, {_MAX_LIMIT}]; got {limit}")
         if min_similarity is not None and not (-1.0 <= min_similarity <= 1.0):
             raise ValueError(f"min_similarity must be within [-1, 1]; got {min_similarity}")
-        logger.info("Executing query: {}", query)
+        logger.debug("Executing query: {}", query)
         if extra_filters is None:
             extra_filters = {}
 
@@ -273,24 +300,7 @@ class SearchService:
         similarity, retrieved_by, rrf_score, source, full text, and all chunk
         metadata.
         """
-        payload = {
-            "floor": response.floor,
-            "inspected": response.inspected,
-            "best_rejected": (
-                response.best_rejected.model_dump(mode="json")
-                if response.best_rejected is not None
-                else None
-            ),
-            # Present whenever a source_filter was supplied, so a JSON consumer
-            # can tell an unmatched filter from an empty corpus too.
-            "source_resolution": (
-                response.source_resolution.model_dump(mode="json")
-                if response.source_resolution is not None
-                else None
-            ),
-            "results": [res.model_dump(mode="json") for res in response.results],
-        }
-        return json.dumps(payload, indent=2, ensure_ascii=False)
+        return json.dumps(envelope_payload(response), indent=2, ensure_ascii=False)
 
     def print_results(self, response: SearchResponse, query: str = "") -> None:
         """Formats and prints the parsed search results."""

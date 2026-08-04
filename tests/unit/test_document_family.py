@@ -170,8 +170,9 @@ async def test_make_handler_returns_error_when_service_missing(monkeypatch):
     monkeypatch.setattr(state_mod, "_services", {})
     fam = DocumentFamily()
     handler = fam.make_handler("md-test")
-    out = await handler(query="x")
-    assert "search service 'md-test' is not initialized" in out
+    result = await handler(query="x")
+    assert result.isError
+    assert "search service 'md-test' is not initialized" in result.content[0].text
 
 
 @pytest.mark.asyncio
@@ -193,11 +194,13 @@ async def test_make_handler_runs_search_and_formats(monkeypatch):
 
     fam = DocumentFamily()
     handler = fam.make_handler("md-test")
-    out = await handler(query="q", limit=1)
+    result = await handler(query="q", limit=1)
 
     service.execute_query.assert_called_once_with(
         "q", None, 1, extra_filters={}, min_similarity=None, disable_similarity_floor=False
     )
+    assert not result.isError
+    out = result.content[0].text
     assert "Found 1 results for 'q'" in out
     assert "Source: f.md" in out
 
@@ -212,9 +215,10 @@ async def test_make_handler_rejects_out_of_range_min_similarity(monkeypatch):
 
     fam = DocumentFamily()
     handler = fam.make_handler("md-test")
-    out = await handler(query="q", min_similarity=2.0)
+    result = await handler(query="q", min_similarity=2.0)
 
-    assert out == "min_similarity must be within [-1, 1]; got 2.0."
+    assert result.isError
+    assert result.content[0].text == "min_similarity must be within [-1, 1]; got 2.0."
     service.execute_query.assert_not_called()
 
 

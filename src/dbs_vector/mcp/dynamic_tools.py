@@ -14,7 +14,12 @@ from dbs_vector.mcp.families.base import BrowseFamily, ReadFamily, TriageFamily
 from dbs_vector.mcp.families.registry import FamilyRegistry
 
 
-def register_search_tools(mcp: FastMCP, allow_raw_queries: bool = False) -> None:
+def register_search_tools(
+    mcp: FastMCP,
+    allow_raw_queries: bool = False,
+    *,
+    engine_names: set[str] | None = None,
+) -> None:
     """Iterate settings.engines and register one MCP tool per engine.
 
     `allow_raw_queries` is the server-level egress flag (from
@@ -22,6 +27,11 @@ def register_search_tools(mcp: FastMCP, allow_raw_queries: bool = False) -> None
     recorded in the registration tuple so a second call with a different flag
     raises instead of silently keeping a stale handler. Mirrors
     register_browse_tools. Defaults to False (fail-closed).
+
+    `engine_names`: None (default) registers every engine — the stdio
+    behavior, unchanged. A subset registers only those engines — used to
+    build a token-scoped HTTP sub-app whose tools/list physically cannot
+    contain another scope's engines.
 
     Reads from the module-level `settings` singleton (already populated by
     the CLI callback via _populate_singleton_from). Tests monkey-patch
@@ -52,6 +62,8 @@ def register_search_tools(mcp: FastMCP, allow_raw_queries: bool = False) -> None
     seen: dict[str, str] = {}
     resolved: list[tuple[str, str, str]] = []
     for engine_name, engine in settings.engines.items():
+        if engine_names is not None and engine_name not in engine_names:
+            continue  # structural scoping: this sub-app never sees the engine
         if not ENGINE_NAME_PATTERN.match(engine_name):
             raise ValueError(
                 f"Engine name '{engine_name}' must match {ENGINE_NAME_PATTERN.pattern}. "
@@ -90,12 +102,20 @@ def register_search_tools(mcp: FastMCP, allow_raw_queries: bool = False) -> None
             handler,
             name=tool_name,
             description=family.search_description(engine_name, engine),
+            # Document search declares the envelope as outputSchema and
+            # returns CallToolResult (prose + structuredContent). SQL tools
+            # stay unstructured in v1.
+            structured_output=True if getattr(family, "structured_search", False) else None,
         )
         registrations[tool_name] = current
 
 
-def register_read_tools(mcp: FastMCP) -> None:
-    """Register one exact adjacent-chunk reader per read-capable engine."""
+def register_read_tools(mcp: FastMCP, *, engine_names: set[str] | None = None) -> None:
+    """Register one exact adjacent-chunk reader per read-capable engine.
+
+    `engine_names`: None (default) registers every engine (stdio behavior).
+    A subset scopes this to a token group's sub-app.
+    """
     mcp_any: Any = mcp
     if not hasattr(mcp_any, "_dbs_vector_registrations"):
         mcp_any._dbs_vector_registrations = {}
@@ -104,6 +124,8 @@ def register_read_tools(mcp: FastMCP) -> None:
     seen: dict[str, str] = {}
     resolved: list[tuple[str, str, str, Any]] = []
     for engine_name, engine in settings.engines.items():
+        if engine_names is not None and engine_name not in engine_names:
+            continue
         if not ENGINE_NAME_PATTERN.match(engine_name):
             raise ValueError(
                 f"Engine name '{engine_name}' must match {ENGINE_NAME_PATTERN.pattern}."
@@ -145,13 +167,21 @@ def register_read_tools(mcp: FastMCP) -> None:
         registrations[tool_name] = current
 
 
-def register_browse_tools(mcp: FastMCP, allow_raw_queries: bool) -> None:
+def register_browse_tools(
+    mcp: FastMCP,
+    allow_raw_queries: bool,
+    *,
+    engine_names: set[str] | None = None,
+) -> None:
     """Register one browse_<engine> tool per SQL-family engine.
 
     Mirrors register_search_tools' pre-flight (name pattern, collision, family
     resolution, idempotency) but registers ONLY engines whose
     resolved_family == "sql", uses verb="browse" tool names, and sources the
     description from family.browse_description(engine, allow_raw_queries).
+
+    `engine_names`: None (default) considers every engine (stdio behavior).
+    A subset scopes this to a token group's sub-app.
     """
     mcp_any: Any = mcp
     if not hasattr(mcp_any, "_dbs_vector_registrations"):
@@ -161,6 +191,8 @@ def register_browse_tools(mcp: FastMCP, allow_raw_queries: bool) -> None:
     seen: dict[str, str] = {}
     resolved: list[tuple[str, str, str, Any]] = []
     for engine_name, engine in settings.engines.items():
+        if engine_names is not None and engine_name not in engine_names:
+            continue
         if engine.resolved_family != "sql":
             continue
         if not ENGINE_NAME_PATTERN.match(engine_name):
@@ -204,13 +236,21 @@ def register_browse_tools(mcp: FastMCP, allow_raw_queries: bool) -> None:
         registrations[tool_name] = current
 
 
-def register_triage_tools(mcp: FastMCP, allow_raw_queries: bool) -> None:
+def register_triage_tools(
+    mcp: FastMCP,
+    allow_raw_queries: bool,
+    *,
+    engine_names: set[str] | None = None,
+) -> None:
     """Register one top_impacting_<engine> tool per SQL-family engine.
 
     Mirrors register_browse_tools' pre-flight (name pattern, collision, family
     resolution, idempotency) but registers ONLY engines whose
     resolved_family == "sql", uses verb="top_impacting" tool names, and sources
     the description from family.triage_description(engine, allow_raw_queries).
+
+    `engine_names`: None (default) considers every engine (stdio behavior).
+    A subset scopes this to a token group's sub-app.
     """
     mcp_any: Any = mcp
     if not hasattr(mcp_any, "_dbs_vector_registrations"):
@@ -220,6 +260,8 @@ def register_triage_tools(mcp: FastMCP, allow_raw_queries: bool) -> None:
     seen: dict[str, str] = {}
     resolved: list[tuple[str, str, str, Any]] = []
     for engine_name, engine in settings.engines.items():
+        if engine_names is not None and engine_name not in engine_names:
+            continue
         if engine.resolved_family != "sql":
             continue
         if not ENGINE_NAME_PATTERN.match(engine_name):

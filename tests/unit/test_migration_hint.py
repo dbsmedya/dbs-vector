@@ -60,7 +60,7 @@ def test_known_system_keys_matches_settings_fields():
     rather than rejecting valid config at runtime."""
     from dbs_vector.config import _KNOWN_SYSTEM_KEYS, Settings
 
-    declared = set(Settings.model_fields) - {"profiles", "engines"}
+    declared = set(Settings.model_fields) - {"profiles", "engines", "server"}
     assert _KNOWN_SYSTEM_KEYS == declared, (
         f"_KNOWN_SYSTEM_KEYS drifted from Settings fields. "
         f"Missing from allow-list: {declared - _KNOWN_SYSTEM_KEYS}. "

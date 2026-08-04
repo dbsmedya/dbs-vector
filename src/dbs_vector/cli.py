@@ -392,6 +392,15 @@ def mcp(
             "Default off - enable only for a trusted local model.",
         ),
     ] = False,
+    http_mode: Annotated[
+        bool,
+        typer.Option(
+            "--http",
+            help="Serve MCP over streamable HTTP using the config's server: "
+            "block and per-engine tokens, instead of stdio. See "
+            "docs/README_MCP.md.",
+        ),
+    ] = False,
 ) -> None:
     """Starts the FastMCP standard input/output (stdio) server for integrations."""
     from dbs_vector.config import _populate_singleton_from, load_settings
@@ -406,9 +415,24 @@ def mcp(
         new_settings = load_settings(config_file, validate=True)
         _populate_singleton_from(new_settings)
 
+    if http_mode and allow_raw_queries:
+        typer.echo(
+            "Error: --allow-raw-queries is the stdio knob. Over --http, raw-query "
+            "egress is declared per client: send the header "
+            "X-DBS-Allow-Raw-Queries: true from the client's .mcp.json. "
+            "See docs/README_MCP.md.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
     logger.info("Initializing MLX Embedders and LanceDB connections")
     try:
-        start_stdio_server(allow_raw_queries=allow_raw_queries)
+        if http_mode:
+            from dbs_vector.mcp.server import start_http_server
+
+            start_http_server()
+        else:
+            start_stdio_server(allow_raw_queries=allow_raw_queries)
     except Exception as e:
         logger.error("Failed to initialize search services: {}", e)
         raise

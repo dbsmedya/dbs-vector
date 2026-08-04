@@ -12,6 +12,7 @@ from dbs_vector.mcp.families.base import (
     floor_clause,
     render_with_budget,
 )
+from dbs_vector.mcp.policy import raw_queries_effective
 from dbs_vector.services.browse import (
     BrowseResult,
     BrowseService,
@@ -211,11 +212,10 @@ class SqlFamily:
 
             logger.warning(
                 "format_results: len(results)={} exceeds total_matching={} "
-                "for query={!r} — count_matching and search disagreed on the "
-                "filter set. Investigate the filter pipeline.",
+                "— count_matching and search disagreed on the filter set. "
+                "Investigate the filter pipeline.",
                 len(results),
                 total_matching,
-                query,
             )
             header = (
                 f"Showing {len(results)} results for '{query}' "
@@ -391,10 +391,13 @@ class SqlFamily:
                     return r, t
 
                 response, total = await asyncio.to_thread(_search_then_count)
-                # Verbatim raw_query leaves the process ONLY when the server was
-                # started with --allow-raw-queries. include_raw=True is silently
-                # downgraded otherwise — the same lock browse already fits.
-                effective_include_raw = include_raw and allow_raw_queries
+                # Verbatim raw_query leaves the process ONLY when the caller
+                # opted in: the baked --allow-raw-queries flag on stdio, or
+                # the per-request X-DBS-Allow-Raw-Queries header on HTTP
+                # (mcp/policy.py). include_raw=True is silently downgraded
+                # otherwise — the same lock browse already fits.
+                effective_raw = raw_queries_effective(allow_raw_queries)
+                effective_include_raw = include_raw and effective_raw
                 return family.format_results(
                     response, query, total_matching=total, include_raw=effective_include_raw
                 )
@@ -427,6 +430,7 @@ class SqlFamily:
             if service is None:
                 return f"Error: search service '{engine_name}' is not initialized."
 
+            effective_raw = raw_queries_effective(allow_raw_queries)
             frame_alias = engine_name.replace("-", "_")
             browse = BrowseService(service.vector_store, frame_alias)
             filters = {
@@ -448,7 +452,7 @@ class SqlFamily:
                     order_by=order_by,
                     select=select,
                     limit=limit,
-                    allow_raw_queries=allow_raw_queries,
+                    allow_raw_queries=effective_raw,
                 )
 
             try:
@@ -456,8 +460,9 @@ class SqlFamily:
                 return format_browse(result)
             except BrowseValidationError as e:
                 return str(e)  # safe, author-controlled
-            except Exception as e:  # infra: log full, return generic
-                logger.warning("browse '{}' failed: {}", engine_name, e)
+            except Exception as e:  # infra: log full at DEBUG, warn generic
+                logger.warning("browse '{}' failed (see DEBUG for detail)", engine_name)
+                logger.debug("browse '{}' failure detail: {}", engine_name, e)
                 return "browse execution failed (see server logs)."
 
         return handler
@@ -507,9 +512,14 @@ class SqlFamily:
             if col not in _TRIAGE_ORDER_ALLOWLIST:
                 return f"order_by must be one of {', '.join(_TRIAGE_ORDER_ALLOWLIST)}; got '{col}'."
 
+            # ONE effective value covers both raw sites below (the select
+            # append and the build_and_run kwarg) — mixing baked and
+            # header-derived values would let the select ask for raw_query
+            # while BrowseService rejects it.
+            effective_raw = raw_queries_effective(allow_raw_queries)
             select = _TRIAGE_SELECT
             # Silent downgrade (search-style): raw exemplar only under the flag.
-            if include_raw and allow_raw_queries:
+            if include_raw and effective_raw:
                 select += ",raw_query"
 
             frame_alias = engine_name.replace("-", "_")
@@ -523,7 +533,7 @@ class SqlFamily:
                     order_by=order_by,
                     select=select,
                     limit=limit,
-                    allow_raw_queries=allow_raw_queries,
+                    allow_raw_queries=effective_raw,
                 )
 
             try:
@@ -531,8 +541,9 @@ class SqlFamily:
                 return format_triage(result)
             except BrowseValidationError as e:
                 return str(e)  # safe, author-controlled
-            except Exception as e:  # infra: log full, return generic
-                logger.warning("triage '{}' failed: {}", engine_name, e)
+            except Exception as e:  # infra: log full at DEBUG, warn generic
+                logger.warning("triage '{}' failed (see DEBUG for detail)", engine_name)
+                logger.debug("triage '{}' failure detail: {}", engine_name, e)
                 return "triage execution failed (see server logs)."
 
         return handler

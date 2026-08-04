@@ -21,6 +21,18 @@ chunker behaviour or filters invalidates the corpus.
 The same applies the first time you enable watch on an existing table: older
 rows may carry relative `source` paths, which the watcher cannot manage.
 
+## Write ownership
+
+While `dbs-vector mcp` is running with watch enabled — stdio or
+`mcp --http`, the rule is transport-agnostic — the running daemon is the
+**sole writer** for every watched engine's table. Rebuild procedure after
+a config change: stop the daemon → `ingest --rebuild --force` for that
+engine → start the daemon again. Running a CLI `ingest` against a
+*watched* engine's table while the daemon is up is the one thing to avoid
+(see [Limits](#limits-v1-accepted) item 1) — two writers touching the
+same table can conflict. CLI `ingest` against an **unwatched** engine's
+table is always fine, daemon running or not: nothing else writes it.
+
 ## Configuration
 
 ```yaml
@@ -55,6 +67,15 @@ Startup reconciliation is mandatory for watched engines — there is no knob.
 - A watched engine's `table_name` must not be shared with another engine
   (prune is root-scoped, so a shared table would cross-delete). `sql` and
   `sql-api` share one deliberately and stay unwatched.
+- **One watcher per directory per process.** Two watch-enabled engines
+  claiming the *same* resolved root are **refused at config load** — the
+  config never loads, naming both engines. Nested-but-distinct roots stay
+  legal: two engines may each watch a different directory even if one
+  contains the other, ingesting overlapping trees into their own tables.
+  Disable `watch` on one of the colliding engines (it can still be
+  ingested manually) and re-ingest with `--rebuild --force` when you
+  switch. See [Limits](#limits-v1-accepted) below for the underlying
+  watchdog/FSEvents constraint.
 
 ## CLI
 
@@ -111,21 +132,19 @@ reconcile, searches may queue behind at most one watcher embed batch.
    heals at the next reconcile.
 5. **One watcher per directory per process.** Two engines cannot watch the same
    root at once: watchdog's FSEvents backend registers watches by path
-   process-wide and refuses the second one. Enable `watch` on **one** engine;
-   the others are reported at startup and left unwatched:
+   process-wide and refuses the second one. In a single process serving
+   several engines — including a consolidated `mcp --http` daemon holding
+   engines from multiple projects — this is now **refused at config load**
+   (see [Validation](#validation) above), naming both colliding engines, so
+   it is caught before the server ever starts rather than surfacing as a
+   silent runtime drift. Enable `watch` on **one** of the colliding engines;
+   the other stays reachable via manual `ingest`.
 
-   ```
-   ERROR  Engines 'md' and 'md-granite' both watch /path/to/vault. Only 'md'
-          will receive events — one watcher per directory per process is a
-          watchdog/FSEvents limit. 'md-granite' will go stale until re-ingested…
-   ```
-
-   The config is **not** rejected for this, so nothing needs editing if the
-   limit is lifted later. When A/B-ing two embedding models over one corpus,
-   watch the engine you are actively using and re-ingest the other with
-   `--rebuild --force` when you switch — otherwise its index silently drifts
-   from disk. Separate `dbs-vector mcp` processes watching the same directory
-   are unaffected; the limit is per process.
+   When A/B-ing two embedding models over one corpus, watch the engine you
+   are actively using and re-ingest the other with `--rebuild --force` when
+   you switch — otherwise its index silently drifts from disk. Separate
+   `dbs-vector mcp` processes watching the same directory are unaffected;
+   the limit is per process, not per directory globally.
 6. Symlinked roots work (FSEvents reports real paths). Symlinked
    *subdirectories* are not traversed. Anything beyond that: rebuild if the
    index drifts.
