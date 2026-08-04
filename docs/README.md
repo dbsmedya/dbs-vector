@@ -88,6 +88,27 @@ uv run dbs-vector search "SELECT * FROM users" --type sql --min-time 1000
 
 ---
 
+## Versioning & upgrades
+
+Read the version as `1.MINOR.PATCH`. **The middle number tells you whether an upgrade
+costs you a reindex; the last number never does.**
+
+| Bump | Example | What it may contain | What you must do |
+|---|---|---|---|
+| **Minor** | `1.6.x` → `1.7.0` | Anything that changes what is stored: chunk boundaries, embedding model or prefixes, table schema, normalization | Run `dbs-vector ingest --rebuild --force` for each affected engine |
+| **Patch** | `1.7.0` → `1.7.1` | Bug fixes, dependency pins, docs, logging, CLI/MCP surface fixes | Nothing — upgrade in place |
+| **Major** | `1.x` → `2.0.0` | Breaking CLI, config-file, or MCP contract changes | Read the release notes; config edits may be required |
+
+**The patch promise is the point:** a patch release never changes stored data, so you can
+adopt it without a reindex, without re-running calibration, and without downtime beyond a
+restart. Fix releases are safe to take immediately.
+
+A reindex release always says so in its release notes and names the affected engines. If
+you skip the rebuild, nothing errors — the index simply keeps its old shape, and engines
+drift into mixed state as files change. Rebuild when you take a minor bump.
+
+---
+
 ## Docs Index
 
 - [README_CONFIGURATION.md](README_CONFIGURATION.md) — configuration reference: config-file resolution, the model/profile/engine layers, and every field

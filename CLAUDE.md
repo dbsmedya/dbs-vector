@@ -65,6 +65,38 @@ Two guards close that gap, and both must stay:
 Run `refresh-deps` before opening a PR. If it fails, fix or pin the offender in
 the same PR — never merge against a resolution users cannot install.
 
+## Release Policy
+
+Versions are `1.MINOR.PATCH`. **The middle number is the reindex signal.**
+
+- **Minor (`1.7.0`)** — required for any change to what is *stored*. Ships with
+  release notes naming the affected engines and stating `--rebuild --force`.
+- **Patch (`1.7.1`)** — everything else. **A patch release must never change
+  stored data.** Consumers rely on that to adopt fix releases immediately.
+- **Major (`2.0.0`)** — breaking CLI, config-file, or MCP contract changes.
+
+**Cut a minor if the change touches any of these.** The list is the test; when
+unsure, it is a minor:
+
+- chunker logic that can move a chunk boundary. Note the failure mode is silent:
+  chunk hashes key on file content plus position, never chunk content, so when
+  boundaries change but file bytes do not, both the full-ingest and watch/upsert
+  paths skip every file and write nothing while logging success.
+- embedding model, `passage_prefix` / `query_prefix`, or any `ModelRegistry` field
+- LanceDB schema — this one is at least loud: `LanceDBStore` raises on mismatch and
+  the CLI surfaces a `--rebuild --force` hint
+- profile knobs feeding chunking (`chunk_target_tokens`, `chunk_max_tokens`,
+  `chunk_max_chars`)
+- stored-value normalization (table names, content hashing)
+
+**Safe in a patch:** dependency pins and caps, docs, logging, error messages, and
+CLI/MCP surface fixes that do not alter stored rows. `v1.2.1` (transformers cap
+relaxed) and `v1.6.1` (dependency caps, tantivy and sqlglot dropped) are the
+reference examples.
+
+A reindex release also invalidates `similarity_floor` calibration. Say so in the
+notes — that evidence is deployment-local, so only its owner can re-measure it.
+
 ## Architecture
 
 This is a Clean Architecture, configuration-driven RAG search engine for Apple Silicon (MLX). The dependency flow is: **CLI/MCP → Services → Core Protocols → Infrastructure**.
