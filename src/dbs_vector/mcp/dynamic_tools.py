@@ -102,6 +102,10 @@ def register_search_tools(
             handler,
             name=tool_name,
             description=family.search_description(engine_name, engine),
+            # Document search declares the envelope as outputSchema and
+            # returns CallToolResult (prose + structuredContent). SQL tools
+            # stay unstructured in v1.
+            structured_output=True if getattr(family, "structured_search", False) else None,
         )
         registrations[tool_name] = current
 

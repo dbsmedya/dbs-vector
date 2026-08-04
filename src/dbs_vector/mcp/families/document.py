@@ -1,7 +1,9 @@
 """DocumentFamily — search engines whose results are document chunks."""
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar, cast
+
+from mcp.types import CallToolResult, TextContent
 
 from dbs_vector.core.models import ChunkDirection, ChunkPage, SearchResponse
 from dbs_vector.mcp.families.base import (
@@ -14,6 +16,7 @@ from dbs_vector.services.search import (
     ACCEPTED_SOURCE_FORMS_DOCUMENT,
     SearchService,
     admission_phrase,
+    envelope_payload,
     format_admission_empty,
     format_unmatched_source,
     retrieved_by_label,
@@ -23,11 +26,27 @@ if TYPE_CHECKING:
     from dbs_vector.config import EngineConfig
 
 
+def _error_result(message: str) -> "SearchResponse":
+    """isError result that still satisfies the declared envelope schema."""
+    empty = SearchResponse(results=[], floor=None, inspected=0, best_rejected=None)
+    return cast(
+        SearchResponse,
+        CallToolResult(
+            content=[TextContent(type="text", text=message)],
+            isError=True,
+            structuredContent=envelope_payload(empty),
+        ),
+    )
+
+
 class DocumentFamily:
     """SearchFamily implementation for document-style engines (markdown,
     prose, etc.)."""
 
     name: str = "document"
+    # Document search declares structuredContent/outputSchema (spec decision
+    # 7); SQL families stay text-only in v1 (absent means False via getattr).
+    structured_search: ClassVar[bool] = True
 
     def run_search(
         self,
@@ -187,14 +206,16 @@ class DocumentFamily:
             source_filter: str | None = None,
             min_similarity: float | None = None,
             disable_similarity_floor: bool = False,
-        ) -> str:
+        ) -> SearchResponse:
             from dbs_vector.mcp.state import _services  # lazy import
 
             service = _services.get(engine_name)
             if service is None:
-                return f"Error: search service '{engine_name}' is not initialized."
+                return _error_result(f"Error: search service '{engine_name}' is not initialized.")
             if min_similarity is not None and not (-1.0 <= min_similarity <= 1.0):
-                return f"min_similarity must be within [-1, 1]; got {min_similarity}."
+                return _error_result(
+                    f"min_similarity must be within [-1, 1]; got {min_similarity}."
+                )
             try:
                 response = await asyncio.to_thread(
                     family.run_search,
@@ -205,8 +226,15 @@ class DocumentFamily:
                     min_similarity=min_similarity,
                     disable_similarity_floor=disable_similarity_floor,
                 )
-                return family.format_results(response, query)
+                prose = family.format_results(response, query)
+                return cast(
+                    SearchResponse,  # annotation drives outputSchema; SDK accepts CallToolResult
+                    CallToolResult(
+                        content=[TextContent(type="text", text=prose)],
+                        structuredContent=envelope_payload(response),
+                    ),
+                )
             except Exception as e:
-                return f"Search execution failed: {e}"
+                return _error_result(f"Search execution failed: {e}")
 
         return handler
