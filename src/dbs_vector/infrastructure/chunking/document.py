@@ -352,15 +352,30 @@ class DocumentChunker:
             return [replace(b, frames=atomic_frames, scope=scope, expansion=())]
 
         # Expanded. Children already carry the inherited frame stack; when this
-        # container had no frame of its own, apply its fallback so an expanded
-        # ordinary quote keeps its quotation semantics after `>` removal.
+        # container had no frame of its own, insert its fallback throughout the
+        # selected subtree so an expanded ordinary quote keeps its quotation
+        # semantics after `>` removal. Updating only the immediate wrapper is
+        # insufficient: descendants were frozen with their frame stacks during
+        # parsing, so a nested admonition would otherwise lose the outer quote.
         out: list[_ScopedBlock] = []
         for child in b.expansion:
             c = child
             if b.self_frame is None and b.expanded_fallback_frame:
-                c = replace(c, frames=c.frames + (b.expanded_fallback_frame,))
+                c = self._insert_inherited_frame(c, len(b.frames), b.expanded_fallback_frame)
             out.extend(self._select_form(c, title, ancestors, heading))
         return out
+
+    def _insert_inherited_frame(self, b: _ScopedBlock, index: int, frame: str) -> _ScopedBlock:
+        """Insert a late-selected parent frame through an immutable subtree.
+
+        Parser-built descendant frames contain the parent's inherited prefix
+        followed by any nested container frames. The fallback belongs exactly
+        at that boundary, not at the end: ``quote > warning``, never
+        ``warning > quote``.
+        """
+        expansion = tuple(self._insert_inherited_frame(c, index, frame) for c in b.expansion)
+        frames = b.frames[:index] + (frame,) + b.frames[index:]
+        return replace(b, frames=frames, expansion=expansion)
 
     def _pack_section(
         self,
@@ -407,7 +422,13 @@ class DocumentChunker:
         # char-window safety net at compose time as an absolute guarantee.
         scope = getattr(group[0], "scope", ())
         frames = getattr(group[0], "frames", ())
-        plen = self._len(self._prefix(title, ancestors, heading, frames))
+        prefix = self._prefix(title, ancestors, heading, frames)
+        # `length_fn` may add BOS/EOS to every measurement. Those tokens are
+        # already present in the independently measured body, so only the
+        # prefix's NET content cost reduces the body budget. In particular an
+        # empty prefix costs zero; charging len("") here would make packing
+        # split an atomic container that exact form selection already accepted.
+        plen = max(0, self._len(prefix) - self._overhead()) if prefix else 0
         eff_target = max(1, self.target_tokens - plen)
         eff_max = max(1, self.max_tokens - plen)
 

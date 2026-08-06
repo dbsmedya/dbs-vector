@@ -38,7 +38,7 @@ _TILDE_RUN = re.compile(r"^\s*(~{3,})", re.MULTILINE)
 
 
 def choose_fence(body: str, info: str = "") -> str:
-    """Pick a fence delimiter that `body` cannot terminate early.
+    """Pick the shortest fence delimiter that `body` cannot terminate early.
 
     Two independent hazards:
 
@@ -54,13 +54,24 @@ def choose_fence(body: str, info: str = "") -> str:
     Chosen ONCE from a complete body, then reused for every part it is split
     into: a delimiter safe for the whole is safe for each piece, and choosing
     per-part would be circular, since `_split_code` must reserve wrapper
-    overhead before `_pack_atoms` has produced any parts.
+    overhead before `_pack_atoms` has produced any parts. When both delimiter
+    kinds are legal, the shorter candidate preserves the most body budget;
+    backticks win ties to keep the common output stable.
     """
+    tilde_len = max(
+        3,
+        max((len(m.group(1)) for m in _TILDE_RUN.finditer(body)), default=2) + 1,
+    )
     if "`" in info:
-        longest = max((len(m.group(1)) for m in _TILDE_RUN.finditer(body)), default=2)
-        return "~" * max(3, longest + 1)
-    longest = max((len(m.group(1)) for m in _BACKTICK_RUN.finditer(body)), default=2)
-    return "`" * max(3, longest + 1)
+        return "~" * tilde_len
+
+    backtick_len = max(
+        3,
+        max((len(m.group(1)) for m in _BACKTICK_RUN.finditer(body)), default=2) + 1,
+    )
+    if backtick_len <= tilde_len:
+        return "`" * backtick_len
+    return "~" * tilde_len
 
 
 def render_fence(body: str, info: str = "", delim: str | None = None) -> str:

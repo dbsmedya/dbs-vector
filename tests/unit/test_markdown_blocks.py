@@ -1,6 +1,6 @@
 import pytest
 
-from dbs_vector.infrastructure.chunking.markdown_blocks import MarkdownBlockParser
+from dbs_vector.infrastructure.chunking.markdown_blocks import MarkdownBlockParser, choose_fence
 
 
 def test_parser_returns_heading_and_paragraph_blocks():
@@ -35,15 +35,20 @@ def test_indented_code_becomes_a_fenced_code_block():
     assert code[0].text == "```\nindented one\nindented two\n```"
 
 
-def test_indented_code_containing_a_literal_fence_uses_a_longer_delimiter():
-    """A three-backtick wrapper would be closed early by the body's own ```
-    line, spilling the remainder into prose."""
+def test_indented_code_containing_a_literal_fence_uses_a_safe_delimiter():
+    """A backtick wrapper would be closed early by the body's own ``` line;
+    the shorter tilde alternative stays balanced without wasting budget."""
     src = "# T\n\n    before\n    ```\n    inside\n    ```\n    after\n"
     code = [b for b in MarkdownBlockParser().parse(src).blocks if b.node_type == "code"]
     assert len(code) == 1
-    assert code[0].text.startswith("````")
-    assert code[0].text.endswith("````")
+    assert code[0].text.startswith("~~~")
+    assert code[0].text.endswith("~~~")
     assert "\n```\ninside\n```\n" in code[0].text
+
+
+def test_choose_fence_prefers_the_shortest_safe_delimiter():
+    assert choose_fence("`" * 100) == "~~~"
+    assert choose_fence("~" * 100) == "```"
 
 
 def test_style_and_script_and_comment_html_blocks_are_dropped():

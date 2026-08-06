@@ -380,8 +380,8 @@ def test_oversized_fenced_code_containing_a_literal_fence_stays_balanced():
         lines = body.split("\n")
         assert lines[0].startswith("(code, part "), "part marker must survive"
         opener = lines[1]
-        delim = opener[: len(opener) - len(opener.lstrip("`"))]
-        assert len(delim) >= 4, "opener must outrun the literal ``` in the body"
+        assert opener == "~~~py", "the shorter safe delimiter should preserve body budget"
+        delim = "~~~"
         assert lines[-1] == delim, "closing delimiter must equal the opener"
         assert len(c.text) <= 240, "the hard size invariant survives the wider fence"
 
@@ -393,6 +393,21 @@ def test_backtick_in_info_string_forces_a_tilde_fence():
         body = c.text.split("\n\n", 1)[-1] if c.parent_scope else c.text
         opener = [ln for ln in body.split("\n") if ln.strip()][1]
         assert opener.startswith("~~~"), "a backtick in the info string rules out a backtick fence"
+
+
+def test_long_backtick_run_uses_short_safe_tilde_fence():
+    """A long backtick run must not force an enormous wrapper when a short
+    tilde fence is safe. Besides wasting the body budget, an over-max wrapper
+    reaches the final char-window and is sliced into unbalanced fragments."""
+    chunks = _chunks("~~~\n" + "`" * 100 + "\n~~~\n", target_tokens=60, max_tokens=60)
+
+    assert 2 <= len(chunks) < 10, "the valid short wrapper should avoid chunk amplification"
+    for c in chunks:
+        lines = [ln for ln in c.text.split("\n") if ln.strip()]
+        assert lines[0].startswith("(code, part ")
+        assert lines[1] == "~~~"
+        assert lines[-1] == "~~~"
+        assert len(c.text) <= 60
 
 
 def _assert_balanced_parts(chunks, max_tokens, min_parts):
@@ -605,6 +620,25 @@ def test_small_blockquote_keeps_its_markers_and_packs_with_prose():
     assert chunks[0].parent_scope == "H"
 
 
+def test_exact_fit_atomic_blockquote_is_not_split_by_special_token_overhead():
+    """Atomic selection and packing must agree at the exact max boundary.
+
+    The tokenizer model includes two special tokens in every measurement. An
+    empty rendered prefix therefore costs zero additional tokens, not two.
+    Charging it as a real prefix makes packing split an atomic quote that form
+    selection already proved fits, losing the quote marker on later pieces.
+    """
+
+    def tok(s: str) -> int:
+        return (len(s.split()) if s else 0) + 2
+
+    src = "> " + " ".join(["word"] * 37) + "\n"
+    chunks = _chunks(src, target_tokens=40, max_tokens=40, length_fn=tok)
+
+    assert len(chunks) == 1
+    assert chunks[0].text == src.strip()
+
+
 def test_small_alert_blockquote_enters_scope_and_does_not_absorb_prose():
     src = "# H\n\nBefore.\n\n> [!WARNING]\n> Careful.\n\nAfter.\n"
     chunks = _chunks(src)
@@ -650,6 +684,7 @@ def test_two_oversized_quote_levels_expand_fully():
     inner = "> > " + ("word " * 400) + "\n"
     chunks = _chunks(inner, target_tokens=120, max_tokens=240)
     assert all(not c.text.lstrip().startswith(">") for c in chunks)
+    assert all(c.parent_scope == "quote > quote" for c in chunks)
 
 
 def test_lazy_continuation_line_survives_unprefixing():
@@ -697,6 +732,7 @@ def test_admonition_inside_an_expanded_blockquote():
     chunks = _chunks(src, target_tokens=120, max_tokens=240)
     framed = [c for c in chunks if c.parent_scope and "warning: W" in c.parent_scope]
     assert framed, "the nested admonition must be reachable once the quote expands"
+    assert all(c.parent_scope == "quote > warning: W" for c in framed)
     assert "inside the admonition" in "\n".join(c.text for c in framed)
 
 
@@ -704,7 +740,9 @@ def test_nested_alert_blockquote_is_detected_at_its_own_level():
     inner = "\n".join("> > word " + "z" * 20 for _ in range(80))
     src = "> " + ("pad " * 400) + "\n>\n> > [!WARNING]\n" + inner + "\n"
     chunks = _chunks(src, target_tokens=120, max_tokens=240)
-    assert any(c.parent_scope and "warning" in c.parent_scope for c in chunks)
+    framed = [c for c in chunks if c.parent_scope and "warning" in c.parent_scope]
+    assert framed
+    assert all(c.parent_scope == "quote > warning" for c in framed)
 
 
 def test_filters_apply_to_children_of_an_expanded_container():
