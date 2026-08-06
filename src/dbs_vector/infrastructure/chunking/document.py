@@ -2,12 +2,10 @@ import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
-import markdown_it
-
 from dbs_vector.core.models import Chunk, Document
 from dbs_vector.core.ports import IContentFilter
+from dbs_vector.infrastructure.chunking.markdown_blocks import MarkdownBlockParser, _Block
 
-_ATX_RE = re.compile(r"^#{1,6}\s*")
 _LIST_MARKER = re.compile(r"^(\s*)([-*+]|\d+[.)])\s")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 
@@ -28,16 +26,6 @@ def _chunk_content_hash(file_hash: str, index: int) -> str:
     identical per-chunk hashes, so an unchanged file still re-dedups cleanly.
     """
     return file_hash if index == 0 else f"{file_hash}_{index}"
-
-
-@dataclass
-class _Block:
-    node_type: str  # "heading" | "section" | "code" | "list" | "table"
-    text: str
-    start_line: int
-    end_line: int
-    level: int = 0  # heading level (1-6) when node_type == "heading"
-    info: str = ""  # fence language when node_type == "code"
 
 
 @dataclass
@@ -81,7 +69,7 @@ class DocumentChunker:
             )
         self._len = length_fn
         self._filters = list(filters) if filters else []
-        self._md = markdown_it.MarkdownIt("commonmark").enable("table")
+        self._parser = MarkdownBlockParser()
         # Lazy caches for the running-estimate math; length_fn may be a full
         # tokenizer pass under the MLX model lock, so constants are measured
         # at most once per instance.
@@ -121,7 +109,7 @@ class DocumentChunker:
     def _chunk_markdown(self, document: Document) -> Iterator[Chunk]:
         if any(f.should_skip_file(document.filepath, document.content) for f in self._filters):
             return
-        blocks = self._parse_blocks(document.content)
+        blocks = self._parser.parse(document.content)
         specs = self._build_specs(blocks)
         for i, s in enumerate(specs):
             yield Chunk(
@@ -133,37 +121,6 @@ class DocumentChunker:
                 parent_scope=s.parent_scope,
                 line_range=s.line_range,
             )
-
-    def _parse_blocks(self, content: str) -> list[_Block]:
-        tokens = self._md.parse(content)
-        lines = content.splitlines(keepends=True)
-        blocks: list[_Block] = []
-        n = len(tokens)
-        for i, t in enumerate(tokens):
-            if t.level != 0 or t.map is None:
-                continue
-            start, end = t.map
-            text = "".join(lines[start:end]).strip()
-            if not text:
-                continue
-            if t.type == "heading_open":
-                title = ""
-                if i + 1 < n and tokens[i + 1].type == "inline":
-                    title = tokens[i + 1].content.strip()
-                if not title:
-                    title = _ATX_RE.sub("", text).strip().rstrip("#").strip()
-                level = int(t.tag[1]) if t.tag[:1] == "h" and t.tag[1:].isdigit() else 1
-                blocks.append(_Block("heading", title, start, end, level=level))
-            elif t.type == "fence":
-                blocks.append(_Block("code", text, start, end, info=t.info.strip()))
-            elif t.type in ("bullet_list_open", "ordered_list_open"):
-                blocks.append(_Block("list", text, start, end))
-            elif t.type == "table_open":
-                blocks.append(_Block("table", text, start, end))
-            else:
-                # paragraphs, blockquotes, thematic breaks, etc. -> "section"
-                blocks.append(_Block("section", text, start, end))
-        return blocks
 
     def _build_specs(self, blocks: list[_Block]) -> list[_Spec]:
         specs: list[_Spec] = []
