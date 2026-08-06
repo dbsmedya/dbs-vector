@@ -42,13 +42,52 @@ class _Spec:
     line_range: str
 
 
-@dataclass
-class _PackedUnit:
+@dataclass(frozen=True)
+class _PackedFragment:
     text: str
+    node_type: str
+    verbatim: bool  # true for fenced and indented code
+
+
+@dataclass(frozen=True)
+class _PackedUnit:
+    fragments: tuple[_PackedFragment, ...]
     node_type: str
     start: int
     end: int
-    est: int = 0  # running token ESTIMATE for text (see _emit_section step 2)
+    scope: tuple[tuple[str, int], ...]
+    frames: tuple[str, ...]
+    eff_target: int
+    eff_max: int
+    est: int  # running token ESTIMATE of the body, carried from the packing loop
+
+    @property
+    def text(self) -> str:
+        return "\n\n".join(f.text for f in self.fragments)
+
+
+@dataclass(frozen=True)
+class _PackedSection:
+    document_title: str | None
+    ancestors: tuple[tuple[int, str], ...]  # (level, title), outermost first
+    heading: tuple[int, str, int] | None  # level, title, source line
+    units: tuple[_PackedUnit, ...]  # invariant: at least one
+
+
+@dataclass
+class _UnitBuilder:
+    """Mutable accumulator for one in-progress unit during pack/tiny-merge.
+
+    `_PackedUnit` is frozen (Tasks 5-8 rely on that immutability), so the
+    greedy-pack and tiny-merge loops accumulate into this instead and convert
+    to `_PackedUnit` once a group's packing is finished.
+    """
+
+    fragments: list[_PackedFragment]
+    node_type: str
+    start: int
+    end: int
+    est: int  # running token ESTIMATE, same netting rule as _PackedUnit.est
 
 
 class DocumentChunker:
@@ -129,19 +168,26 @@ class DocumentChunker:
             )
 
     def _build_specs(self, parsed: _ParsedDocument) -> list[_Spec]:
-        specs: list[_Spec] = []
-        stack: list[tuple[int, str]] = []
+        sections: list[_PackedSection] = []
+        # (level, title, start_line) — the start_line rides along so a folded
+        # section's heading (Task 8) can recover its source line; nothing
+        # reads it yet.
+        stack: list[tuple[int, str, int]] = []
         section: list[_Block] = []
 
-        def path() -> str:
-            parts = [t for _, t in stack]
-            if parsed.title:
-                parts.insert(0, parsed.title)
-            return " > ".join(parts)
+        def ancestry() -> tuple[tuple[tuple[int, str], ...], tuple[int, str, int] | None]:
+            if not stack:
+                return (), None
+            ancestors = tuple((lvl, t) for lvl, t, _ in stack[:-1])
+            lvl, t, line = stack[-1]
+            return ancestors, (lvl, t, line)
 
         def flush() -> None:
             if section:
-                specs.extend(self._emit_section(path(), section))
+                ancestors, heading = ancestry()
+                packed = self._pack_section(parsed.title, ancestors, heading, section)
+                if packed is not None:
+                    sections.append(packed)
                 section.clear()
 
         for b in parsed.blocks:
@@ -149,95 +195,204 @@ class DocumentChunker:
                 flush()
                 while stack and stack[-1][0] >= b.level:
                     stack.pop()
-                stack.append((b.level, b.text))
+                stack.append((b.level, b.text, b.start_line))
             else:
                 info = b.info if b.node_type == "code" else None
                 if any(f.should_drop_block(b.text, info) for f in self._filters):
                     continue
                 section.append(b)
         flush()
-        return specs
+        return self._compose(tuple(sections))
 
-    def _emit_section(self, path: str, blocks: list[_Block]) -> list[_Spec]:
+    def _effective_path(
+        self,
+        title: str | None,
+        ancestors: tuple[tuple[int, str], ...],
+        heading: tuple[int, str, int] | None,
+        frames: tuple[str, ...],
+    ) -> str:
+        """document title > ancestors > THIS section's heading > unit frames.
+
+        The section's own heading IS part of the breadcrumb — `Guide > Setup`,
+        not `Guide`. It is excluded only from the generated `parent=` marker in
+        Task 7, where the ATX line already carries it.
+        """
+        parts: list[str] = []
+        if title:
+            parts.append(title)
+        parts.extend(t for _, t in ancestors)
+        if heading is not None:
+            parts.append(heading[1])
+        parts.extend(frames)
+        return " > ".join(parts)
+
+    def _prefix(
+        self,
+        title: str | None,
+        ancestors: tuple[tuple[int, str], ...],
+        heading: tuple[int, str, int] | None,
+        frames: tuple[str, ...],
+    ) -> str:
+        """The rendered prefix — EMPTY when there is no path.
+
+        Today's `prefix = f"{path}\\n\\n" if path else ""` must be preserved.
+        Appending "\\n\\n" unconditionally would charge a true preamble (no
+        title, no heading, no frames) two tokens it does not carry, shifting
+        its budget and its atomic-vs-expanded selection. Every call site uses
+        this helper; none builds the prefix inline.
+        """
+        path = self._effective_path(title, ancestors, heading, frames)
+        return f"{path}\n\n" if path else ""
+
+    def _scope_groups(self, blocks: list[_Block]) -> list[list[_Block]]:
+        """Maximal contiguous runs of blocks sharing one structural scope.
+
+        Returning to an earlier scope after an intervening container starts a
+        NEW group; groups are never reopened. `_Block` (Tasks 1-4) has no
+        `scope` attribute at all, so every block defaults to `()` and this
+        always yields exactly one group until Task 5 introduces `_ScopedBlock`.
+        """
+        groups: list[list[_Block]] = []
+        for b in blocks:
+            scope = getattr(b, "scope", ())
+            if groups and getattr(groups[-1][0], "scope", ()) == scope:
+                groups[-1].append(b)
+            else:
+                groups.append([b])
+        return groups
+
+    def _pack_section(
+        self,
+        title: str | None,
+        ancestors: tuple[tuple[int, str], ...],
+        heading: tuple[int, str, int] | None,
+        blocks: list[_Block],
+    ) -> _PackedSection | None:
+        if not blocks:
+            return None
+        units: list[_PackedUnit] = []
+        for group in self._scope_groups(blocks):
+            units.extend(self._pack_group(title, ancestors, heading, group))
+        if not units:
+            return None
+        return _PackedSection(
+            document_title=title, ancestors=ancestors, heading=heading, units=tuple(units)
+        )
+
+    def _pack_group(
+        self,
+        title: str | None,
+        ancestors: tuple[tuple[int, str], ...],
+        heading: tuple[int, str, int] | None,
+        group: list[_Block],
+    ) -> list[_PackedUnit]:
         # The size invariant is on the FINAL Chunk.text (heading path + any
         # re-fence labels included). Reserve the per-chunk prefix cost up front
         # so packing/splitting target the *rendered* size, and apply a
-        # char-window safety net at the end as an absolute guarantee.
-        prefix = f"{path}\n\n" if path else ""
-        plen = self._len(prefix)
+        # char-window safety net at compose time as an absolute guarantee.
+        scope = getattr(group[0], "scope", ())
+        frames = getattr(group[0], "frames", ())
+        plen = self._len(self._prefix(title, ancestors, heading, frames))
         eff_target = max(1, self.target_tokens - plen)
         eff_max = max(1, self.max_tokens - plen)
 
-        # 1) expand oversized blocks into <= eff_max units (body-only sizing),
-        #    carrying each unit's measured length so step 2 never re-tokenizes
-        #    it. Split pieces ARE re-measured: _split_code/_split_table add
-        #    fence/header wrappers AFTER packing, so lengths measured inside
-        #    _pack_atoms don't survive the wrapping.
-        units: list[tuple[str, str, int, int, int]] = []  # text, ntype, start, end, tokens
-        for b in blocks:
+        # 1) expand oversized blocks into <= eff_max fragments (body-only
+        #    sizing), carrying each fragment's measured length so step 2 never
+        #    re-tokenizes it. Split pieces ARE re-measured: _split_code/
+        #    _split_table add fence/header wrappers AFTER packing, so lengths
+        #    measured inside _pack_atoms don't survive the wrapping.
+        frags: list[
+            tuple[str, str, int, int, int, bool]
+        ] = []  # text, ntype, start, end, tok, verbatim
+        for b in group:
             blen = self._len(b.text)
+            verbatim = b.node_type == "code"
             if blen <= eff_max:
-                units.append((b.text, b.node_type, b.start_line, b.end_line, blen))
+                frags.append((b.text, b.node_type, b.start_line, b.end_line, blen, verbatim))
             else:
                 for piece in self._split_block(b, eff_target, eff_max):
-                    units.append((piece, b.node_type, b.start_line, b.end_line, self._len(piece)))
+                    frags.append(
+                        (piece, b.node_type, b.start_line, b.end_line, self._len(piece), verbatim)
+                    )
 
         # 2) greedy pack to eff_target, using a RUNNING TOKEN ESTIMATE instead
         #    of re-tokenizing the growing candidate each step. Tokenization is
         #    not additive: EVERY measurement includes the tokenizer's special
         #    tokens (BOS/EOS), which the joined text pays exactly once — so the
-        #    first unit keeps its full count and every ADDED unit (and the
-        #    joiner) is netted by _overhead(). Estimate drift is corrected
-        #    exactly in step 4 (emit-time re-measure + char-window), which
-        #    preserves the hard <= max_tokens guarantee.
-        # "\n\n" matches the `cur.text + "\n\n" + text` concat in steps 2/3.
+        #    first fragment keeps its full count and every ADDED fragment (and
+        #    the joiner) is netted by _overhead(). Estimate drift is corrected
+        #    exactly at compose time (emit-time re-measure + char-window),
+        #    which preserves the hard <= max_tokens guarantee.
+        # "\n\n" matches _PackedUnit.text's fragment join.
         jcost = self._joiner_cost("\n\n")
         ov = self._overhead()
-        packed: list[_PackedUnit] = []
-        for text, ntype, start, end, tlen in units:
+        packed: list[_UnitBuilder] = []
+        for text, ntype, start, end, tlen, verbatim in frags:
+            frag = _PackedFragment(text, ntype, verbatim)
             if packed:
                 cur = packed[-1]
                 est = cur.est + jcost + max(0, tlen - ov)
                 if est <= eff_target:
-                    cur.text = cur.text + "\n\n" + text
+                    cur.fragments.append(frag)
                     cur.end = end
                     if cur.node_type != ntype:
                         cur.node_type = "section"
                     cur.est = est
                     continue
-            packed.append(_PackedUnit(text, ntype, start, end, est=tlen))
+            packed.append(_UnitBuilder([frag], ntype, start, end, est=tlen))
 
-        # 3) tiny-merge: a chunk whose ESTIMATE is below min_tokens folds into
-        #    the previous one (same section) — but ONLY if the merged estimate
+        # 3) tiny-merge: a unit whose ESTIMATE is below min_tokens folds into
+        #    the previous one (same group) — but ONLY if the merged estimate
         #    still fits eff_max, so the merge never forces a later char-window
         #    re-split (which would defeat the merge by fragmenting the combined
         #    content).
-        merged: list[_PackedUnit] = []
+        merged: list[_UnitBuilder] = []
         for item in packed:
             if merged and item.est < self.min_tokens:
                 p = merged[-1]
                 cand_est = p.est + jcost + max(0, item.est - ov)
                 if cand_est <= eff_max:
-                    p.text = p.text + "\n\n" + item.text
+                    p.fragments.extend(item.fragments)
                     p.node_type = "section"
                     p.end = item.end
                     p.est = cand_est
                     continue
             merged.append(item)
 
+        return [
+            _PackedUnit(
+                fragments=tuple(u.fragments),
+                node_type=u.node_type,
+                start=u.start,
+                end=u.end,
+                scope=scope,
+                frames=frames,
+                eff_target=eff_target,
+                eff_max=eff_max,
+                est=u.est,
+            )
+            for u in merged
+        ]
+
+    def _compose(self, sections: tuple[_PackedSection, ...]) -> list[_Spec]:
         # 4) compose final text (prefix once per chunk); 1-based inclusive line
         #    range; safety-net char-window guarantees len(text) <= max_tokens
         #    even if overhead accounting under-reserved or a tiny-merge edge
         #    case slips through.
         out: list[_Spec] = []
-        for u in merged:
-            rng = f"{u.start + 1}-{u.end}"  # markdown-it map is 0-based, end-exclusive
-            body = prefix + u.text if prefix else u.text
-            if self._len(body) <= self.max_tokens:
-                out.append(_Spec(body, u.node_type, path or None, rng))
-            else:
-                for window in self._char_window(body, self.max_tokens):
-                    out.append(_Spec(window, u.node_type, path or None, rng))
+        for sec in sections:
+            for u in sec.units:
+                path = self._effective_path(
+                    sec.document_title, sec.ancestors, sec.heading, u.frames
+                )
+                prefix = self._prefix(sec.document_title, sec.ancestors, sec.heading, u.frames)
+                rng = f"{u.start + 1}-{u.end}"  # markdown-it map is 0-based, end-exclusive
+                body = prefix + u.text if prefix else u.text
+                if self._len(body) <= self.max_tokens:
+                    out.append(_Spec(body, u.node_type, path or None, rng))
+                else:
+                    for window in self._char_window(body, self.max_tokens):
+                        out.append(_Spec(window, u.node_type, path or None, rng))
         return out
 
     # ---- oversized-block splitting -------------------------------------

@@ -422,3 +422,23 @@ def test_front_matter_title_reaches_the_breadcrumb():
     chunks = _chunks(src)
     assert chunks[0].parent_scope == "Ops Guide > Backups"
     assert chunks[0].text.startswith("Ops Guide > Backups\n\n")
+
+
+def test_packing_restructure_is_behaviour_neutral():
+    """Golden output for a document exercising headings, prose, code and tables.
+
+    Task 4 is a pure refactor; this pins the exact output so the restructure
+    cannot silently move a boundary.
+    """
+    src = (
+        "# Guide\n\nIntro prose that is reasonably long so it packs.\n\n"
+        "## Setup\n\nStep one text.\n\n```sh\nmake install\n```\n\n"
+        "## Table\n\n| A | B |\n|---|---|\n| 1 | 2 |\n"
+    )
+    chunks = _chunks(src)
+    assert [(c.node_type, c.parent_scope) for c in chunks] == [
+        ("section", "Guide"),
+        ("section", "Guide > Setup"),
+        ("table", "Guide > Table"),
+    ]
+    assert chunks[0].text == "Guide\n\nIntro prose that is reasonably long so it packs."
