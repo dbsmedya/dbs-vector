@@ -220,9 +220,7 @@ class MarkdownBlockParser:
         blocks = _flatten_always_expand(blocks)
         title = _extract_title(front_raw) if front_raw else None
         # H1 de-duplication: `title: X` + `# X` must not render as "X > X".
-        first_h1 = next(
-            (b.text for b in blocks if b.node_type == "heading" and b.level == 1), None
-        )
+        first_h1 = next((b.text for b in blocks if b.node_type == "heading" and b.level == 1), None)
         if title and first_h1 and title.strip().casefold() == first_h1.strip().casefold():
             title = None
         return _ParsedDocument(title=title, blocks=tuple(blocks))
@@ -298,9 +296,7 @@ class MarkdownBlockParser:
             if not text:
                 i += 1
                 continue
-            blocks.extend(
-                self._dispatch(tokens, i, text, start, end, scope, frames, in_container)
-            )
+            blocks.extend(self._dispatch(tokens, i, text, start, end, scope, frames, in_container))
             i += 1
         return blocks
 
