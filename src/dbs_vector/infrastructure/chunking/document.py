@@ -78,11 +78,11 @@ class _PackedSection:
 
 @dataclass
 class _UnitBuilder:
-    """Mutable accumulator for one in-progress unit during pack/tiny-merge.
+    """Mutable accumulator for one in-progress unit during greedy packing.
 
     `_PackedUnit` is frozen (Tasks 5-8 rely on that immutability), so the
-    greedy-pack and tiny-merge loops accumulate into this instead and convert
-    to `_PackedUnit` once a group's packing is finished.
+    greedy-pack loop accumulates into this instead and converts to
+    `_PackedUnit` once a group's packing is finished.
     """
 
     fragments: list[_PackedFragment]
@@ -156,14 +156,12 @@ class DocumentChunker:
         max_chars: int = 1000,
         target_tokens: int = 512,
         max_tokens: int = 1024,
-        min_tokens: int = 32,
         length_fn: Callable[[str], int] = len,
         filters: list[IContentFilter] | None = None,
     ) -> None:
         self.max_chars = max_chars  # only used by the .txt fallback path
         self.target_tokens = target_tokens
         self.max_tokens = max_tokens
-        self.min_tokens = min_tokens
         if target_tokens > max_tokens:
             raise ValueError(
                 f"target_tokens ({target_tokens}) must not exceed max_tokens ({max_tokens})"
@@ -255,7 +253,7 @@ class DocumentChunker:
             else:
                 section.append(b)
         flush()
-        return self._compose(tuple(sections))
+        return self._compose(self._fold(tuple(sections)))
 
     def _effective_path(
         self,
@@ -458,24 +456,11 @@ class DocumentChunker:
                     continue
             packed.append(_UnitBuilder([frag], ntype, start, end, est=tlen))
 
-        # 3) tiny-merge: a unit whose ESTIMATE is below min_tokens folds into
-        #    the previous one (same group) — but ONLY if the merged estimate
-        #    still fits eff_max, so the merge never forces a later char-window
-        #    re-split (which would defeat the merge by fragmenting the combined
-        #    content).
-        merged: list[_UnitBuilder] = []
-        for item in packed:
-            if merged and item.est < self.min_tokens:
-                p = merged[-1]
-                cand_est = p.est + jcost + max(0, item.est - ov)
-                if cand_est <= eff_max:
-                    p.fragments.extend(item.fragments)
-                    p.node_type = "section"
-                    p.end = item.end
-                    p.est = cand_est
-                    continue
-            merged.append(item)
-
+        # A section-local tiny-merge used to run here (step 3). It is gone:
+        # `_fold` (called between packing and composition) replaces it with a
+        # forward fold across WHOLE sections, which is the only shape #2
+        # actually needed — a section-local merge could not help an entire
+        # undersized section with nothing to merge into within its own group.
         return [
             _PackedUnit(
                 fragments=tuple(u.fragments),
@@ -488,14 +473,89 @@ class DocumentChunker:
                 eff_max=eff_max,
                 est=u.est,
             )
-            for u in merged
+            for u in packed
         ]
+
+    def _folded_body(self, absorbed: _PackedSection, receiving: _PackedSection) -> str:
+        """Body only — NO breadcrumb prefix. _compose adds that later, once."""
+        return "\n\n".join(
+            part
+            for part in (
+                _render_boundary(absorbed, absorbed.units[0]),
+                _escape_collisions(absorbed.units[0]).text,
+                _render_boundary(receiving, receiving.units[0]),
+                _escape_collisions(receiving.units[0]).text,
+            )
+            if part
+        )
+
+    def _replace_first_unit(
+        self, receiving: _PackedSection, body: str, absorbed: _PackedSection
+    ) -> _PackedSection:
+        recv_unit = receiving.units[0]
+        start = absorbed.heading[2] if absorbed.heading is not None else absorbed.units[0].start
+        new_unit = _PackedUnit(
+            fragments=(_PackedFragment(text=body, node_type="section", verbatim=False),),
+            node_type="section",  # the merge spans two sections; a finer label would be a lie
+            start=start,
+            end=recv_unit.end,
+            scope=recv_unit.scope,
+            frames=recv_unit.frames,  # the chunk renders under the receiving breadcrumb
+            eff_target=recv_unit.eff_target,
+            eff_max=recv_unit.eff_max,
+            est=self._len(body),  # exact, since it was just measured
+        )
+        return replace(receiving, units=(new_unit, *receiving.units[1:]))
+
+    def _fold(self, sections: tuple[_PackedSection, ...]) -> tuple[_PackedSection, ...]:
+        """Fold a wholly-undersized section forward into the next one.
+
+        Option A: eligibility is computed ONCE from the original sections and
+        each section participates in at most one fold (absorber or absorbed,
+        never both), so three tiny sections yield A+B and C — never A+B+C, and
+        the result never depends on evaluation order.
+        """
+        eligible = [
+            i
+            for i, s in enumerate(sections)
+            if len(s.units) == 1 and s.units[0].est < s.units[0].eff_target
+        ]
+        spent: set[int] = set()
+        merges: dict[int, str] = {}  # receiving index -> merged BODY
+        dropped: set[int] = set()  # absorbed indices
+        for i in eligible:
+            j = i + 1
+            if i in spent or j >= len(sections) or j in spent:
+                continue
+            recv = sections[j]
+            body = self._folded_body(sections[i], recv)
+            prefix = self._prefix(
+                recv.document_title, recv.ancestors, recv.heading, recv.units[0].frames
+            )
+            # Exact measurement of the FINISHED text, never an estimate: the
+            # only correction available downstream is the char-window, which
+            # would fragment exactly what the fold set out to keep together.
+            if self._len(prefix + body) > self.max_tokens:
+                continue
+            merges[j] = body
+            dropped.add(i)
+            spent.update({i, j})
+
+        out: list[_PackedSection] = []
+        for k, s in enumerate(sections):
+            if k in dropped:
+                continue
+            if k in merges:
+                s = self._replace_first_unit(s, merges[k], sections[k - 1])
+            out.append(s)
+        return tuple(out)
 
     def _compose(self, sections: tuple[_PackedSection, ...]) -> list[_Spec]:
         # 4) compose final text (prefix once per chunk); 1-based inclusive line
         #    range; safety-net char-window guarantees len(text) <= max_tokens
-        #    even if overhead accounting under-reserved or a tiny-merge edge
-        #    case slips through.
+        #    even if overhead accounting under-reserved. A folded unit's body
+        #    is already exact-measured (see _fold), but this stays as the
+        #    absolute guarantee for every other path.
         out: list[_Spec] = []
         for sec in sections:
             for u in sec.units:

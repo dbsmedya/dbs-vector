@@ -1,5 +1,8 @@
+import pytest
+
 from dbs_vector.core.models import Document
 from dbs_vector.infrastructure.chunking.document import (
+    _CONTEXT_INTRODUCER,
     DocumentChunker,
     _escape_collisions,
     _PackedFragment,
@@ -14,7 +17,6 @@ def _chunks(content, **kw):
     # length_fn defaults to len (chars) -> deterministic, model-free.
     kw.setdefault("target_tokens", 120)
     kw.setdefault("max_tokens", 240)
-    kw.setdefault("min_tokens", 8)
     ch = DocumentChunker(**kw)
     return list(ch.process(Document(filepath="t.md", content=content, content_hash="h")))
 
@@ -188,7 +190,16 @@ def test_pure_code_fence_markdown():
 
 
 def test_sibling_sections_produce_separate_chunks():
-    content = "## A\n\nFirst section body goes here.\n\n## B\n\nSecond section body goes here.\n"
+    # Sizing is load-bearing: both bodies must exceed eff_target (117 for
+    # target_tokens=120 here) so neither section is fold-eligible — this test
+    # pins the separation guarantee for adequately-sized siblings; fold-
+    # eligible siblings merging forward is covered by the fold tests.
+    content = (
+        "## A\n\nFirst section body goes here, and it has quite a bit more to say "
+        "so that it clearly exceeds the section token budget for folding.\n\n"
+        "## B\n\nSecond section body goes here, and it also has quite a bit more "
+        "to say so that it clearly exceeds the token budget for folding.\n"
+    )
     chunks = _chunks(content)
     scopes = {c.parent_scope for c in chunks}
     assert scopes == {"A", "B"}
@@ -196,10 +207,13 @@ def test_sibling_sections_produce_separate_chunks():
 
 
 def test_tiny_trailing_block_merges_into_previous():
-    # target_tokens=40 forces the long paragraph and the tiny 'Hi.' into
-    # separate packed units; 'Hi.' (< min_tokens=8) then folds back into the
-    # previous unit -> a single chunk that still contains 'Hi.'.
-    content = "## S\n\nThis is a sufficiently long first paragraph here.\n\nHi.\n"
+    # REWRITTEN for Task 8: section-local tiny-merge (which used to catch a
+    # tiny trailing block WITHIN one section) is gone; the forward FOLD is
+    # section-level and forward-only, so the tiny content must be its own
+    # section with a following section to fold into — the original fixture's
+    # tiny content was the LAST thing in the document, which fold can never
+    # reach (no receiving section after it).
+    content = "## Tiny\n\nHi.\n\n## S\n\nThis is a sufficiently long first paragraph here.\n"
     chunks = _chunks(content, target_tokens=40)
     assert len(chunks) == 1
     assert "Hi." in chunks[0].text
@@ -286,9 +300,7 @@ def test_pack_atoms_measured_chars_grow_linearly_not_quadratically():
         measured["chars"] += len(s)
         return len(s)
 
-    chunker = DocumentChunker(
-        target_tokens=50, max_tokens=100, min_tokens=1, length_fn=counting_len
-    )
+    chunker = DocumentChunker(target_tokens=50, max_tokens=100, length_fn=counting_len)
     atoms = [f"word{i}" for i in range(200)]  # ~1,300 chars of input total
     total_input = sum(len(a) for a in atoms)
     chunker._pack_atoms(atoms, " ", target=50, max_=100)
@@ -307,7 +319,7 @@ def test_running_estimate_nets_out_special_token_overhead():
     def tok(s: str) -> int:
         return (len(s.split()) if s else 0) + 2  # content words + BOS/EOS
 
-    chunker = DocumentChunker(target_tokens=20, max_tokens=40, min_tokens=1, length_fn=tok)
+    chunker = DocumentChunker(target_tokens=20, max_tokens=40, length_fn=tok)
     atoms = ["w w w"] * 12  # 3 content tokens each; k joined atoms measure 3k+2
     out = chunker._pack_atoms(atoms, "\n\n", target=20, max_=40)
 
@@ -319,32 +331,44 @@ def test_running_estimate_nets_out_special_token_overhead():
 
 
 def test_tiny_merge_uses_net_estimate_not_inflated_sum():
-    """A chunk genuinely below min_tokens must still be folded into its
-    neighbour when the estimate carries per-atom special-token inflation.
+    """REWRITTEN for Task 8: `min_tokens` and section-local tiny-merge are
+    gone; the analogous concern is now fold ELIGIBILITY, which requires an
+    undersized section to pack into exactly ONE unit (`len(s.units) == 1`).
+    That still depends on the running estimate being correctly netted, not
+    inflated by per-atom specials — this pins that dependency at the fold
+    boundary rather than the (now-deleted) tiny-merge boundary.
 
-    Uncorrected summing sees the trailing 3-word fragment as 13 "tokens"
-    (specials counted once per paragraph + per-join cost) >= min_tokens=10
-    and emits it standalone; its true size is 5."""
+    Section "S" is three one-word paragraphs. Correctly netted, they pack
+    into ONE unit whose est is exactly 5 (3 content words + 2 specials, paid
+    once) -> comfortably under eff_target=10 -> fold-eligible.
+
+    An UNCORRECTED running sum (paying the 2 specials per atom instead of
+    netting them out) would compute 3, then 3+2+3=8, then 8+2+3=13 for the
+    third addition — 13 > eff_target=10, so it would refuse to pack z into
+    the same unit. S would then hold TWO units, `len(s.units) == 1` would be
+    false, and the whole section would stay un-folded (3 chunks instead of
+    the expected 1) — the numbers here are chosen so this regression is
+    directly observable via the chunk count, not just an internal estimate.
+    """
 
     def tok(s: str) -> int:
         return (len(s.split()) if s else 0) + 2  # content words + BOS/EOS
 
-    # Empty prefix measures tok("")=2, so eff_target = 16-2 = 14. Lead: 12
-    # words -> tok 14 == eff_target (cannot absorb more). Then three 1-word
-    # paragraphs that pack into one trailing fragment: uncorrected est
-    # 3 +(2+3)+(2+3) = 13 >= min_tokens -> escapes the merge; net est is 5.
     lead = " ".join(f"word{i}" for i in range(12))
-    chunker = DocumentChunker(target_tokens=16, max_tokens=60, min_tokens=10, length_fn=tok)
+    chunker = DocumentChunker(target_tokens=13, max_tokens=60, length_fn=tok)
     doc = Document(
         filepath="t.md",
-        content=f"{lead}\n\nx\n\ny\n\nz\n",
+        content=f"## S\n\nx\n\ny\n\nz\n\n## T\n\n{lead}\n",
         content_hash="h",
     )
     chunks = list(chunker.process(doc))
 
-    # The fragment "x\n\ny\n\nz" (true size 5 < min_tokens) must fold into
-    # the previous chunk, not be emitted as a standalone sub-minimum chunk.
-    assert len(chunks) == 1, f"expected tiny trailing chunk merged, got: {[c.text for c in chunks]}"
+    # Section S (x/y/z, true size 5) must fold forward into T: one merged
+    # chunk, not S-as-two-units plus T.
+    assert len(chunks) == 1, (
+        f"expected the tiny section folded forward, got: {[c.text for c in chunks]}"
+    )
+    assert "x" in chunks[0].text and "y" in chunks[0].text and "z" in chunks[0].text
 
 
 def test_oversized_fenced_code_containing_a_literal_fence_stays_balanced():
@@ -432,14 +456,43 @@ def test_front_matter_title_reaches_the_breadcrumb():
 
 
 def test_packing_restructure_is_behaviour_neutral():
-    """Golden output for a document exercising headings, prose, code and tables.
+    """Golden output for a document exercising headings, prose, and tables.
 
-    Task 4 is a pure refactor; this pins the exact output so the restructure
-    cannot silently move a boundary.
+    Originally pinned Task 4's packing restructure as byte-for-byte neutral,
+    over a Setup section built from a paragraph PLUS a fence. Task 8 adds the
+    forward fold, a real behaviour change for wholly undersized sections — so
+    this now pins the OTHER half of that contract: adequately-sized sections'
+    packing/composition output stays exact, and no accidental fold fires when
+    a section is fold-INeligible.
+
+    STRUCTURAL CONSTRAINT (load-bearing — do not "simplify" the sizing away):
+    a multi-block section that merges its blocks into one packed unit can
+    NEVER robustly clear its own eff_target. Greedy-pack admits a block into
+    the running unit only while `running_est <= eff_target`, and fold
+    eligibility is `est < eff_target` on that SAME threshold — so a merged
+    unit's final est is bounded by `est <= eff_target` by construction. The
+    only way to hit `est > eff_target` there is the exact boundary
+    `est == eff_target`, which is one-character fragile. That is why Setup
+    is now a SINGLE oversized paragraph (dropped the fence it had before
+    Task 8) rather than a paragraph+fence combo sized to be "big enough" —
+    only a single, non-combining block can clear eff_target with comfortable,
+    non-fragile margin. Fence/code-fence packing is pinned by its own
+    dedicated tests (test_pure_code_fence_markdown,
+    test_code_fence_under_budget_stays_atomic, the oversized-code-fence
+    tests), so this golden test losing fence coverage is not a gap.
+
+    Both "Guide"'s intro prose (>113 chars, its own eff_target) and "Setup"'s
+    prose (>105 chars, its own eff_target) are sized to clear their
+    respective budgets for this reason. Shrinking either back down would
+    silently reintroduce a fold here and defeat the test's purpose.
     """
     src = (
-        "# Guide\n\nIntro prose that is reasonably long so it packs.\n\n"
-        "## Setup\n\nStep one text.\n\n```sh\nmake install\n```\n\n"
+        "# Guide\n\nIntro prose that is reasonably long so it packs, and long "
+        "enough to comfortably clear its own section budget so it never "
+        "becomes fold-eligible.\n\n"
+        "## Setup\n\nSetup step text that walks through installing the tool, "
+        "verifying the installation, and confirming everything is configured "
+        "correctly before use.\n\n"
         "## Table\n\n| A | B |\n|---|---|\n| 1 | 2 |\n"
     )
     chunks = _chunks(src)
@@ -448,7 +501,11 @@ def test_packing_restructure_is_behaviour_neutral():
         ("section", "Guide > Setup"),
         ("table", "Guide > Table"),
     ]
-    assert chunks[0].text == "Guide\n\nIntro prose that is reasonably long so it packs."
+    assert chunks[0].text == (
+        "Guide\n\nIntro prose that is reasonably long so it packs, and long "
+        "enough to comfortably clear its own section budget so it never "
+        "becomes fold-eligible."
+    )
 
 
 def _table(rows: int) -> str:
@@ -749,3 +806,121 @@ def test_verbatim_code_fragments_are_never_escaped():
     out = _escape_collisions(unit)
     assert out.fragments[0].text == '(dbs-vector context: parent="x")'
     assert out.fragments[1].text.startswith("\\(dbs-vector context:")
+
+
+def test_h1_titled_preamble_folds_forward_into_the_first_section():
+    """Issue #2's reported shape: title + metadata blockquote under the H1,
+    before the first `##`. The H1 section is wholly undersized."""
+    src = (
+        "# Phase 003\n\n> Spec slice 1\n> Blocked on: 002\n\n"
+        "## First real section\n\n" + ("Real content. " * 40) + "\n"
+    )
+    chunks = _chunks(src, target_tokens=200, max_tokens=400)
+    assert "Blocked on: 002" in chunks[0].text
+    assert "Real content." in chunks[0].text
+    assert chunks[0].parent_scope == "Phase 003 > First real section"
+
+
+def test_true_preamble_before_any_heading_folds_forward():
+    """The distinct path-empty case: content before ANY heading, so the
+    absorbed section has heading=None and renders no ATX line."""
+    src = "Loose intro prose.\n\n# First Heading\n\n" + ("Body words. " * 40) + "\n"
+    chunks = _chunks(src, target_tokens=200, max_tokens=400)
+    assert "Loose intro prose." in chunks[0].text
+    assert "Body words." in chunks[0].text
+    assert chunks[0].parent_scope == "First Heading"
+
+
+def test_folded_chunk_renders_both_boundaries():
+    src = "# Doc\n\n## A\n\ntiny\n\n## B\n\n" + ("Body words. " * 15) + "\n"
+    chunks = _chunks(src, target_tokens=200, max_tokens=400)
+    assert "## A" in chunks[0].text and "## B" in chunks[0].text
+    assert '(dbs-vector context: parent="Doc")' in chunks[0].text
+
+
+def test_fold_is_declined_when_measured_result_exceeds_max_tokens():
+    src = "# Doc\n\n## A\n\ntiny\n\n## B\n\n" + ("x" * 500) + "\n"
+    chunks = _chunks(src, target_tokens=100, max_tokens=200)
+    assert chunks[0].text.rstrip().endswith("tiny"), "undersized section must stay standalone"
+
+
+def test_fold_is_non_cascading():
+    src = "# D\n\n## A\n\na1\n\n## B\n\nb1\n\n## C\n\nc1\n"
+    chunks = _chunks(src, target_tokens=200, max_tokens=400)
+    assert len(chunks) == 2
+    assert "a1" in chunks[0].text and "b1" in chunks[0].text
+    assert "c1" not in chunks[0].text
+
+
+def test_heading_only_section_is_skipped_when_locating_the_next_section():
+    src = "# D\n\n## Tiny\n\nt\n\n## Empty\n\n### Real\n\n" + ("Body. " * 30) + "\n"
+    chunks = _chunks(src, target_tokens=200, max_tokens=400)
+    assert "t" in chunks[0].text and "Body." in chunks[0].text
+
+
+def test_absorbed_nested_heading_keeps_its_ancestor_in_the_parent_marker():
+    src = "# Guide\n\n## X\n\n### A\n\ntiny\n\n## B\n\n" + ("Body. " * 30) + "\n"
+    chunks = _chunks(src, target_tokens=200, max_tokens=400)
+    assert '(dbs-vector context: parent="Guide > X")' in chunks[0].text
+
+
+def test_context_markers_never_appear_on_standalone_chunks():
+    src = "# Doc\n\n## A\n\n" + ("Body. " * 60) + "\n"
+    chunks = _chunks(src, target_tokens=100, max_tokens=200)
+    assert all(_CONTEXT_INTRODUCER not in c.text for c in chunks)
+
+
+def test_later_units_of_a_multi_unit_receiver_keep_the_ordinary_format():
+    src = "# D\n\n## A\n\ntiny\n\n## B\n\n" + ("Body words. " * 200) + "\n"
+    chunks = _chunks(src, target_tokens=120, max_tokens=240)
+    assert _CONTEXT_INTRODUCER in chunks[0].text
+    assert all(_CONTEXT_INTRODUCER not in c.text for c in chunks[1:])
+
+
+def test_fold_across_a_frame_transition_renders_each_frame_once():
+    src = '# D\n\n## A\n\n!!! warning "W"\n\n    tiny\n\n## B\n\n' + ("Body words. " * 15) + "\n"
+    chunks = _chunks(src, target_tokens=200, max_tokens=400)
+    assert chunks[0].text.count('(dbs-vector context: frame="warning: W")') == 1
+    assert "## B" in chunks[0].text
+
+
+def test_authored_lookalike_in_a_folded_chunk_is_escaped_end_to_end():
+    src = (
+        '# D\n\n## A\n\n(dbs-vector context: parent="spoofed")\n\n'
+        "## B\n\n" + ("Body words. " * 15) + "\n"
+    )
+    chunks = _chunks(src, target_tokens=200, max_tokens=400)
+    assert '\\(dbs-vector context: parent="spoofed")' in chunks[0].text
+
+
+def test_authored_lookalike_inside_a_fence_is_not_escaped():
+    """Verbatim fragments are exempt — this repo's own docs describe the marker
+    format inside fences and are in an ingested path."""
+    src = (
+        '# D\n\n## A\n\n```text\n(dbs-vector context: parent="doc example")\n```\n\n'
+        "## B\n\n" + ("Body words. " * 30) + "\n"
+    )
+    chunks = _chunks(src, target_tokens=200, max_tokens=400)
+    assert '(dbs-vector context: parent="doc example")' in chunks[0].text
+    assert '\\(dbs-vector context: parent="doc example")' not in chunks[0].text
+
+
+def test_folded_line_range_starts_at_the_absorbed_heading():
+    # Receiving body halved to 15 reps for the same reason as the three Task 8
+    # Step 2 fixtures (see the Execution Deviation Log): this fixture's shape
+    # is identical to those and hits the same by-design double-boundary
+    # overhead against a 400-token budget, declining the fold outright.
+    src = "# D\n\n## A\n\ntiny\n\n## B\n\n" + ("Body words. " * 15) + "\n"
+    chunks = _chunks(src, target_tokens=200, max_tokens=400)
+    assert chunks[0].line_range.startswith("3-")  # "## A" is line 3, 1-based
+
+
+@pytest.mark.parametrize("target,max_", [(50, 100), (120, 240), (200, 400), (768, 1536)])
+@pytest.mark.parametrize("title", ["", "---\ntitle: A Very Long Document Title Here\n---\n\n"])
+def test_every_chunk_respects_max_tokens(target, max_, title):
+    src = (
+        title + "# Guide\n\n> [!WARNING]\n> Careful.\n\n## Tiny\n\nt\n\n"
+        '## Big\n\n!!! note "N"\n\n' + "".join("    row " + "x" * 40 + "\n" for _ in range(40))
+    )
+    for c in _chunks(src, target_tokens=target, max_tokens=max_):
+        assert len(c.text) <= max_
