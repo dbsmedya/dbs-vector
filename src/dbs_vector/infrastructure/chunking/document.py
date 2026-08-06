@@ -197,9 +197,6 @@ class DocumentChunker:
                     stack.pop()
                 stack.append((b.level, b.text, b.start_line))
             else:
-                info = b.info if b.node_type == "code" else None
-                if any(f.should_drop_block(b.text, info) for f in self._filters):
-                    continue
                 section.append(b)
         flush()
         return self._compose(tuple(sections))
@@ -268,10 +265,23 @@ class DocumentChunker:
         heading: tuple[int, str, int] | None,
         blocks: list[_Block],
     ) -> _PackedSection | None:
-        if not blocks:
+        # Filtering happens here, on the blocks of whichever form was
+        # selected, so a filtered block inside an expanded container (e.g. a
+        # compressed_json fence inside a blockquote) is caught too — a filter
+        # check back in _build_specs would only ever see the container's
+        # unexpanded wrapper text, never its descended children.
+        chosen = [
+            b
+            for b in blocks
+            if not any(
+                f.should_drop_block(b.text, b.info if b.node_type == "code" else None)
+                for f in self._filters
+            )
+        ]
+        if not chosen:
             return None
         units: list[_PackedUnit] = []
-        for group in self._scope_groups(blocks):
+        for group in self._scope_groups(chosen):
             units.extend(self._pack_group(title, ancestors, heading, group))
         if not units:
             return None

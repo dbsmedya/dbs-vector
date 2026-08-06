@@ -442,3 +442,92 @@ def test_packing_restructure_is_behaviour_neutral():
         ("table", "Guide > Table"),
     ]
     assert chunks[0].text == "Guide\n\nIntro prose that is reasonably long so it packs."
+
+
+def _table(rows: int) -> str:
+    head = "| Name | Scope | Val |\n|---|---|---|\n"
+    return head + "".join(f"| var_{i} | Global | {i} |\n" for i in range(rows))
+
+
+def test_table_inside_admonition_repeats_the_header_on_every_chunk():
+    """The correctness invariant from issue #7.
+
+    An LLM handed headerless data rows infers column meanings from the values
+    and states them confidently. Every part must carry the header.
+    """
+    indented = "".join("    " + ln + "\n" for ln in _table(60).strip().split("\n"))
+    src = '# Reference\n\n!!! note "Full variable table"\n\n' + indented
+    chunks = _chunks(src, target_tokens=120, max_tokens=240)
+    assert len(chunks) > 1, "table must actually split for this test to mean anything"
+    for c in chunks:
+        assert "| Name | Scope | Val |" in c.text
+
+
+def test_admonition_body_reaches_the_table_node_type():
+    indented = "".join("    " + ln + "\n" for ln in _table(3).strip().split("\n"))
+    src = '!!! note "Small"\n\n' + indented
+    chunks = _chunks(src)
+    assert chunks[0].node_type == "table"
+
+
+def test_admonition_frame_reaches_the_breadcrumb():
+    src = '# Guide\n\n!!! warning "Data loss risk"\n\n    Be careful here.\n'
+    chunks = _chunks(src)
+    assert chunks[0].parent_scope == "Guide > warning: Data loss risk"
+
+
+def test_tab_indented_admonition_body_is_parsed_not_treated_as_code():
+    """Genuinely red: today a tab-indented body is an indented code block, so
+    the table never reaches _split_table. A single-line assertion on leading
+    whitespace would pass today because `.strip()` already removes it — this
+    asserts the STRUCTURE instead."""
+    tabbed = "".join("\t" + ln + "\n" for ln in _table(3).strip().split("\n"))
+    chunks = _chunks('!!! note "Tabbed"\n\n' + tabbed)
+    assert chunks[0].node_type == "table"
+    assert chunks[0].parent_scope == "note: Tabbed"
+
+
+def test_frame_type_label_is_casefolded_but_title_casing_is_kept():
+    src = '!!! Warning "Data Loss Risk"\n\n    Body.\n'
+    chunks = _chunks(src)
+    assert chunks[0].parent_scope == "warning: Data Loss Risk"
+
+
+def test_two_adjacent_admonitions_do_not_pack_together():
+    src = '!!! note "One"\n\n    First.\n\n!!! note "Two"\n\n    Second.\n'
+    chunks = _chunks(src)
+    assert len(chunks) == 2
+    assert "Second." not in chunks[0].text
+
+
+def test_prose_around_an_admonition_is_not_packed_under_its_frame():
+    src = 'Before text.\n\n!!! note "Mid"\n\n    Inside.\n\nAfter text.\n'
+    chunks = _chunks(src)
+    framed = [c for c in chunks if c.parent_scope and "note" in c.parent_scope]
+    assert len(framed) == 1
+    assert "Before text." not in framed[0].text
+    assert "After text." not in framed[0].text
+
+
+def test_empty_admonition_disappears_entirely():
+    src = '# H\n\n!!! note "Nothing here"\n\nAfter.\n'
+    chunks = _chunks(src)
+    # Assert presence FIRST: `all(...)` over an empty list is vacuously true,
+    # so without this the test would pass if the chunker emitted nothing at all.
+    assert [c.text for c in chunks if "After." in c.text], "the real content must survive"
+    assert all("!!!" not in c.text for c in chunks)
+    assert all(c.parent_scope == "H" for c in chunks)
+
+
+def test_heading_inside_a_container_does_not_change_following_breadcrumbs():
+    src = '# Guide\n\n!!! note "N"\n\n    ## Not A Real Heading\n\n    Inside.\n\nAfter text.\n'
+    chunks = _chunks(src)
+    after = [c for c in chunks if "After text." in c.text]
+    assert after and after[0].parent_scope == "Guide"
+
+
+def test_nested_container_wrapper_is_unprefixed_by_its_ancestor():
+    src = '!!! note "N"\n\n    > quoted inside admonition\n'
+    chunks = _chunks(src)
+    assert "> quoted inside admonition" in chunks[0].text
+    assert "    > quoted" not in chunks[0].text
