@@ -415,3 +415,10 @@ def test_single_very_long_line_also_reaches_a_three_digit_part_count():
     inner = "x" * 10_000
     chunks = _chunks(f"```json\n{inner}\n```\n", target_tokens=60, max_tokens=60)
     _assert_balanced_parts(chunks, 60, 100)
+
+
+def test_front_matter_title_reaches_the_breadcrumb():
+    src = "---\ntitle: Ops Guide\n---\n\n# Backups\n\nRun the backup nightly.\n"
+    chunks = _chunks(src)
+    assert chunks[0].parent_scope == "Ops Guide > Backups"
+    assert chunks[0].text.startswith("Ops Guide > Backups\n\n")

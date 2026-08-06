@@ -542,6 +542,7 @@ dependencies = [
     { name = "loguru" },
     { name = "markdown-it-py" },
     { name = "mcp" },
+    { name = "mdit-py-plugins" },
     { name = "mlx" },
     { name = "mlx-embeddings" },
     { name = "numpy" },
@@ -586,6 +587,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3,<1" },
     { name = "markdown-it-py", specifier = ">=4.0.0,<5" },
     { name = "mcp", specifier = ">=1.27.0,<2" },
+    { name = "mdit-py-plugins", specifier = ">=0.6.0,<0.7" },
     { name = "mlx", specifier = "==0.32.0" },
     { name = "mlx-embeddings", specifier = ">=0.1.0,<0.2" },
     { name = "numpy", specifier = ">=2.4.4,<3" },
@@ -1183,6 +1185,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/30/d3/f9acc21dfc886e4f78e2add1a47db46ce16884346afde53f8a064c02c891/mcp-1.29.0.tar.gz", hash = "sha256:52d01f334de1868cc3bb2d6604931126a67631f99a6c5d3b82ba47290315ec36", size = 643148, upload-time = "2026-07-28T13:41:41.939Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/01/c8/248b201f6d753d69fd5d6506011abbb35a946d9142b2ae311a948fd0be3d/mcp-1.29.0-py3-none-any.whl", hash = "sha256:f5a075bb611f23d6f4d080c6a1699fa62772eebc562ba9e66b306ddde1c755f7", size = 223436, upload-time = "2026-07-28T13:41:40.337Z" },
+]
+
+[[package]]
+name = "mdit-py-plugins"
+version = "0.6.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "markdown-it-py" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/59/fc/f8d0863f8862f25602c0404d75568e89fb6b4109804645e5cdfb1be5cf56/mdit_py_plugins-0.6.1.tar.gz", hash = "sha256:a2bca0f039f39dbd35fb74ae1b5f998608c437463371f0ff7f49a19a17a114d0", size = 56114, upload-time = "2026-05-13T09:03:38.91Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a5/69/6da5581c6a7fede7dc261bf4e67d6adca4196f176b43288b55b3db395b6e/mdit_py_plugins-0.6.1-py3-none-any.whl", hash = "sha256:214c82fb2ac524472ab6a5bcab1de80f73b50443e187f401bfd77efbc7c6481d", size = 66663, upload-time = "2026-05-13T09:03:37.76Z" },
 ]
 
 [[package]]

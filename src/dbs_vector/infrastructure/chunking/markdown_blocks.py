@@ -8,6 +8,8 @@ import re
 from dataclasses import dataclass
 
 import markdown_it
+import yaml
+from mdit_py_plugins.front_matter import front_matter_plugin
 
 _ATX_RE = re.compile(r"^#{1,6}\s*")
 # NOTE: _LIST_MARKER stays in document.py — it is used only by _list_items(),
@@ -94,32 +96,61 @@ class _Block:
     info: str = ""  # fence language when node_type == "code"
 
 
+@dataclass(frozen=True)
+class _ParsedDocument:
+    title: str | None
+    blocks: tuple[_Block, ...]
+
+
+def _extract_title(raw: str) -> str | None:
+    """Lift a scalar top-level `title:` out of YAML front matter.
+
+    Malformed front matter must never fail an ingest, so every failure mode
+    collapses to None.
+    """
+    try:
+        data = yaml.safe_load(raw)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    value = data.get("title")
+    if value is None or isinstance(value, (list, dict, tuple, set)):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 class MarkdownBlockParser:
     """Parses markdown source into flat semantic blocks."""
 
     def __init__(self) -> None:
-        self._md = markdown_it.MarkdownIt("commonmark").enable("table")
+        self._md = markdown_it.MarkdownIt("commonmark").enable("table").use(front_matter_plugin)
 
-    def parse(self, content: str) -> list[_Block]:
+    def parse(self, content: str) -> _ParsedDocument:
         tokens = self._md.parse(content)
         lines = content.splitlines(keepends=True)
         blocks: list[_Block] = []
         n = len(tokens)
+        front_raw: str | None = None
         for i, t in enumerate(tokens):
             if t.level != 0 or t.map is None:
+                continue
+            if t.type == "front_matter":
+                front_raw = t.content
                 continue
             start, end = t.map
             text = "".join(lines[start:end]).strip()
             if not text:
                 continue
             if t.type == "heading_open":
-                title = ""
+                heading_title = ""
                 if i + 1 < n and tokens[i + 1].type == "inline":
-                    title = tokens[i + 1].content.strip()
-                if not title:
-                    title = _ATX_RE.sub("", text).strip().rstrip("#").strip()
+                    heading_title = tokens[i + 1].content.strip()
+                if not heading_title:
+                    heading_title = _ATX_RE.sub("", text).strip().rstrip("#").strip()
                 level = int(t.tag[1]) if t.tag[:1] == "h" and t.tag[1:].isdigit() else 1
-                blocks.append(_Block("heading", title, start, end, level=level))
+                blocks.append(_Block("heading", heading_title, start, end, level=level))
             elif t.type == "fence":
                 blocks.append(_Block("code", text, start, end, info=t.info.strip()))
             elif t.type == "hr":
@@ -151,4 +182,9 @@ class MarkdownBlockParser:
             else:
                 # paragraphs, blockquotes, thematic breaks, etc. -> "section"
                 blocks.append(_Block("section", text, start, end))
-        return blocks
+        title = _extract_title(front_raw) if front_raw else None
+        # H1 de-duplication: `title: X` + `# X` must not render as "X > X".
+        first_h1 = next((b.text for b in blocks if b.node_type == "heading" and b.level == 1), None)
+        if title and first_h1 and title.strip().casefold() == first_h1.strip().casefold():
+            title = None
+        return _ParsedDocument(title=title, blocks=tuple(blocks))

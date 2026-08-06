@@ -7,6 +7,7 @@ from dbs_vector.core.ports import IContentFilter
 from dbs_vector.infrastructure.chunking.markdown_blocks import (
     MarkdownBlockParser,
     _Block,
+    _ParsedDocument,
     choose_fence,
     render_fence,
 )
@@ -114,8 +115,8 @@ class DocumentChunker:
     def _chunk_markdown(self, document: Document) -> Iterator[Chunk]:
         if any(f.should_skip_file(document.filepath, document.content) for f in self._filters):
             return
-        blocks = self._parser.parse(document.content)
-        specs = self._build_specs(blocks)
+        parsed = self._parser.parse(document.content)
+        specs = self._build_specs(parsed)
         for i, s in enumerate(specs):
             yield Chunk(
                 id=f"{document.filepath}_chunk_{i}",
@@ -127,20 +128,23 @@ class DocumentChunker:
                 line_range=s.line_range,
             )
 
-    def _build_specs(self, blocks: list[_Block]) -> list[_Spec]:
+    def _build_specs(self, parsed: _ParsedDocument) -> list[_Spec]:
         specs: list[_Spec] = []
         stack: list[tuple[int, str]] = []
         section: list[_Block] = []
 
         def path() -> str:
-            return " > ".join(title for _, title in stack)
+            parts = [t for _, t in stack]
+            if parsed.title:
+                parts.insert(0, parsed.title)
+            return " > ".join(parts)
 
         def flush() -> None:
             if section:
                 specs.extend(self._emit_section(path(), section))
                 section.clear()
 
-        for b in blocks:
+        for b in parsed.blocks:
             if b.node_type == "heading":
                 flush()
                 while stack and stack[-1][0] >= b.level:
