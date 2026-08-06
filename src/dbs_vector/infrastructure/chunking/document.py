@@ -1,3 +1,4 @@
+import json
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
@@ -89,6 +90,60 @@ class _UnitBuilder:
     start: int
     end: int
     est: int  # running token ESTIMATE, same netting rule as _PackedUnit.est
+
+
+_CONTEXT_INTRODUCER = "(dbs-vector context: "
+
+
+def _context_marker(key: str, value: str) -> str:
+    return f"{_CONTEXT_INTRODUCER}{key}={json.dumps(value, ensure_ascii=False)})"
+
+
+def _render_boundary(section: _PackedSection, unit: _PackedUnit) -> str:
+    """Inline structural boundary for a folded chunk.
+
+    Fold-only by design: a standalone chunk has no cross-section join to
+    disambiguate, so it keeps the plain `breadcrumb + body` shape.
+    """
+    lines: list[str] = []
+    if section.heading is not None:
+        level, title, _ = section.heading
+        lines.append("#" * level + " " + title)
+    parent_parts: list[str] = []
+    if section.document_title:
+        parent_parts.append(section.document_title)
+    parent_parts.extend(t for _, t in section.ancestors)
+    if parent_parts:
+        lines.append(_context_marker("parent", " > ".join(parent_parts)))
+    for frame in unit.frames:
+        lines.append(_context_marker("frame", frame))
+    return "\n".join(lines)
+
+
+def _escape_collisions(unit: _PackedUnit) -> _PackedUnit:
+    """Disambiguate authored lines that mimic a generated context marker.
+
+    Read-time disambiguation only — generated markers carry zero leading
+    backslashes, authored lookalikes carry at least one. Nothing decodes this;
+    there is no reverse pass and none is planned.
+
+    Verbatim fragments (fenced and re-fenced indented code) are exempt: a
+    marker inside a fence is already unambiguous, and adding a backslash would
+    corrupt the code sample. This repo's own docs describe the marker format
+    and are in an ingested path, so the case is real, not hypothetical.
+    """
+    out: list[_PackedFragment] = []
+    for frag in unit.fragments:
+        if frag.verbatim:
+            out.append(frag)
+            continue
+        lines = []
+        for ln in frag.text.split("\n"):
+            if ln.lstrip("\\").startswith(_CONTEXT_INTRODUCER):
+                ln = "\\" + ln
+            lines.append(ln)
+        out.append(replace(frag, text="\n".join(lines)))
+    return replace(unit, fragments=tuple(out))
 
 
 class DocumentChunker:

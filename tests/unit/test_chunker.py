@@ -1,5 +1,12 @@
 from dbs_vector.core.models import Document
-from dbs_vector.infrastructure.chunking.document import DocumentChunker
+from dbs_vector.infrastructure.chunking.document import (
+    DocumentChunker,
+    _escape_collisions,
+    _PackedFragment,
+    _PackedSection,
+    _PackedUnit,
+    _render_boundary,
+)
 from dbs_vector.infrastructure.chunking.filters import FilterRegistry
 
 
@@ -667,3 +674,78 @@ def test_filters_apply_to_children_of_an_expanded_container():
         filters=FilterRegistry.resolve(["compressed_json"]),
     )
     assert all(marker not in c.text for c in chunks)
+
+
+def _unit(text, *, frames=(), verbatim=False):
+    return _PackedUnit(
+        fragments=(_PackedFragment(text=text, node_type="section", verbatim=verbatim),),
+        node_type="section",
+        start=0,
+        end=1,
+        scope=(),
+        frames=frames,
+        eff_target=100,
+        eff_max=200,
+        est=len(text),
+    )
+
+
+def test_render_boundary_emits_atx_parent_and_frames():
+    section = _PackedSection(
+        document_title=None,
+        ancestors=((1, "Guide"), (2, "X")),
+        heading=(3, "A", 4),
+        units=(_unit("body"),),
+    )
+    out = _render_boundary(section, _unit("body", frames=("warning: Data loss risk",)))
+    assert out == (
+        "### A\n"
+        '(dbs-vector context: parent="Guide > X")\n'
+        '(dbs-vector context: frame="warning: Data loss risk")'
+    )
+
+
+def test_render_boundary_omits_empty_parent_and_frames():
+    section = _PackedSection(None, (), (2, "B", 9), (_unit("body"),))
+    assert _render_boundary(section, _unit("body")) == "## B"
+
+
+def test_render_boundary_for_preamble_has_no_atx_line():
+    section = _PackedSection("Ops Guide", (), None, (_unit("body"),))
+    assert _render_boundary(section, _unit("body")) == '(dbs-vector context: parent="Ops Guide")'
+
+
+def test_json_escaping_of_quotes_and_parens_in_values():
+    section = _PackedSection(None, (), (2, 'He said ")x"', 1), (_unit("b"),))
+    out = _render_boundary(section, _unit("b", frames=('note: a"b)c',)))
+    assert '(dbs-vector context: frame="note: a\\"b)c")' in out
+
+
+def test_authored_lookalike_line_gains_one_backslash():
+    unit = _unit('(dbs-vector context: parent="fake")\nreal text')
+    assert _escape_collisions(unit).text.startswith("\\(dbs-vector context:")
+
+
+def test_existing_backslash_run_is_extended_not_replaced():
+    unit = _unit("\\(dbs-vector context: x)")
+    assert _escape_collisions(unit).text.startswith("\\\\(dbs-vector context:")
+
+
+def test_verbatim_code_fragments_are_never_escaped():
+    unit = _PackedUnit(
+        fragments=(
+            _PackedFragment('(dbs-vector context: parent="x")', "code", verbatim=True),
+            _PackedFragment('(dbs-vector context: parent="y")', "section", verbatim=False),
+        ),
+        node_type="section",
+        start=0,
+        end=1,
+        scope=(),
+        frames=(),
+        eff_target=100,
+        eff_max=200,
+        est=0,
+    )
+    out = _escape_collisions(unit)
+    assert out.fragments[0].text == '(dbs-vector context: parent="x")'
+    assert out.fragments[1].text.startswith("\\(dbs-vector context:")
