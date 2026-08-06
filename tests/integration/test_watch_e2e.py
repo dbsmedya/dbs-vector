@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
+from dbs_vector.core.models import Document
 from dbs_vector.infrastructure.chunking.document import DocumentChunker
 from dbs_vector.infrastructure.storage.lancedb_engine import LanceDBStore
 from dbs_vector.infrastructure.storage.mappers import DocumentMapper
@@ -64,6 +65,69 @@ def build_stack(tmp_path: Path, vault: Path, use_gitignore: bool = False):
         chunker, FakeEmbedder(), store, "wf", batch_size=8, path_filter=path_filter
     )
     return ingestion, store, path_filter
+
+
+_DOC = "# Guide\n\n## A\n\ntiny\n\n## B\n\n" + ("Body words. " * 40) + "\n"
+
+
+def _rows(store):
+    t = store.scan(columns=["id", "text"]).sort_by([("id", "ascending")])
+    return list(zip(t.column("id").to_pylist(), t.column("text").to_pylist(), strict=True))
+
+
+def test_reingest_after_boundary_change_writes_nothing_without_rebuild(tmp_path, monkeypatch):
+    """The failure mode looks like success.
+
+    `_chunk_content_hash` keys on file content plus position, never chunk
+    content, so a boundary change leaves hashes identical and both ingest
+    paths skip the file while logging success. This is why 1.7.0 requires
+    `--rebuild --force` and why a plain re-ingest is not enough.
+    """
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "doc.md").write_text(_DOC)
+    service, store, _ = build_stack(tmp_path, vault)
+
+    # "Old" chunker == fold disabled. Changing target_tokens would NOT simulate
+    # the old chunker: a larger target makes a tiny section MORE fold-eligible,
+    # so both passes would fold and the test would prove nothing.
+    monkeypatch.setattr(DocumentChunker, "_fold", lambda self, sections: sections)
+    service.ingest_directory([str(vault)])
+    before = _rows(store)
+    monkeypatch.undo()
+
+    # Prove the two chunkers genuinely disagree on this file, else the skip
+    # assertion below is vacuous.
+    new_texts = [
+        c.text
+        for c in DocumentChunker(target_tokens=200, max_tokens=400, length_fn=len).process(
+            Document(filepath=str(vault / "doc.md"), content=_DOC, content_hash="h")
+        )
+    ]
+    assert new_texts != [t for _, t in before], "fixture must actually change boundaries"
+
+    # Same unchanged file, new chunker, no --rebuild: still a no-op.
+    service.ingest_directory([str(vault)])
+    assert _rows(store) == before, (
+        "re-ingest without --rebuild must be a no-op: identical file hash means "
+        "the file is skipped even though boundaries changed"
+    )
+
+
+def test_upsert_path_has_the_same_skip_behaviour(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    target = vault / "doc.md"
+    target.write_text(_DOC)
+    service, store, _ = build_stack(tmp_path, vault)
+
+    monkeypatch.setattr(DocumentChunker, "_fold", lambda self, sections: sections)
+    service.upsert_file(str(target))
+    before = _rows(store)
+    monkeypatch.undo()
+
+    service.upsert_file(str(target))
+    assert _rows(store) == before
 
 
 def sources(store: LanceDBStore) -> set[str]:
