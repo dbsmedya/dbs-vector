@@ -67,7 +67,7 @@ profiles:
   gemma-sql-atomic:   {max_token_length: 2048,  chunk_max_chars: 0,    batch_size: 64}
 
   # Granite R2 long-form prose recipe (large chunks, modest batches).
-  granite-md-large:   {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8, chunk_target_tokens: 1536, chunk_max_tokens: 3072}
+  granite-md-large:   {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8, chunk_target_tokens: 1024, chunk_max_tokens: 2048}
 
   # Granite R2 fragmented techdoc recipe — finer chunks, throughput-optimized.
   granite-md-medium:  {max_token_length: 2048,  chunk_max_chars: 3000, batch_size: 16, chunk_target_tokens: 768, chunk_max_tokens: 1536}

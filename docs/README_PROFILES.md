@@ -56,7 +56,7 @@ A profile controls how large each embedding batch can get:
 profiles:
   gemma-md:           {max_token_length: 2048,  chunk_max_chars: 1000, batch_size: 64, chunk_target_tokens: 512,  chunk_max_tokens: 1024}
   gemma-sql-atomic:   {max_token_length: 2048,  chunk_max_chars: 0,    batch_size: 64}
-  granite-md-large:   {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8,  chunk_target_tokens: 1536, chunk_max_tokens: 3072}
+  granite-md-large:   {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8,  chunk_target_tokens: 1024, chunk_max_tokens: 2048}
   granite-sql-atomic: {max_token_length: 8192,  chunk_max_chars: 0,    batch_size: 32}
 ```
 
@@ -122,6 +122,35 @@ engines:
     query_prefix: "task: search result | query: "
 ```
 
+### Container and Frame Vocabulary (document engines)
+
+The chunker descends into two markdown container types — admonitions and
+blockquotes — instead of treating their bodies as opaque or mis-parsing them
+as indented code. Each container can attach a **frame**: a short label that
+is inserted into the chunk's breadcrumb so retrieved content still carries
+the context it was written in.
+
+- **Admonitions** (`!!! note "Title"`, `!!! warning "Title"`, and the
+  `???`/`???+` collapsible variants) always descend. Their frame is
+  `type: title` — the type is casefolded (`warning`, `note`, …), the
+  author-written title keeps its original casing. A chunk pulled from inside
+  one renders a breadcrumb like `Guide > warning: Data loss risk`.
+- **Blockquotes** are atomic-first: a quote small enough to fit the chunk
+  budget keeps its `>` markers and packs normally with surrounding prose, so
+  most quotes are unaffected. GitHub-style alert blockquotes (`> [!WARNING]`,
+  `> [!NOTE]`, …) get the same `type` frame as admonitions once recognized.
+  An **oversized ordinary blockquote** — one with no alert type, too large to
+  stay atomic — must expand to be split, which strips its `>` markers; a
+  `quote` fallback frame is attached to its children so the fact that the
+  content was a quotation is not silently lost.
+- **Fold-only context markers.** When an entire section is small enough that
+  it would otherwise ship as an undersized, low-value chunk, it folds forward
+  into the next section instead. A folded chunk's body may contain inline
+  `(dbs-vector context: parent="...")` and `(dbs-vector context: frame="...")`
+  markers marking where the absorbed section's content begins — these appear
+  **only** inside a folded chunk. A standalone chunk (the common case) never
+  contains them and keeps the plain `breadcrumb + body` shape.
+
 ### Exclusion Filters (per-engine)
 
 Engines may declare a list of named content filters via the `exclusion_filters`
@@ -151,8 +180,6 @@ A custom filter is a class implementing the `IContentFilter` protocol: a `name: 
 2. Add the `name` string to `exclusion_filters` in the engine block.
 
 No changes to services, CLI, or MCP code are needed.
-
-> **Known limitation — tiny heading-only sections:** The chunker folds an under-`min_tokens` block into the previous sibling within the same heading section. A heading section whose only content is smaller than `min_tokens` (no previous sibling to merge into) still emits one small chunk, but it carries the full heading-path prefix for context.
 
 The validator checks every engine/profile pairing at config load. It rejects profiles that exceed the model context cap or the Metal memory budget and prints safer suggested values.
 
@@ -252,7 +279,7 @@ For Markdown/document engines:
 
 ```yaml
 profiles:
-  my-granite-docs: {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8, chunk_target_tokens: 1536, chunk_max_tokens: 3072}
+  my-granite-docs: {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8, chunk_target_tokens: 1024, chunk_max_tokens: 2048}
 
 engines:
   md-granite:
@@ -400,9 +427,9 @@ shines here.
 
 ```yaml
 profiles:
-  prose-granite-large:      {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8,  chunk_target_tokens: 1536, chunk_max_tokens: 3072}
-  # Throughput-optimized variant (chunks capped at 3072 tokens, 4× headroom at 16384):
-  prose-granite-large-fast: {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 16, chunk_target_tokens: 1536, chunk_max_tokens: 3072}
+  prose-granite-large:      {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8,  chunk_target_tokens: 1024, chunk_max_tokens: 2048}
+  # Throughput-optimized variant (chunks capped at 2048 tokens, 8× headroom at 16384):
+  prose-granite-large-fast: {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 16, chunk_target_tokens: 1024, chunk_max_tokens: 2048}
 ```
 
 Use `model: "granite-r2"`, `mapper_type: "document"`,
@@ -413,7 +440,8 @@ recipe with a faster sibling.
 
 Heavily-fragmented markdown with short headings, bullet lists, and code
 blocks. Smaller chunks discriminate better here than long ones — see
-the `.ayder` corpus benchmark in [README_granite.md](README_granite.md).
+the fragmented-documentation corpus benchmark in
+[README_granite.md](README_granite.md).
 
 ```yaml
 profiles:
@@ -422,7 +450,7 @@ profiles:
   techdoc-granite-fast: {max_token_length: 4096, chunk_max_chars: 3000, batch_size: 16, chunk_target_tokens: 512, chunk_max_tokens: 1024}
 ```
 
-Best baseline for the `.ayder` corpus; usually outperforms
+Best baseline for that corpus shape; usually outperforms
 `granite-md-large` on retrieval recall@1 for this content shape.
 
 ### Short-form notes (tickets, changelogs, commit messages)
@@ -735,7 +763,7 @@ by side and compare results without code changes.
 
 ```yaml
 profiles:
-  granite-md-large:        {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8,  chunk_target_tokens: 1536, chunk_max_tokens: 3072}
+  granite-md-large:        {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8,  chunk_target_tokens: 1024, chunk_max_tokens: 2048}
   granite-md-experimental: {max_token_length: 4096,  chunk_max_chars: 3000, batch_size: 16, chunk_target_tokens: 512,  chunk_max_tokens: 1024}
 ```
 
