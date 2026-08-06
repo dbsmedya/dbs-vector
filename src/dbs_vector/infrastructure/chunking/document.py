@@ -4,7 +4,12 @@ from dataclasses import dataclass
 
 from dbs_vector.core.models import Chunk, Document
 from dbs_vector.core.ports import IContentFilter
-from dbs_vector.infrastructure.chunking.markdown_blocks import MarkdownBlockParser, _Block
+from dbs_vector.infrastructure.chunking.markdown_blocks import (
+    MarkdownBlockParser,
+    _Block,
+    choose_fence,
+    render_fence,
+)
 
 _LIST_MARKER = re.compile(r"^(\s*)([-*+]|\d+[.)])\s")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
@@ -218,8 +223,8 @@ class DocumentChunker:
 
         # 4) compose final text (prefix once per chunk); 1-based inclusive line
         #    range; safety-net char-window guarantees len(text) <= max_tokens
-        #    even if overhead accounting under-reserved (e.g. 3-digit part count)
-        #    or a tiny-merge edge case slips through.
+        #    even if overhead accounting under-reserved or a tiny-merge edge
+        #    case slips through.
         out: list[_Spec] = []
         for u in merged:
             rng = f"{u.start + 1}-{u.end}"  # markdown-it map is 0-based, end-exclusive
@@ -249,15 +254,27 @@ class DocumentChunker:
             inner = lines[1:-1]
         else:
             inner = lines
-        # Reserve the fence + part-marker overhead so each WRAPPED piece fits.
-        overhead = self._len(f"(code, part 99/99)\n```{b.info}\n\n```")
+        body = "\n".join(inner)
+        delim = choose_fence(body, b.info)
+        # Upper bound on part-count digits. NOT len(inner): _pack_atoms splits
+        # one oversized atom into many char-windowed parts, so a single long
+        # line can produce hundreds of parts from one atom. Every part holds at
+        # least one character, so total characters IS a sound bound.
+        digits = len(str(max(1, len(body))))
+        widest = "9" * digits
+        overhead = self._len(f"(code, part {widest}/{widest})\n{delim}{b.info}\n\n{delim}")
         bt = max(1, target - overhead)
         bm = max(1, max_ - overhead)
+        # `inner` is still the atom list _pack_atoms consumes; only the bound
+        # above is computed from the joined body.
         parts = self._pack_atoms(inner, "\n", bt, bm)
         m = len(parts)
         if m <= 1:
-            return [f"```{b.info}\n{parts[0] if parts else ''}\n```"]
-        return [f"(code, part {k}/{m})\n```{b.info}\n{p}\n```" for k, p in enumerate(parts, 1)]
+            return [render_fence(parts[0] if parts else "", b.info, delim)]
+        return [
+            f"(code, part {k}/{m})\n" + render_fence(p, b.info, delim)
+            for k, p in enumerate(parts, 1)
+        ]
 
     def _split_table(self, b: _Block, target: int, max_: int) -> list[str]:
         rows = [ln for ln in b.text.split("\n") if ln.strip()]

@@ -338,3 +338,80 @@ def test_tiny_merge_uses_net_estimate_not_inflated_sum():
     # The fragment "x\n\ny\n\nz" (true size 5 < min_tokens) must fold into
     # the previous chunk, not be emitted as a standalone sub-minimum chunk.
     assert len(chunks) == 1, f"expected tiny trailing chunk merged, got: {[c.text for c in chunks]}"
+
+
+def test_oversized_fenced_code_containing_a_literal_fence_stays_balanced():
+    inner = "\n".join(["```", "nested opener", "```"] + ["line " + "x" * 40 for _ in range(80)])
+    chunks = _chunks(f"~~~py\n{inner}\n~~~\n", target_tokens=120, max_tokens=240)
+    assert len(chunks) > 1
+    for c in chunks:
+        body = c.text.split("\n\n", 1)[-1] if c.parent_scope else c.text
+        lines = body.split("\n")
+        assert lines[0].startswith("(code, part "), "part marker must survive"
+        opener = lines[1]
+        delim = opener[: len(opener) - len(opener.lstrip("`"))]
+        assert len(delim) >= 4, "opener must outrun the literal ``` in the body"
+        assert lines[-1] == delim, "closing delimiter must equal the opener"
+        assert len(c.text) <= 240, "the hard size invariant survives the wider fence"
+
+
+def test_backtick_in_info_string_forces_a_tilde_fence():
+    inner = "\n".join("line " + "x" * 40 for _ in range(80))
+    chunks = _chunks("~~~py`variant\n" + inner + "\n~~~\n", target_tokens=120, max_tokens=240)
+    for c in chunks:
+        body = c.text.split("\n\n", 1)[-1] if c.parent_scope else c.text
+        opener = [ln for ln in body.split("\n") if ln.strip()][1]
+        assert opener.startswith("~~~"), "a backtick in the info string rules out a backtick fence"
+
+
+def _assert_balanced_parts(chunks, max_tokens, min_parts):
+    markers = [ln for c in chunks for ln in c.text.split("\n") if ln.startswith("(code, part ")]
+    assert len(markers) >= min_parts, "fixture must actually reach a three-digit part count"
+    for c in chunks:
+        body = c.text.split("\n\n", 1)[-1] if c.parent_scope else c.text
+        lines = [ln for ln in body.split("\n") if ln.strip()]
+        opener = lines[1]
+        delim = opener[: len(opener) - len(opener.lstrip("`"))]
+        assert delim and lines[-1] == delim, "fence must stay balanced at 3-digit part counts"
+        assert len(c.text) <= max_tokens
+
+
+def test_hundred_plus_part_code_block_keeps_balanced_fences_at_tight_budget():
+    """`(code, part 99/99)` under-reserves once the part count reaches three
+    digits. With target == max there is no slack to absorb the wider marker,
+    the rendered part exceeds max_tokens, and _compose falls back to
+    _char_window — which slices mid-fence and destroys the balance guarantee
+    the other tests assert.
+
+    Line width is load-bearing. The OLD reservation is exactly 29 characters
+    — `(code, part 99/99)` (18) + `\n```py\n` (7) + `\n``` ` (4) — leaving
+    `bm = 31`. Lines of exactly 31 characters fill that budget precisely, so
+    the real 3-digit marker (`(code, part 400/400)`, 20 chars vs the 18
+    reserved) pushes each rendered part to 62 against a 60 cap and exposes the
+    mid-fence fallback. Wider lines are char-windowed into UNDERFILLED pieces
+    whose slack absorbs the extra digit, and the test passes against the broken
+    splitter — verified: 35-character lines give 800 balanced parts, max length
+    58/60, green before the fix.
+    """
+    inner = "\n".join("x" * 31 for _ in range(400))
+    chunks = _chunks(f"```py\n{inner}\n```\n", target_tokens=60, max_tokens=60)
+    _assert_balanced_parts(chunks, 60, 100)
+
+
+def test_single_very_long_line_also_reaches_a_three_digit_part_count():
+    """Falsifies the atom-count bound directly: ONE atom, hundreds of parts.
+
+    `_pack_atoms` char-windows any atom longer than `max_` (document.py:346-350),
+    so `len(inner) == 1` here while the block splits into ~400+ parts. A digit
+    reservation derived from atom count would under-reserve badly. Minified
+    JSON and base64 blobs are the real-world shape.
+
+    The budget must stay FEASIBLE: at max_tokens=10 the reserved marker alone
+    is 22 characters, `bm` collapses to 1, and every rendered part overflows
+    into _char_window no matter how correct the implementation is — the test
+    would be permanently red. 10k characters at max_tokens=60 leaves ~23
+    characters of body per part, which still yields well over 100 parts.
+    """
+    inner = "x" * 10_000
+    chunks = _chunks(f"```json\n{inner}\n```\n", target_tokens=60, max_tokens=60)
+    _assert_balanced_parts(chunks, 60, 100)
