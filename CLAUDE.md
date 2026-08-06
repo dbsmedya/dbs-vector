@@ -112,7 +112,8 @@ This is a Clean Architecture, configuration-driven RAG search engine for Apple S
 - `embeddings/mlx_engine.py`: `MLXEmbedder` — runs models on Apple GPU via MLX, casts tensors to NumPy via Unified Memory. Includes a process-level `_MODEL_CACHE` dict to avoid reloading models.
 - `storage/lancedb_engine.py`: `LanceDBStore` — Arrow-native storage; uses `IVF_PQ` vector index + LanceDB native FTS. Schema mismatch on startup means `--rebuild --force` is needed.
 - `storage/mappers.py`: `DocumentMapper` and `SqlMapper` convert domain chunks ↔ PyArrow `RecordBatch` for zero-copy ingestion and back to domain models on retrieval.
-- `chunking/document.py`: `DocumentChunker` — uses `markdown-it-py` to parse `.md` semantically (code fences are kept atomic); falls back to naive splitting for `.txt`.
+- `chunking/markdown_blocks.py`: `MarkdownBlockParser` — owns `markdown-it-py` configuration and token dispatch; descends into admonition (`!!!`/`???`) and blockquote containers (including GitHub-style `[!ALERT]` blockquotes), producing `_ScopedBlock`s that carry container scope and inherited frame labels. `document.py` never sees a `markdown_it.Token`.
+- `chunking/document.py`: `DocumentChunker` — heading-aware, token-sized, four-phase pipeline: parse+descend (via `MarkdownBlockParser`) → pack (scope groups, per-group token budgets, code fences kept atomic) → forward fold (a wholly undersized section folds into the next one; both boundaries render with fold-only `(dbs-vector context: ...)` markers) → compose. Falls back to naive paragraph splitting for `.txt`.
 - `chunking/sql.py`: `SqlChunker` — parses JSON slow query log format.
 - `watch/watchdog_backend.py`: `WatchdogBackend` — the only module importing
   `watchdog`. Implements the `IWatchBackend` port.

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dbs-vector"
-version = "1.6.1"
+version = "1.7.0"
 description = "High-performance, local RAG search engine and MCP stdio server for Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -16,6 +16,7 @@ dependencies = [
     "lancedb==0.36.0",
     "loguru>=0.7.3,<1",
     "markdown-it-py>=4.0.0,<5",
+    "mdit-py-plugins>=0.6.0,<0.7",
     # mcp 2.0 removed mcp.server.fastmcp (FastMCP is now mcp.server.mcpserver.MCPServer).
     "mcp>=1.27.0,<2",
     "mlx-embeddings>=0.1.0,<0.2",
