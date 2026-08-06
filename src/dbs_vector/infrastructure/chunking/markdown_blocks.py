@@ -130,12 +130,43 @@ def _admonition_frame(t: Token) -> str | None:
     return f"{tag}: {title}" if title else tag
 
 
+_BQ_MARKER = re.compile(r"^ {0,3}>[ \t]?")
+_ALERT_RE = re.compile(r"^\s*>?\s*\[!([A-Za-z]+)\]")
+
+
+def _strip_one_quote_level(lines: list[str]) -> list[str]:
+    """Remove exactly ONE CommonMark blockquote marker level per line.
+
+    Up to three leading spaces, then `>`, then at most one space or tab.
+    A lazy continuation line carries no marker and is returned unchanged, so
+    `>> x` becomes `> x` here and `x` only at the inner descent.
+    """
+    return [_BQ_MARKER.sub("", ln, count=1) for ln in lines]
+
+
+def _blockquote_frame(t: Token) -> str | None:
+    # The alert kind lives in the first inline child, not on the open token.
+    # `_walk` sets t.meta["first_line"] from the ANCESTOR-NORMALIZED lines
+    # (Task 5 Step 5a), so a nested `> > [!WARNING]` reads as `> [!WARNING]`
+    # at the outer level and `[!WARNING]` at the inner one — the match cannot
+    # be confused by nesting depth.
+    m = _ALERT_RE.match(str(t.meta.get("first_line", "")))
+    return m.group(1).casefold() if m else None
+
+
 _CONTAINERS: dict[str, _ContainerSpec] = {
     "admonition_open": _ContainerSpec(
         token_type="admonition_open",
         frame=_admonition_frame,
         unprefix=_strip_indent_unit,
         always_expand=True,
+    ),
+    "blockquote_open": _ContainerSpec(
+        token_type="blockquote_open",
+        frame=_blockquote_frame,
+        unprefix=_strip_one_quote_level,
+        always_expand=False,
+        expanded_fallback_frame="quote",
     ),
 }
 

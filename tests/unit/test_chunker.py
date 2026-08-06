@@ -531,3 +531,139 @@ def test_nested_container_wrapper_is_unprefixed_by_its_ancestor():
     chunks = _chunks(src)
     assert "> quoted inside admonition" in chunks[0].text
     assert "    > quoted" not in chunks[0].text
+
+
+def test_small_blockquote_keeps_its_markers_and_packs_with_prose():
+    src = "# H\n\nBefore.\n\n> A short quote.\n\nAfter.\n"
+    chunks = _chunks(src)
+    assert len(chunks) == 1
+    assert "> A short quote." in chunks[0].text
+    assert chunks[0].parent_scope == "H"
+
+
+def test_small_alert_blockquote_enters_scope_and_does_not_absorb_prose():
+    src = "# H\n\nBefore.\n\n> [!WARNING]\n> Careful.\n\nAfter.\n"
+    chunks = _chunks(src)
+    framed = [c for c in chunks if c.parent_scope and "warning" in c.parent_scope]
+    assert len(framed) == 1
+    assert "Before." not in framed[0].text and "After." not in framed[0].text
+
+
+def test_alert_type_is_casefolded():
+    src = "> [!Warning]\n> Careful.\n"
+    chunks = _chunks(src)
+    assert chunks[0].parent_scope == "warning"
+
+
+def test_oversized_blockquote_splits_on_block_boundaries_not_mid_fence():
+    body = "\n".join(f"> line {i}" for i in range(200))
+    src = f"> ```sql\n> SELECT 1;\n> ```\n>\n{body}\n"
+    chunks = _chunks(src, target_tokens=120, max_tokens=240)
+    fenced = [c for c in chunks if "```" in c.text]
+    for c in fenced:
+        assert c.text.count("```") % 2 == 0, "a fence was split across chunks"
+
+
+def test_expanded_ordinary_blockquote_gets_the_quote_frame():
+    src = "> " + ("word " * 400) + "\n"
+    chunks = _chunks(src, target_tokens=120, max_tokens=240)
+    assert all(c.parent_scope == "quote" for c in chunks)
+
+
+def test_small_nested_quote_inside_an_oversized_quote_keeps_one_marker_level():
+    """Selection is recursive: the outer quote is oversized so it expands, but
+    the small inner quote still fits and stays atomic — so exactly one marker
+    level was removed from it. Two oversized levels would expand twice and
+    leave no markers, which is why this fixture makes only the outer one big."""
+    src = "> " + ("word " * 400) + "\n>\n> > a short nested quote\n"
+    chunks = _chunks(src, target_tokens=120, max_tokens=240)
+    joined = "\n".join(c.text for c in chunks)
+    assert "> a short nested quote" in joined
+    assert ">> a short nested quote" not in joined
+
+
+def test_two_oversized_quote_levels_expand_fully():
+    inner = "> > " + ("word " * 400) + "\n"
+    chunks = _chunks(inner, target_tokens=120, max_tokens=240)
+    assert all(not c.text.lstrip().startswith(">") for c in chunks)
+
+
+def test_lazy_continuation_line_survives_unprefixing():
+    src = "> first line\nlazy second line\n" + "> " + ("word " * 400) + "\n"
+    chunks = _chunks(src, target_tokens=120, max_tokens=240)
+    joined = " ".join(c.text for c in chunks)
+    assert "lazy second line" in joined
+
+
+# ---- Re-homed from Task 5 (require blockquote registration + _select_form,
+# both of which land in this task) -------------------------------------------
+
+
+def test_empty_admonition_inside_an_expanded_blockquote_also_disappears():
+    """The path _flatten_always_expand cannot reach: the admonition is only
+    uncovered when _select_form expands the enclosing quote."""
+    src = '> !!! note "Nothing here"\n>\n> ' + ("word " * 400) + "\n"
+    chunks = _chunks(src, target_tokens=120, max_tokens=240)
+    assert chunks
+    assert all("!!!" not in c.text for c in chunks)
+
+
+def test_oversized_blockquote_inside_an_admonition_loses_both_prefixes():
+    """Mixed syntaxes: the four-space admonition indent must be removed BEFORE
+    the blockquote matcher runs, or `^ {0,3}>` never matches and the `>`
+    markers survive into chunk text."""
+    body = "\n".join("    > word " + "x" * 20 for _ in range(80))
+    src = '!!! note "N"\n\n' + body + "\n"
+    chunks = _chunks(src, target_tokens=120, max_tokens=240)
+    assert chunks
+    for c in chunks:
+        # Inspect BODY lines only. The breadcrumb prefix is legitimately
+        # "note: N > quote" — its " > " separator would fail a naive
+        # `">" not in c.text` check on the whole chunk.
+        body_lines = (
+            c.text.split("\n\n", 1)[1].split("\n") if c.parent_scope else c.text.split("\n")
+        )
+        assert all(not ln.lstrip().startswith(">") for ln in body_lines)
+        assert c.parent_scope and c.parent_scope.startswith("note: N")
+
+
+def test_admonition_inside_an_expanded_blockquote():
+    inner = "\n".join("> " + "y" * 60 for _ in range(60))
+    src = '> !!! warning "W"\n>\n>     inside the admonition\n>\n' + inner + "\n"
+    chunks = _chunks(src, target_tokens=120, max_tokens=240)
+    framed = [c for c in chunks if c.parent_scope and "warning: W" in c.parent_scope]
+    assert framed, "the nested admonition must be reachable once the quote expands"
+    assert "inside the admonition" in "\n".join(c.text for c in framed)
+
+
+def test_nested_alert_blockquote_is_detected_at_its_own_level():
+    inner = "\n".join("> > word " + "z" * 20 for _ in range(80))
+    src = "> " + ("pad " * 400) + "\n>\n> > [!WARNING]\n" + inner + "\n"
+    chunks = _chunks(src, target_tokens=120, max_tokens=240)
+    assert any(c.parent_scope and "warning" in c.parent_scope for c in chunks)
+
+
+def test_filters_apply_to_children_of_an_expanded_container():
+    from dbs_vector.infrastructure.chunking.filters import FilterRegistry
+
+    # CompressedJsonFilter keys on the `compressed-json` info string
+    # (filters.py:26) — a plain ```json fence is NOT dropped, and using one
+    # here would fail the test even with the filter correctly placed.
+    #
+    # STRENGTHENED (moved from Task 5): the original assertion checked for
+    # the absence of the full ~1400-char `big` blob, which char-windowing
+    # (max_tokens=240) would strip out of every chunk regardless of whether
+    # the filter fired at all — a false-positive risk. `marker` is a small,
+    # distinctive, repeated fragment that WOULD survive char-windowing intact
+    # if the filter fails to reach the expanded child, making this a real
+    # detector: absent if the filter worked, present in some chunk if not.
+    marker = "UNIQUE_MARKER_7f3a"
+    big = '{"a":' + ",".join(f"{marker}{i}" for i in range(400)) + "}"
+    src = "> ```compressed-json\n> " + big + "\n> ```\n> \n> " + ("word " * 400) + "\n"
+    chunks = _chunks(
+        src,
+        target_tokens=120,
+        max_tokens=240,
+        filters=FilterRegistry.resolve(["compressed_json"]),
+    )
+    assert all(marker not in c.text for c in chunks)

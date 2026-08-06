@@ -1,6 +1,6 @@
 import re
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from dbs_vector.core.models import Chunk, Document
 from dbs_vector.core.ports import IContentFilter
@@ -8,6 +8,7 @@ from dbs_vector.infrastructure.chunking.markdown_blocks import (
     MarkdownBlockParser,
     _Block,
     _ParsedDocument,
+    _ScopedBlock,
     choose_fence,
     render_fence,
 )
@@ -258,6 +259,56 @@ class DocumentChunker:
                 groups.append([b])
         return groups
 
+    def _select_form(
+        self,
+        b: _ScopedBlock,
+        title: str | None,
+        ancestors: tuple[tuple[int, str], ...],
+        heading: tuple[int, str, int] | None,
+    ) -> list[_ScopedBlock]:
+        """Atomic-first, applied RECURSIVELY to reachable expansions.
+
+        Measure the ATOMIC prefix and raw body against max_tokens. Only on
+        failure select the expansion — and each wrapped child of that expansion
+        gets the same treatment, so an oversized quote inside an oversized quote
+        expands twice while a small one inside an oversized one stays atomic.
+        Never use the expanded form's (longer) prefix to decide atomic fit.
+        """
+        # ORDER MATTERS: always_expand is checked FIRST, before the
+        # empty-expansion guard. An empty admonition has no expansion, so
+        # leading with `if not b.expansion: return [b]` would hand back its raw
+        # `!!! note "x"` source. _flatten_always_expand catches that at the top
+        # level, but never runs on children uncovered by an expanded blockquote.
+        if b.always_expand:
+            return [
+                out_child
+                for child in b.expansion
+                for out_child in self._select_form(child, title, ancestors, heading)
+            ]  # empty expansion -> [] : the container disappears, as it should
+
+        if not b.expansion:
+            return [b]
+
+        atomic_frames = b.frames + ((b.self_frame,) if b.self_frame else ())
+        atomic_prefix = self._prefix(title, ancestors, heading, atomic_frames)
+        if self._len(atomic_prefix + b.text) <= self.max_tokens:
+            # A FRAMED atomic container enters its own scope so its frame cannot
+            # leak onto adjacent prose. An ORDINARY one does not, preserving
+            # today's ability to pack it with neighbours.
+            scope = b.scope + (((b.container_type, b.start_line),) if b.self_frame else ())
+            return [replace(b, frames=atomic_frames, scope=scope, expansion=())]
+
+        # Expanded. Children already carry the inherited frame stack; when this
+        # container had no frame of its own, apply its fallback so an expanded
+        # ordinary quote keeps its quotation semantics after `>` removal.
+        out: list[_ScopedBlock] = []
+        for child in b.expansion:
+            c = child
+            if b.self_frame is None and b.expanded_fallback_frame:
+                c = replace(c, frames=c.frames + (b.expanded_fallback_frame,))
+            out.extend(self._select_form(c, title, ancestors, heading))
+        return out
+
     def _pack_section(
         self,
         title: str | None,
@@ -265,14 +316,15 @@ class DocumentChunker:
         heading: tuple[int, str, int] | None,
         blocks: list[_Block],
     ) -> _PackedSection | None:
-        # Filtering happens here, on the blocks of whichever form was
-        # selected, so a filtered block inside an expanded container (e.g. a
-        # compressed_json fence inside a blockquote) is caught too — a filter
-        # check back in _build_specs would only ever see the container's
-        # unexpanded wrapper text, never its descended children.
+        # Form selection happens BEFORE filtering: a filter must see whichever
+        # form (atomic or expanded) packing will actually use, so a dropped
+        # block inside an expanded container (e.g. a compressed_json fence
+        # inside a blockquote) is caught too — filtering the unexpanded
+        # wrapper would never see its descended children.
+        selected = [out for b in blocks for out in self._select_form(b, title, ancestors, heading)]
         chosen = [
             b
-            for b in blocks
+            for b in selected
             if not any(
                 f.should_drop_block(b.text, b.info if b.node_type == "code" else None)
                 for f in self._filters
