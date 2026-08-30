@@ -37,8 +37,15 @@ then the chunk is sealed. No chunk may exceed `chunk_max_tokens`. Both are set
 per tuning profile in `config.yaml` — see
 [README_PROFILES.md § Token Budget Knobs](README_PROFILES.md#token-budget-knobs-document-engines).
 
-A fenced code block is **atomic**: it is never split across chunks, so a
-150-line function always arrives whole.
+A fenced code block is **atomic while it fits**: if the whole fence fits the
+budget it is never split, so a 150-line function arrives whole.
+
+A fence too large to fit is split rather than dropped, and the split is made
+safe rather than silent. Each part is re-fenced with a delimiter long enough
+not to collide with the content, and labelled `(code, part 2/5)`, so every
+part is valid Markdown on its own. Oversized tables are split the same way
+with the **header row repeated** on each part, so a fragment still says what
+its columns mean.
 
 ### 3. Forward fold
 
@@ -96,7 +103,14 @@ Embedding models (like `embeddinggemma-300m` or Granite R2) require significant 
 3.  **GPU Offloading:** Only one batch is sent to the Apple MLX GPU at a time. 
 4.  **Zero-Copy Storage:** The resulting tensors are instantly mapped to PyArrow `RecordBatch` arrays and flushed to disk via LanceDB.
 
-This architecture ensures a flat, predictable memory profile regardless of the repository size.
+**GPU** memory is therefore flat and predictable: it is bounded by `batch_size`
+and the longest chunk in a batch, not by how large the corpus is.
+
+Host memory is not constant. Ingestion materializes the file list for a run, and
+loads every already-stored content hash into a set so it can skip unchanged files
+and de-duplicate within a batch. Both grow linearly with corpus size — a few tens
+of bytes per file and per chunk, which is negligible next to the model, but it is
+not zero. It is the GPU side that the batching architecture keeps flat.
 
 ---
 

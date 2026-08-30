@@ -726,6 +726,15 @@ The validator catches:
 - unknown `tuning_profile` keys;
 - `max_token_length` above the model contract cap;
 - profiles that exceed the Metal memory budget;
+- **document engines whose profile omits the token budgets** — `chunker_type:
+  "document"` requires both `chunk_target_tokens > 0` and `chunk_max_tokens > 0`,
+  and the coherence invariant
+  `chunk_target_tokens ≤ chunk_max_tokens ≤ max_token_length`. A profile that
+  sets only `max_token_length` / `chunk_max_chars` / `batch_size` is fine for a
+  SQL engine and **rejected** for a document one;
+- engine names that do not match `^[a-z0-9][a-z0-9_-]*$` (the name becomes an
+  MCP tool name);
+- `exclusion_filters` entries that do not resolve to a registered filter;
 - old schema fields such as `system.batch_size`, `model_name`, `vector_dimension`, `attention_mask_dtype`, and per-engine `chunk_max_chars`.
 
 If Metal memory cannot be detected, set an explicit budget:
