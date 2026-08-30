@@ -191,7 +191,8 @@ Append to `config.yaml`:
 ```yaml
 profiles:
   granite-md-large:
-    {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8}
+    {max_token_length: 16384, chunk_max_chars: 6000, batch_size: 8,
+     chunk_target_tokens: 1024, chunk_max_tokens: 2048}
 
 engines:
   md-granite:
@@ -223,8 +224,8 @@ table or you'll mix prefixed and non-prefixed vectors.
 ### Step 2: Ingest the same corpus into both
 
 ```bash
-uv run dbs-vector ingest "./.ayder/" --type md-granite
-uv run dbs-vector ingest "./.ayder/" --type md-granite-domaintag
+uv run dbs-vector ingest "./docs/" --type md-granite
+uv run dbs-vector ingest "./docs/" --type md-granite-domaintag
 ```
 
 ### Step 3: Run a fixed query set through both via MCP
@@ -247,21 +248,31 @@ Granite engine costs ~1–2 GB of GPU memory at startup.
 
 ## 5. Non-prefix levers likely to help more
 
-Empirically (per the `.ayder` corpus benchmarking that motivated this
-doc), the following changes have a higher expected impact than prefix
-engineering:
+The following levers change retrieval more than prefix engineering does,
+because they change what lands in a chunk rather than how that chunk is
+embedded:
 
-### 5.1 Reduce `chunk_max_chars` for finer discrimination
+### 5.1 Size chunks with the token budgets
 
-Granite's profile currently uses `chunk_max_chars: 6000`. For a corpus
-of fragmented spec/plan markdown — short headings, code fences, decision
-bullet items — that's coarse. A 3000-char profile lets each chunk
-embed a more focused topic:
+Chunk size for Markdown is set by `chunk_target_tokens` (the size a chunk
+aims for) and `chunk_max_tokens` (the size it may not exceed). The shipped
+`granite-md-large` profile targets 1024 tokens with a 2048-token ceiling —
+generous, which suits long-form prose.
+
+Fragmented technical writing behaves differently. Short headings, frequent
+code fences and one-line decision bullets mean a large chunk tends to gather
+several unrelated topics, and a single embedding then has to represent all of
+them at once. Smaller budgets give each chunk a narrower subject, which is
+what a retrieval query is matched against.
+
+To try a finer profile, halve both budgets and keep the model's context as
+the truncation cap:
 
 ```yaml
 profiles:
   granite-md-medium:
-    {max_token_length: 16384, chunk_max_chars: 3000, batch_size: 8}
+    {max_token_length: 4096, chunk_max_chars: 3000, batch_size: 8,
+     chunk_target_tokens: 512, chunk_max_tokens: 1024}
 
 engines:
   md-granite-fine:
@@ -270,12 +281,23 @@ engines:
     tuning_profile: "granite-md-medium"
 ```
 
-This is the single change most likely to improve top-1 recall on the
-`.ayder` corpus. Note `batch_size: 8` mirrors `granite-md-large`'s
-memory profile — safe, validator-approved, and unchanged from the
-project's existing Granite footprint. If ingest throughput matters,
-see the "throughput-optimized" pattern in
+Both token budgets are **required** for any engine with
+`chunker_type: "document"`, and the validator enforces
+`0 < chunk_target_tokens ≤ chunk_max_tokens ≤ max_token_length` at config
+load — a profile missing them is rejected before the engine starts.
+
+`max_token_length: 4096` rather than 16384 is deliberate: it is the embedder's
+truncation cap, not a chunking target, and the validator sizes its memory
+estimate from it. Dropping it to roughly 4× `chunk_max_tokens` frees budget
+you can spend on `batch_size` without changing real memory use — see
 [README_PROFILES.md § Memory Math and Throughput Tuning](README_PROFILES.md#memory-math-and-throughput-tuning).
+
+`chunk_max_chars` appears above only because every profile carries the field.
+It applies to the `.txt` fallback path and is **ignored for Markdown**;
+changing it will not alter how `.md` files are chunked.
+
+Changing either token budget moves chunk boundaries, so re-ingest with
+`--rebuild --force` before comparing results.
 
 ### 5.2 Use Matryoshka truncation for speed (not recall)
 
@@ -326,10 +348,10 @@ it before promoting it to default. A minimal evaluation harness:
 ```python
 # eval_granite.py (sketch — not part of the project)
 queries_with_expected_top1 = [
-    ("two-registry split for family validation",
-     ".ayder/superpowers_20260507/specs/2026-05-07-dynamic-engine-exposure-design.md"),
+    ("how tuning profiles and the model registry fit together",
+     "docs/README_PROFILES.md"),
     ("how to add a new search engine",
-     ".ayder/superpowers_20260507/plans/2026-05-07-dynamic-engine-exposure.md"),
+     "docs/README_PROFILES.md"),
     # ... 20+ rows ...
 ]
 

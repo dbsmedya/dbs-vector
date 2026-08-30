@@ -45,7 +45,7 @@ src/dbs_vector/
 
 ### Key Principles Applied:
 *   **Dependency Inversion (DIP):** The `IngestionService` and `SearchService` do not import `mlx` or `lancedb`. They only depend on `ports.py`.
-*   **Open/Closed (OCP):** The system utilizes a **Registry Pattern**. Adding a new engine (e.g., `libcst` for AST) simply requires registering a new Chunker/Mapper and adding a block to `config.yaml`. No modification to core services or CLI logic is needed.
+*   **Open/Closed (OCP):** The system utilizes a **Registry Pattern**. Adding a new engine (a different document format, or another log source) simply requires registering a new Chunker/Mapper and adding a block to `config.yaml`. No modification to core services or CLI logic is needed.
 *   **Single Responsibility (SRP):** Database serialization is offloaded to specialized `Mapper` classes, keeping the `LanceDBStore` focused purely on storage and retrieval.
 
 ---
@@ -86,8 +86,6 @@ uv run dbs-vector search "SELECT * FROM users" --type sql --min-time 1000
 
 ---
 
----
-
 ## Versioning & upgrades
 
 Read the version as `1.MINOR.PATCH`. **The middle number tells you whether an upgrade
@@ -119,20 +117,3 @@ drift into mixed state as files change. Rebuild when you take a minor bump.
 - [README_EMBEDDINGS.md](README_EMBEDDINGS.md) — supported embedding models, attention-mask dtype config, truncation alarm
 - [README_MCP.md](README_MCP.md) — MCP server, per-engine tool naming, A/B testing workflow
 - [README_CALIBRATE_CORPUS.md](README_CALIBRATE_CORPUS.md) — step-by-step similarity-floor calibration for a new corpus
-
----
-
-## 4. Roadmap
-
-### Phase 2: Structural AST Parsing (LibCST Integration)
-*   **Action:** Build `infrastructure/chunking/libcst_parser.py` and `AstMapper`.
-*   **Goal:** Parse `.py` files into an Abstract Syntax Tree (AST). Extract atomic nodes (Functions, Classes).
-*   **Integration:** Register in `registry.py` and add to `config.yaml`.
-
-### Phase 3: The Context Assembler
-*   **Action:** Create a `ContextAssemblerService`.
-*   **Goal:** Use the `parent_scope` metadata defined in the schema to fetch enclosing classes or imports for a matched function chunk, providing complete context to the LLM.
-
-### Phase 4: Managed Cloud Scaling
-*   **Action:** Implement hardware-agnostic embedders.
-*   **Goal:** Extend the `IEmbedder` port to support CUDA/TPU engines for deployment in Linux cloud environments.

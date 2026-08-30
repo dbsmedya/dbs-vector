@@ -439,9 +439,11 @@ recipe with a faster sibling.
 ### Fragmented technical docs (specs, plans, README files with code fences)
 
 Heavily-fragmented markdown with short headings, bullet lists, and code
-blocks. Smaller chunks discriminate better here than long ones — see
-the fragmented-documentation corpus benchmark in
-[README_granite.md](README_granite.md).
+blocks. Smaller budgets suit this shape: a large chunk over fragmented
+content gathers several unrelated topics, and one embedding then has to
+stand for all of them. See
+[README_granite.md § 5.1](README_granite.md#51-size-chunks-with-the-token-budgets)
+for the same reasoning applied to Granite.
 
 ```yaml
 profiles:
@@ -450,8 +452,9 @@ profiles:
   techdoc-granite-fast: {max_token_length: 4096, chunk_max_chars: 3000, batch_size: 16, chunk_target_tokens: 512, chunk_max_tokens: 1024}
 ```
 
-Best baseline for that corpus shape; usually outperforms
-`granite-md-large` on retrieval recall@1 for this content shape.
+A reasonable starting point for this shape. Whether it beats
+`granite-md-large` on *your* corpus is a measurement, not a given — see
+[README_CALIBRATE_CORPUS.md](README_CALIBRATE_CORPUS.md).
 
 ### Short-form notes (tickets, changelogs, commit messages)
 
@@ -723,6 +726,15 @@ The validator catches:
 - unknown `tuning_profile` keys;
 - `max_token_length` above the model contract cap;
 - profiles that exceed the Metal memory budget;
+- **document engines whose profile omits the token budgets** — `chunker_type:
+  "document"` requires both `chunk_target_tokens > 0` and `chunk_max_tokens > 0`,
+  and the coherence invariant
+  `chunk_target_tokens ≤ chunk_max_tokens ≤ max_token_length`. A profile that
+  sets only `max_token_length` / `chunk_max_chars` / `batch_size` is fine for a
+  SQL engine and **rejected** for a document one;
+- engine names that do not match `^[a-z0-9][a-z0-9_-]*$` (the name becomes an
+  MCP tool name);
+- `exclusion_filters` entries that do not resolve to a registered filter;
 - old schema fields such as `system.batch_size`, `model_name`, `vector_dimension`, `attention_mask_dtype`, and per-engine `chunk_max_chars`.
 
 If Metal memory cannot be detected, set an explicit budget:
@@ -750,7 +762,8 @@ When an old config is loaded, `dbs-vector` raises one migration-hint error inste
 ## Related Docs
 
 - [README_EMBEDDINGS.md](README_EMBEDDINGS.md) covers supported embedding models and model-contract behavior.
-- [README_DOCS.md](README_DOCS.md) covers Markdown chunking behavior.
+- [README_DOCS.md](README_DOCS.md#the-chunking-pipeline) walks through the four
+  chunking phases — parse and descend, pack, forward fold, compose.
 - [README_SQL.md](README_SQL.md), [README_duckdb.md](README_duckdb.md), and [README_REMOTE_SQL_API.md](README_REMOTE_SQL_API.md) cover SQL ingestion sources.
 
 ## A/B testing tuning profiles
