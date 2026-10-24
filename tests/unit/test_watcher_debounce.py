@@ -261,6 +261,34 @@ class TestFtsTimer:
         engines["md"].store.refresh_fts.assert_not_called()
         engines["md-granite"].store.refresh_fts.assert_not_called()
 
+    def test_an_upsert_that_changed_nothing_leaves_the_engine_clean(self, service, vault):
+        """FSEvents reports xattr and timestamp writes as `modified`, so most
+        events on an unchanged file end in a skipped upsert. Those must not
+        buy a full FTS rebuild."""
+        svc, clock, engines = service
+        engines["md"].ingestion.upsert_file.return_value = False
+        svc.handle_event("md", str(vault / "a.md"), "modified")
+        clock.advance(3.0)
+        svc.run_once()
+
+        clock.advance(60.0)
+        svc.run_once()
+
+        engines["md"].store.refresh_fts.assert_not_called()
+
+    def test_a_remove_that_changed_nothing_leaves_the_engine_clean(self, service, vault):
+        svc, clock, engines = service
+        engines["md"].ingestion.remove_source.return_value = False
+        svc.handle_event("md", str(vault / "gone.md"), "deleted")
+        clock.advance(3.0)
+        svc.run_once()
+
+        clock.advance(60.0)
+        svc.run_once()
+
+        engines["md"].ingestion.remove_source.assert_called_once()
+        engines["md"].store.refresh_fts.assert_not_called()
+
 
 class TestFailureIsolation:
     def test_a_failing_action_does_not_stop_the_others(self, service, vault):
