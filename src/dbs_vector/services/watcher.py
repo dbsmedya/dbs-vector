@@ -174,10 +174,13 @@ class WatcherService:
     def _do_action(self, engine: str, path: str, kind: str) -> None:
         watched = self._engines[engine]
         if kind == _UPSERT:
-            watched.ingestion.upsert_file(path)
+            changed = watched.ingestion.upsert_file(path)
         else:
-            watched.ingestion.remove_source(path)
-        self._dirty.add(engine)
+            changed = watched.ingestion.remove_source(path)
+        # FSEvents reports xattr and timestamp writes as `modified`; most of
+        # those end in a skipped upsert, which must not buy an FTS rebuild.
+        if changed:
+            self._dirty.add(engine)
 
     def _do_reconcile(self, engine: str) -> None:
         watched = self._engines[engine]
