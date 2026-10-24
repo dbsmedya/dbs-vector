@@ -929,6 +929,26 @@ class TestSearch:
         store.create_indices()  # FTS rebuilt → cache reset
         assert store._hybrid_ok is None
 
+    def test_hybrid_import_error_is_not_degraded_to_vector(self, lancedb_store):
+        """An ImportError is a broken install, not a missing FTS index: it must surface.
+
+        The ImportError arm covered the tantivy path lancedb 0.32 deleted; FTS-absent
+        raises ValueError (lancedb 0.38) or RuntimeError (0.36).
+        """
+        store, _, mock_table, _ = lancedb_store
+        qv = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        def search_side_effect(*args, **kwargs):
+            if kwargs.get("query_type") == "hybrid":
+                raise ImportError("broken install")
+            return MagicMock()
+
+        mock_table.search.side_effect = search_side_effect
+
+        with pytest.raises(ImportError, match="broken install"):
+            store.search("q", qv, limit=3)
+        assert store._hybrid_ok is None
+
     def test_hybrid_cache_resets_when_table_version_advances(self, lancedb_store):
         """A version advance seen via checkout_latest() (e.g. ANOTHER process
         ingesting and creating the FTS index) must allow a hybrid retry —
