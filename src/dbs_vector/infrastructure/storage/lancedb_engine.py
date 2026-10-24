@@ -131,6 +131,12 @@ class LanceDBStore:
         safe = source.replace("'", "''")
         self.table.delete(f"source = '{safe}'")
 
+    def has_source(self, source: str) -> bool:
+        """Exact-source presence, from fresh table state."""
+        self.table.checkout_latest()
+        safe = source.replace("'", "''")
+        return bool(self.table.count_rows(f"source = '{safe}'"))
+
     def get_existing_hashes(self) -> set[str]:
         """Returns all existing content hashes, projecting a single column
         via LanceDB's query builder to avoid materialising the vector column."""
