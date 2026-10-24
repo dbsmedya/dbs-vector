@@ -20,18 +20,19 @@ dependencies = [
     # mcp 2.0 removed mcp.server.fastmcp (FastMCP is now mcp.server.mcpserver.MCPServer).
     "mcp>=1.27.0,<2",
     "mlx-embeddings>=0.1.0,<0.2",
-    "mlx==0.32.0",
+    "mlx==0.32.4",
     "numpy>=2.4.4,<3",
     "pathspec>=1.0.4,<2",
-    "polars==1.40.0",
-    "pyarrow==24.0.0",
+    "polars==1.44.2",
+    "pyarrow==26.0.0",
     "pydantic-settings>=2.14.0,<3",
     "pydantic>=2.13.3,<3",
     "pyyaml>=6.0.3,<7",
-    "starlette>=0.40,<1",
+    "starlette>=0.40,<2",
     # transformers 5.13.0 broke AutoTokenizer.register(str, ...), which mlx-lm 0.31.3
-    # (still the latest release) relies on at import time. transformers 5.13.1 fixed the
-    # regression, so only that single release needs excluding.
+    # relies on at import time. transformers 5.13.1 fixed the regression, so only that
+    # single release needs excluding. mlx-vlm 0.7 no longer pulls in mlx-lm, but older
+    # mlx-vlm releases still satisfy mlx-embeddings, so the exclusion stays.
     "transformers>=5.0,!=5.13.0,<6",
     "typer>=0.15.1,<1",
     "types-pyyaml>=6.0.12.20260408",
