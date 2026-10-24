@@ -112,24 +112,34 @@ class LanceDBStore:
         # FTS index may now exist (or have been replaced) — allow hybrid retry.
         self._hybrid_ok = None
 
-    def refresh_fts(self) -> None:
+    def refresh_fts(self) -> bool:
         """Rebuild ONLY the FTS index (no IVF_PQ work).
 
-        Called on the watcher's 60s timer so newly written rows reach the FTS
-        leg of hybrid search within a minute. The vector leg finds them
-        immediately without any index work.
+        Called on the watcher's 60s timer for engines with new rows. Both legs
+        of hybrid search already find unindexed rows by scanning them; the
+        refresh folds them into the FTS index so that scan stays small.
+        Returns False if the rebuild failed, so the caller can retry.
         """
         try:
             self.table.create_index("text", config=FTS(), replace=True)
+            refreshed = True
         except Exception as e:  # noqa: BLE001 — must never kill the watcher worker
             logger.warning("FTS refresh failed for '{}': {}", self.table_name, e)
+            refreshed = False
         # The index may now exist or have been replaced — allow hybrid retry.
         self._hybrid_ok = None
+        return refreshed
 
     def delete_by_source(self, source: str) -> None:
         """Delete every row for one source path (predicate delete)."""
         safe = source.replace("'", "''")
         self.table.delete(f"source = '{safe}'")
+
+    def has_source(self, source: str) -> bool:
+        """Exact-source presence, from fresh table state."""
+        self.table.checkout_latest()
+        safe = source.replace("'", "''")
+        return bool(self.table.count_rows(f"source = '{safe}'"))
 
     def get_existing_hashes(self) -> set[str]:
         """Returns all existing content hashes, projecting a single column

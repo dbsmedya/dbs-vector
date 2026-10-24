@@ -281,8 +281,13 @@ class TestLegacyDiscoveryUnchanged:
         assert chunker.process.call_count == 1
 
 
+def _one_chunk(source: str) -> list[Chunk]:
+    return [Chunk(id="c0", text="body", source=source, content_hash="h")]
+
+
 class TestUpsertFile:
-    """Whole-file replace, source-aware."""
+    """Whole-file replace, source-aware. Returns True only when rows were
+    inserted or deleted, so the watcher can skip index work on no-ops."""
 
     def _service(self, tmp_path, rows):
         """rows: list of (source, content_hash) tuples already in the store."""
@@ -309,7 +314,7 @@ class TestUpsertFile:
         file_hash = hashlib.sha256(b"# A").hexdigest()[:16]
         svc, store, chunker = self._service(tmp_path, [(str(doc), file_hash)])
 
-        svc.upsert_file(str(doc))
+        assert svc.upsert_file(str(doc)) is False
 
         store.delete_by_source.assert_not_called()
         chunker.process.assert_not_called()
@@ -324,18 +329,50 @@ class TestUpsertFile:
             tmp_path, [(str(tmp_path / "a.md"), file_hash), (str(doc), "staleoldhash")]
         )
 
-        svc.upsert_file(str(doc))
+        # True: b's stale rows were deleted, even though nothing is inserted.
+        assert svc.upsert_file(str(doc)) is True
 
         store.delete_by_source.assert_called_once_with(str(doc))
         # Global dedup preserved: content is indexed once, under a.md.
         chunker.process.assert_not_called()
+
+    def test_new_duplicate_source_writes_nothing(self, tmp_path):
+        """No rows of its own and its content indexed elsewhere: no delete
+        (a no-match delete still commits a version), nothing inserted."""
+        doc = tmp_path / "b.md"
+        doc.write_text("# A")
+        file_hash = hashlib.sha256(b"# A").hexdigest()[:16]
+        svc, store, chunker = self._service(tmp_path, [(str(tmp_path / "a.md"), file_hash)])
+
+        assert svc.upsert_file(str(doc)) is False
+
+        store.delete_by_source.assert_not_called()
+        chunker.process.assert_not_called()
+
+    def test_new_file_with_no_chunks_writes_nothing(self, tmp_path):
+        doc = tmp_path / "empty.md"
+        doc.write_text("")
+        svc, store, chunker = self._service(tmp_path, [])
+
+        assert svc.upsert_file(str(doc)) is False
+
+        store.delete_by_source.assert_not_called()
+
+    def test_indexed_file_becoming_empty_reports_its_deleted_rows(self, tmp_path):
+        doc = tmp_path / "a.md"
+        doc.write_text("")
+        svc, store, chunker = self._service(tmp_path, [(str(doc), "oldhash")])
+
+        assert svc.upsert_file(str(doc)) is True
+
+        store.delete_by_source.assert_called_once_with(str(doc))
 
     def test_changed_file_is_deleted_then_reingested(self, tmp_path):
         doc = tmp_path / "a.md"
         doc.write_text("# NEW")
         svc, store, chunker = self._service(tmp_path, [(str(doc), "oldhash")])
 
-        svc.upsert_file(str(doc))
+        assert svc.upsert_file(str(doc)) is True
 
         store.delete_by_source.assert_called_once_with(str(doc))
         chunker.process.assert_called_once()
@@ -344,17 +381,20 @@ class TestUpsertFile:
         doc = tmp_path / "new.md"
         doc.write_text("# NEW")
         svc, store, chunker = self._service(tmp_path, [])
+        chunker.process.return_value = iter(_one_chunk(str(doc)))
 
-        svc.upsert_file(str(doc))
+        assert svc.upsert_file(str(doc)) is True
 
         chunker.process.assert_called_once()
+        # Nothing of its own to delete: no no-match delete commit.
+        store.delete_by_source.assert_not_called()
 
     def test_unreadable_file_is_skipped_without_raising(self, tmp_path):
         doc = tmp_path / "bin.md"
         doc.write_bytes(b"\xff\xfe\x00binary")
         svc, store, chunker = self._service(tmp_path, [])
 
-        svc.upsert_file(str(doc))
+        assert svc.upsert_file(str(doc)) is False
 
         chunker.process.assert_not_called()
         store.delete_by_source.assert_not_called()
@@ -363,11 +403,22 @@ class TestUpsertFile:
 class TestRemoveSource:
     def test_remove_source_delegates_to_the_store(self):
         store = MagicMock()
+        store.has_source.return_value = True
         svc = IngestionService(MagicMock(), MagicMock(), store, "wf")
 
-        svc.remove_source("/vault/a.md")
+        assert svc.remove_source("/vault/a.md") is True
 
         store.delete_by_source.assert_called_once_with("/vault/a.md")
+
+    def test_removing_an_unindexed_source_writes_nothing(self):
+        """An atomic save schedules a remove for its never-indexed temp file."""
+        store = MagicMock()
+        store.has_source.return_value = False
+        svc = IngestionService(MagicMock(), MagicMock(), store, "wf")
+
+        assert svc.remove_source("/vault/a.md.tmp.123") is False
+
+        store.delete_by_source.assert_not_called()
 
 
 class TestReconcile:
@@ -427,6 +478,7 @@ class TestReconcile:
         file_hash = hashlib.sha256(b"# same content").hexdigest()[:16]
         old = str(tmp_path / "old.md")
         svc, store, chunker = self._service([tmp_path], [(old, file_hash)])
+        chunker.process.return_value = iter(_one_chunk(str(new)))
 
         pruned, upserted = svc.reconcile()
 
@@ -442,6 +494,46 @@ class TestReconcile:
         pruned, upserted = svc.reconcile()
 
         assert (pruned, upserted) == (0, 0)
+        store.delete_by_source.assert_not_called()
+
+    def test_a_file_that_cannot_be_opened_keeps_its_rows(self, tmp_path, monkeypatch):
+        """Permission or I/O trouble is not proof the file was deleted."""
+        locked = tmp_path / "locked.md"
+        locked.write_text("# locked")
+        svc, store, _ = self._service([tmp_path], [(str(locked), "h1")])
+        real_read_text = Path.read_text
+
+        def _read_text(self, *args, **kwargs):
+            if self == locked:
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _read_text)
+
+        assert svc.reconcile() == (0, 0)
+        store.delete_by_source.assert_not_called()
+
+    def test_a_non_utf8_file_is_still_pruned(self, tmp_path):
+        """It exists but the engine would never ingest it: same as excluded."""
+        binary = tmp_path / "bin.md"
+        binary.write_bytes(b"\xff\xfe\x00binary")
+        svc, store, _ = self._service([tmp_path], [(str(binary), "h1")])
+
+        pruned, _ = svc.reconcile()
+
+        assert pruned == 1
+        store.delete_by_source.assert_called_once_with(str(binary))
+
+    def test_upserted_counts_only_files_whose_rows_changed(self, tmp_path):
+        """A duplicate or an empty file is attempted on every pass but writes
+        nothing; counting it would trigger index work on an unchanged corpus."""
+        (tmp_path / "dup.md").write_text("# shared")
+        (tmp_path / "empty.md").write_text("")
+        shared = hashlib.sha256(b"# shared").hexdigest()[:16]
+        svc, store, _ = self._service([tmp_path], [(str(tmp_path / "orig.md"), shared)])
+        (tmp_path / "orig.md").write_text("# shared")
+
+        assert svc.reconcile() == (0, 0)
         store.delete_by_source.assert_not_called()
 
     def test_reconcile_scans_the_store_once(self, tmp_path):

@@ -95,12 +95,20 @@ class IVectorStore(Protocol):
         """Delete every row whose `source` column equals `source`.
 
         Whole-file replace primitive for the watcher: no row count is
-        returned (a pre-count scan per event is not worth it).
+        returned. A delete that matches nothing still commits a table
+        version, so callers check `has_source()` first when unsure.
         """
         ...
 
-    def refresh_fts(self) -> None:
-        """Rebuild ONLY the full-text index. No vector index work."""
+    def has_source(self, source: str) -> bool:
+        """True if any row's `source` column equals `source` exactly."""
+        ...
+
+    def refresh_fts(self) -> bool:
+        """Rebuild ONLY the full-text index. No vector index work.
+
+        Never raises; returns False if the rebuild failed.
+        """
         ...
 
     def search(

@@ -1179,13 +1179,39 @@ class TestDeleteBySource:
         mock_table.delete.assert_called_once_with("source = '/vault/it''s here.md'")
 
 
+class TestHasSource:
+    """Exact-source presence check, so a remove can skip a no-match delete
+    (which still commits a table version)."""
+
+    def test_has_source_counts_with_an_escaped_equality_predicate(self, lancedb_store):
+        store, _mock_db, mock_table, _mock_lancedb = lancedb_store
+        mock_table.count_rows.return_value = 2
+
+        assert store.has_source("/vault/it's here.md") is True
+        mock_table.count_rows.assert_called_once_with("source = '/vault/it''s here.md'")
+
+    def test_has_source_is_false_when_no_row_matches(self, lancedb_store):
+        store, _mock_db, mock_table, _mock_lancedb = lancedb_store
+        mock_table.count_rows.return_value = 0
+
+        assert store.has_source("/vault/a.md") is False
+
+    def test_has_source_sees_rows_committed_by_another_process(self, lancedb_store):
+        store, _mock_db, mock_table, _mock_lancedb = lancedb_store
+        mock_table.count_rows.return_value = 0
+
+        store.has_source("/vault/a.md")
+
+        mock_table.checkout_latest.assert_called_once()
+
+
 class TestRefreshFts:
     """Tests for the FTS-only index refresh."""
 
     def test_refresh_fts_replaces_only_the_text_index(self, lancedb_store):
         store, _mock_db, mock_table, _mock_lancedb = lancedb_store
 
-        store.refresh_fts()
+        assert store.refresh_fts() is True
 
         # FTS-only: never touches the vector index.
         mock_table.create_index.assert_called_once_with("text", config=FTS(), replace=True)
@@ -1203,7 +1229,9 @@ class TestRefreshFts:
         store, _mock_db, mock_table, _mock_lancedb = lancedb_store
         mock_table.create_index.side_effect = RuntimeError("FTS build failed")
 
-        store.refresh_fts()  # must not raise — the watcher worker survives
+        # Must not raise (the watcher worker survives), but must say it failed
+        # so the engine stays dirty and the next tick retries.
+        assert store.refresh_fts() is False
 
 
 class TestGetExistingHashesFreshness:

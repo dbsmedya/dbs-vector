@@ -98,6 +98,7 @@ class TestLastStateWins:
         svc, clock, engines = service
         path = str(vault / "a.md")
         svc.handle_event("md", path, "modified")
+        (vault / "a.md").unlink()
         svc.handle_event("md", path, "deleted")
         clock.advance(3.0)
 
@@ -122,6 +123,7 @@ class TestLastStateWins:
         svc, clock, engines = service
         old = str(vault / "a.md")
         new = str(vault / "b.md")
+        (vault / "a.md").rename(new)
         svc.handle_event("md", old, "moved", dest=new)
         clock.advance(3.0)
 
@@ -129,6 +131,73 @@ class TestLastStateWins:
 
         engines["md"].ingestion.remove_source.assert_called_once_with(old)
         engines["md"].ingestion.upsert_file.assert_called_once_with(new)
+
+
+class TestRemoveRechecksDisk:
+    """A queued remove describes an EARLIER inode at that path. An atomic save
+    (write a temp file, rename it over the target) ends with `deleted <target>`
+    for the replaced inode while the new file sits at the same path, so the
+    disk at execution time decides, not the event."""
+
+    def test_delete_of_a_path_that_holds_a_file_again_upserts_it(self, service, vault):
+        svc, clock, engines = service
+        path = str(vault / "a.md")  # the fixture's file is still there
+        svc.handle_event("md", path, "modified")
+        svc.handle_event("md", path, "deleted")
+        clock.advance(3.0)
+
+        svc.run_once()
+
+        engines["md"].ingestion.upsert_file.assert_called_once_with(path)
+        engines["md"].ingestion.remove_source.assert_not_called()
+
+    def test_moved_source_reused_by_a_new_file_is_upserted(self, service, vault):
+        svc, clock, engines = service
+        old, new = str(vault / "a.md"), str(vault / "b.md")
+        (vault / "a.md").rename(new)
+        (vault / "a.md").write_text("# a, recreated")
+        svc.handle_event("md", old, "moved", dest=new)
+        clock.advance(3.0)
+
+        svc.run_once()
+
+        assert sorted(c.args[0] for c in engines["md"].ingestion.upsert_file.call_args_list) == [
+            old,
+            new,
+        ]
+        engines["md"].ingestion.remove_source.assert_not_called()
+
+    def test_a_directory_now_at_the_path_still_removes(self, service, vault):
+        svc, clock, engines = service
+        path = vault / "a.md"
+        path.unlink()
+        path.mkdir()
+        svc.handle_event("md", str(path), "deleted")
+        clock.advance(3.0)
+
+        svc.run_once()
+
+        engines["md"].ingestion.remove_source.assert_called_once_with(str(path))
+        engines["md"].ingestion.upsert_file.assert_not_called()
+
+    def test_an_inconclusive_stat_keeps_the_rows(self, service, vault, monkeypatch):
+        """Permission or I/O trouble is not proof of deletion."""
+        from dbs_vector.services import watcher as watcher_module
+
+        svc, clock, engines = service
+        path = str(vault / "a.md")
+
+        def _denied(p, *a, **kw):
+            raise PermissionError(13, "Permission denied", p)
+
+        monkeypatch.setattr(watcher_module.os, "stat", _denied)
+        svc.handle_event("md", path, "deleted")
+        clock.advance(3.0)
+
+        svc.run_once()
+
+        engines["md"].ingestion.remove_source.assert_not_called()
+        engines["md"].ingestion.upsert_file.assert_not_called()
 
 
 class TestKeying:
@@ -260,6 +329,108 @@ class TestFtsTimer:
 
         engines["md"].store.refresh_fts.assert_not_called()
         engines["md-granite"].store.refresh_fts.assert_not_called()
+
+    def test_an_upsert_that_changed_nothing_leaves_the_engine_clean(self, service, vault):
+        """FSEvents reports xattr and timestamp writes as `modified`, so most
+        events on an unchanged file end in a skipped upsert. Those must not
+        buy a full FTS rebuild."""
+        svc, clock, engines = service
+        engines["md"].ingestion.upsert_file.return_value = False
+        svc.handle_event("md", str(vault / "a.md"), "modified")
+        clock.advance(3.0)
+        svc.run_once()
+
+        clock.advance(60.0)
+        svc.run_once()
+
+        engines["md"].store.refresh_fts.assert_not_called()
+
+    def test_a_remove_that_changed_nothing_leaves_the_engine_clean(self, service, vault):
+        svc, clock, engines = service
+        engines["md"].ingestion.remove_source.return_value = False
+        svc.handle_event("md", str(vault / "gone.md"), "deleted")
+        clock.advance(3.0)
+        svc.run_once()
+
+        clock.advance(60.0)
+        svc.run_once()
+
+        engines["md"].ingestion.remove_source.assert_called_once()
+        engines["md"].store.refresh_fts.assert_not_called()
+
+
+class TestMaintenanceFailureKeepsTheEngineDirty:
+    """Dirty means "index work still owed". It is cleared only once that work
+    succeeded, so a failed refresh or rebuild is retried on the next tick."""
+
+    def _dirty_md(self, service, vault):
+        svc, clock, engines = service
+        svc.handle_event("md", str(vault / "a.md"), "modified")
+        clock.advance(3.0)
+        svc.run_once()
+        return svc, clock, engines
+
+    def test_a_failed_fts_refresh_is_retried_next_tick(self, service, vault):
+        svc, clock, engines = self._dirty_md(service, vault)
+        engines["md"].store.refresh_fts.return_value = False
+
+        clock.advance(60.0)
+        svc.run_once()
+        clock.advance(60.0)
+        svc.run_once()
+
+        assert engines["md"].store.refresh_fts.call_count == 2
+
+    def test_a_raising_fts_refresh_is_retried_next_tick(self, service, vault):
+        svc, clock, engines = self._dirty_md(service, vault)
+        engines["md"].store.refresh_fts.side_effect = RuntimeError("boom")
+
+        clock.advance(60.0)
+        svc.run_once()
+        clock.advance(60.0)
+        svc.run_once()
+
+        assert engines["md"].store.refresh_fts.call_count == 2
+
+    def test_a_successful_fts_refresh_cleans_the_engine(self, service, vault):
+        svc, clock, engines = self._dirty_md(service, vault)
+
+        clock.advance(60.0)
+        svc.run_once()
+        clock.advance(60.0)
+        svc.run_once()
+
+        engines["md"].store.refresh_fts.assert_called_once()
+
+    def test_failed_maintenance_after_a_changed_reconcile_leaves_the_engine_dirty(
+        self, service, vault
+    ):
+        """The reconcile already committed rows; only the index work failed."""
+        svc, clock, engines = service
+        engines["md"].ingestion.reconcile.return_value = (0, 1)
+        engines["md"].store.create_indices.side_effect = RuntimeError("boom")
+        svc.handle_event("md", str(vault / "sub"), "created", is_directory=True)
+        clock.advance(3.0)
+        svc.run_once()
+
+        clock.advance(60.0)
+        svc.run_once()
+
+        engines["md"].store.refresh_fts.assert_called_once()
+
+    def test_successful_maintenance_after_a_changed_reconcile_cleans_the_engine(
+        self, service, vault
+    ):
+        svc, clock, engines = service
+        engines["md"].ingestion.reconcile.return_value = (0, 1)
+        svc.handle_event("md", str(vault / "sub"), "created", is_directory=True)
+        clock.advance(3.0)
+        svc.run_once()
+
+        clock.advance(60.0)
+        svc.run_once()
+
+        engines["md"].store.refresh_fts.assert_not_called()
 
 
 class TestFailureIsolation:

@@ -10,6 +10,8 @@ cross-thread embeds; searches may queue behind at most one watcher embed batch
 during a large reconcile. Accepted.
 """
 
+import os
+import stat
 import threading
 import time
 from collections.abc import Callable
@@ -161,9 +163,10 @@ class WatcherService:
         for (name, path), kind in actions:
             self._guard(f"{kind} {path}", self._do_action, name, path, kind)
         if fts_due:
+            # Each engine leaves _dirty only once its refresh succeeded; a
+            # failed one is retried on the next tick.
             for name in sorted(self._dirty):
                 self._guard(f"refresh_fts {name}", self._do_refresh_fts, name)
-            self._dirty.clear()
 
     def _guard(self, label: str, fn: Callable[..., None], *args: Any) -> None:
         try:
@@ -173,24 +176,54 @@ class WatcherService:
 
     def _do_action(self, engine: str, path: str, kind: str) -> None:
         watched = self._engines[engine]
+        if kind == _REMOVE:
+            resolved = self._resolve_remove(watched, path)
+            if resolved is None:
+                return
+            kind = resolved
         if kind == _UPSERT:
-            watched.ingestion.upsert_file(path)
+            changed = watched.ingestion.upsert_file(path)
         else:
-            watched.ingestion.remove_source(path)
-        self._dirty.add(engine)
+            changed = watched.ingestion.remove_source(path)
+        # FSEvents reports xattr and timestamp writes as `modified`; most of
+        # those end in a skipped upsert, which must not buy an FTS rebuild.
+        if changed:
+            self._dirty.add(engine)
+
+    @staticmethod
+    def _resolve_remove(watched: WatchedEngine, path: str) -> str | None:
+        """What a queued remove means NOW. The event described an earlier
+        inode: an atomic save ends with `deleted <target>` while the new file
+        already sits at that path. None means the disk could not say."""
+        try:
+            st = os.stat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            return _REMOVE
+        except OSError as e:
+            logger.warning("Cannot stat {}; keeping its rows: {}", path, e)
+            return None
+        if stat.S_ISREG(st.st_mode) and watched.path_filter.is_ingestable(path):
+            return _UPSERT
+        return _REMOVE
 
     def _do_reconcile(self, engine: str) -> None:
         watched = self._engines[engine]
         pruned, upserted = watched.ingestion.reconcile()
         if not (pruned or upserted):
             return
+        # Rows are committed; the index work is owed until it succeeds. If it
+        # raises, the engine stays dirty and the FTS timer picks it up.
+        self._dirty.add(engine)
         # create_indices() rebuilds the FTS index too, so the engine is clean.
+        # compact() must follow a fresh build: each optimize() drops one IVF
+        # partition from the index it finds.
         watched.store.create_indices()
         watched.store.compact()
         self._dirty.discard(engine)
 
     def _do_refresh_fts(self, engine: str) -> None:
-        self._engines[engine].store.refresh_fts()
+        if self._engines[engine].store.refresh_fts():
+            self._dirty.discard(engine)
 
     # ---- lifecycle ------------------------------------------------------
 

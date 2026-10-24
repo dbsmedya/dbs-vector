@@ -97,8 +97,8 @@ prints a notice: those rows will not be watched or reconciled.
 | Event | Action (after the debounce window) |
 |---|---|
 | file created / modified | Skipped if the filter rejects it; otherwise whole-file replace |
-| file deleted | All rows for that source are deleted |
-| file moved | Delete the old source; ingest the new one if it passes the filter |
+| file deleted | All rows for that source are deleted — unless an ingestable file is back at that path when the action runs, in which case it is re-ingested |
+| file moved | Delete the old source (same check); ingest the new one if it passes the filter |
 | directory created / moved / deleted | Mark the engine for reconciliation |
 
 Coalescing is last-state-wins per `(engine, path)`: a later event replaces the
@@ -106,16 +106,32 @@ earlier one and resets its window. A pending reconcile absorbs that engine's
 per-file actions (it walks live disk when it runs). Once a reconcile is
 scheduled its due time is **fixed** — later events never push it back, so
 nothing can starve it. That matters because macOS FSEvents emits a directory
-`modified` event for the parent whenever a child file changes, so ordinary
-editing produces a steady stream of directory events.
+`modified` event for the parent whenever a child file is created, deleted or
+renamed, so ordinary editing produces a steady stream of directory events.
+
+**Events that change nothing.** Reading a file produces no event. Writing its
+extended attributes or timestamps does — macOS reports both as `modified`, so
+an app that stamps a file on open, or `touch`, triggers a re-check. The
+content hash turns those into no-ops: nothing is written and no index work is
+scheduled.
+
+**Atomic saves.** Many editors, and agent tools, save by writing a temporary
+file and renaming it over the original. That emits directory events, so a
+save schedules a reconciliation instead of a single-file update, and a
+reconcile that finds the changed file rebuilds the indices (see below). The
+save also ends with a `deleted` event for the replaced file; because a remove
+re-checks the path when it runs, that event does not drop the new file.
 
 **Index maintenance:** a changed file is searchable in **both** legs of hybrid
 search as soon as its debounce window elapses — LanceDB scans not-yet-indexed
 fragments, so neither leg waits on index work. The 60-second `refresh_fts()`
 tick therefore governs FTS *efficiency*, not visibility: it folds recent writes
-into the inverted index so the scan-the-tail path stays short. After a
-reconciliation pass that changed something, and at shutdown, the full vector +
-FTS indices are rebuilt and the dataset is compacted.
+into the inverted index so the scan-the-tail path stays short. It runs only for
+engines whose rows actually changed, and a refresh that fails is retried on the
+next tick. After a reconciliation pass that changed something, and at shutdown,
+the full vector + FTS indices are rebuilt and the dataset is compacted.
+Reconciliation never prunes a file it could not open (permissions, I/O errors);
+its rows stay until a pass can read it.
 
 **Concurrency:** one worker thread performs every LanceDB write. During a large
 reconcile, searches may queue behind at most one watcher embed batch.
