@@ -325,13 +325,21 @@ class IngestionService:
             logger.warning("No active ingestion roots; skipping reconciliation")
             return (0, 0)
 
-        # 1. Disk: walk active roots through the PathFilter.
+        # 1. Disk: walk active roots through the PathFilter. A file that will
+        #    not open is not proof of deletion, so its rows are left alone. A
+        #    non-UTF-8 file exists but would never be ingested: pruned, like an
+        #    excluded one.
         disk: dict[str, str] = {}
+        unopenable: set[str] = set()
         for candidate in pf.iter_files():
             try:
                 content = candidate.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError) as e:
-                logger.warning("Skipping unreadable file {}: {}", candidate, e)
+            except UnicodeDecodeError as e:
+                logger.warning("Skipping non-UTF-8 file {}: {}", candidate, e)
+                continue
+            except OSError as e:
+                logger.warning("Cannot read {}; keeping its rows: {}", candidate, e)
+                unopenable.add(str(candidate))
                 continue
             disk[str(candidate)] = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
 
@@ -343,7 +351,7 @@ class IngestionService:
         #    Sources outside the active roots are unmanaged: never touched.
         pruned = 0
         for source in list(by_source):
-            if source in disk or pf.root_for(source, roots) is None:
+            if source in disk or source in unopenable or pf.root_for(source, roots) is None:
                 continue
             self.vector_store.delete_by_source(source)
             # Subtract from all_hashes too, or step 4 would treat a
