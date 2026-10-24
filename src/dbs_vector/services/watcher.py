@@ -10,6 +10,8 @@ cross-thread embeds; searches may queue behind at most one watcher embed batch
 during a large reconcile. Accepted.
 """
 
+import os
+import stat
 import threading
 import time
 from collections.abc import Callable
@@ -173,6 +175,11 @@ class WatcherService:
 
     def _do_action(self, engine: str, path: str, kind: str) -> None:
         watched = self._engines[engine]
+        if kind == _REMOVE:
+            resolved = self._resolve_remove(watched, path)
+            if resolved is None:
+                return
+            kind = resolved
         if kind == _UPSERT:
             changed = watched.ingestion.upsert_file(path)
         else:
@@ -181,6 +188,22 @@ class WatcherService:
         # those end in a skipped upsert, which must not buy an FTS rebuild.
         if changed:
             self._dirty.add(engine)
+
+    @staticmethod
+    def _resolve_remove(watched: WatchedEngine, path: str) -> str | None:
+        """What a queued remove means NOW. The event described an earlier
+        inode: an atomic save ends with `deleted <target>` while the new file
+        already sits at that path. None means the disk could not say."""
+        try:
+            st = os.stat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            return _REMOVE
+        except OSError as e:
+            logger.warning("Cannot stat {}; keeping its rows: {}", path, e)
+            return None
+        if stat.S_ISREG(st.st_mode) and watched.path_filter.is_ingestable(path):
+            return _UPSERT
+        return _REMOVE
 
     def _do_reconcile(self, engine: str) -> None:
         watched = self._engines[engine]
