@@ -53,7 +53,13 @@ class _VectorMapper:
 
 
 def _ivf_partitions(store: LanceDBStore, query: np.ndarray) -> int:
-    plan = store.table.search(query).metric("cosine").nprobes(20).limit(5).analyze_plan()
+    query_builder = store.table.search(query)
+    plan = (
+        query_builder.metric("cosine")  # pyright: ignore[reportAttributeAccessIssue]
+        .nprobes(20)
+        .limit(5)
+        .analyze_plan()
+    )
     match = re.search(r"partitions_ranked=(\d+)", plan)
     assert match, f"no IVF partition metric in the query plan:\n{plan}"
     return int(match.group(1))
@@ -65,7 +71,7 @@ def indexed_store(tmp_path):
         db_path=str(tmp_path / "lance.db"),
         table_name="t",
         vector_dimension=_DIM,
-        mapper=_VectorMapper(),
+        mapper=_VectorMapper(),  # pyright: ignore[reportArgumentType]  (test double)
     )
     vectors = np.random.default_rng(0).standard_normal((_ROWS, _DIM)).astype(np.float32)
     chunks = [{"id": f"c{i}", "text": f"chunk {i}", "source": f"s{i % 50}"} for i in range(_ROWS)]
