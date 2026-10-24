@@ -77,6 +77,27 @@ def test_run_sql_t_by_table_explodes():
     assert sorted(r["id"] for r in result.rows) == ["A", "B"]
 
 
+@pytest.mark.filterwarnings("error::DeprecationWarning")
+def test_run_sql_t_by_table_keeps_tableless_rows_as_null():
+    # Polars 2.0 flips explode()'s empty_as_null default; a fingerprint with no
+    # tables must stay visible in t_by_table as one null-tables row.
+    result = _svc().run_sql("SELECT id, tables FROM t_by_table WHERE id = 'C'")
+    assert result.rows == [{"id": "C", "tables": None}]
+
+
+@pytest.mark.filterwarnings("error::DeprecationWarning")
+def test_build_and_run_group_by_tables_keeps_null_group():
+    result = _svc().build_and_run(
+        filters={},
+        group_by="tables",
+        order_by="fingerprints:desc",
+        select=None,
+        limit=10,
+    )
+    counts = {r["tables"]: r["fingerprints"] for r in result.rows}
+    assert counts.get(None) == 1
+
+
 def test_run_sql_bad_column_raises_browse_error():
     with pytest.raises(BrowseError):
         _svc().run_sql("SELECT nonexistent_col FROM t")
