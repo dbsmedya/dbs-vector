@@ -1211,7 +1211,7 @@ class TestRefreshFts:
     def test_refresh_fts_replaces_only_the_text_index(self, lancedb_store):
         store, _mock_db, mock_table, _mock_lancedb = lancedb_store
 
-        store.refresh_fts()
+        assert store.refresh_fts() is True
 
         # FTS-only: never touches the vector index.
         mock_table.create_index.assert_called_once_with("text", config=FTS(), replace=True)
@@ -1229,7 +1229,9 @@ class TestRefreshFts:
         store, _mock_db, mock_table, _mock_lancedb = lancedb_store
         mock_table.create_index.side_effect = RuntimeError("FTS build failed")
 
-        store.refresh_fts()  # must not raise — the watcher worker survives
+        # Must not raise (the watcher worker survives), but must say it failed
+        # so the engine stays dirty and the next tick retries.
+        assert store.refresh_fts() is False
 
 
 class TestGetExistingHashesFreshness:

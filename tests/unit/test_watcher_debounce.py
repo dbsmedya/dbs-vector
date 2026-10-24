@@ -359,6 +359,80 @@ class TestFtsTimer:
         engines["md"].store.refresh_fts.assert_not_called()
 
 
+class TestMaintenanceFailureKeepsTheEngineDirty:
+    """Dirty means "index work still owed". It is cleared only once that work
+    succeeded, so a failed refresh or rebuild is retried on the next tick."""
+
+    def _dirty_md(self, service, vault):
+        svc, clock, engines = service
+        svc.handle_event("md", str(vault / "a.md"), "modified")
+        clock.advance(3.0)
+        svc.run_once()
+        return svc, clock, engines
+
+    def test_a_failed_fts_refresh_is_retried_next_tick(self, service, vault):
+        svc, clock, engines = self._dirty_md(service, vault)
+        engines["md"].store.refresh_fts.return_value = False
+
+        clock.advance(60.0)
+        svc.run_once()
+        clock.advance(60.0)
+        svc.run_once()
+
+        assert engines["md"].store.refresh_fts.call_count == 2
+
+    def test_a_raising_fts_refresh_is_retried_next_tick(self, service, vault):
+        svc, clock, engines = self._dirty_md(service, vault)
+        engines["md"].store.refresh_fts.side_effect = RuntimeError("boom")
+
+        clock.advance(60.0)
+        svc.run_once()
+        clock.advance(60.0)
+        svc.run_once()
+
+        assert engines["md"].store.refresh_fts.call_count == 2
+
+    def test_a_successful_fts_refresh_cleans_the_engine(self, service, vault):
+        svc, clock, engines = self._dirty_md(service, vault)
+
+        clock.advance(60.0)
+        svc.run_once()
+        clock.advance(60.0)
+        svc.run_once()
+
+        engines["md"].store.refresh_fts.assert_called_once()
+
+    def test_failed_maintenance_after_a_changed_reconcile_leaves_the_engine_dirty(
+        self, service, vault
+    ):
+        """The reconcile already committed rows; only the index work failed."""
+        svc, clock, engines = service
+        engines["md"].ingestion.reconcile.return_value = (0, 1)
+        engines["md"].store.create_indices.side_effect = RuntimeError("boom")
+        svc.handle_event("md", str(vault / "sub"), "created", is_directory=True)
+        clock.advance(3.0)
+        svc.run_once()
+
+        clock.advance(60.0)
+        svc.run_once()
+
+        engines["md"].store.refresh_fts.assert_called_once()
+
+    def test_successful_maintenance_after_a_changed_reconcile_cleans_the_engine(
+        self, service, vault
+    ):
+        svc, clock, engines = service
+        engines["md"].ingestion.reconcile.return_value = (0, 1)
+        svc.handle_event("md", str(vault / "sub"), "created", is_directory=True)
+        clock.advance(3.0)
+        svc.run_once()
+
+        clock.advance(60.0)
+        svc.run_once()
+
+        engines["md"].store.refresh_fts.assert_not_called()
+
+
 class TestFailureIsolation:
     def test_a_failing_action_does_not_stop_the_others(self, service, vault):
         svc, clock, engines = service
