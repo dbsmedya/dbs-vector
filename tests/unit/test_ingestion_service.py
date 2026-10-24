@@ -496,6 +496,34 @@ class TestReconcile:
         assert (pruned, upserted) == (0, 0)
         store.delete_by_source.assert_not_called()
 
+    def test_a_file_that_cannot_be_opened_keeps_its_rows(self, tmp_path, monkeypatch):
+        """Permission or I/O trouble is not proof the file was deleted."""
+        locked = tmp_path / "locked.md"
+        locked.write_text("# locked")
+        svc, store, _ = self._service([tmp_path], [(str(locked), "h1")])
+        real_read_text = Path.read_text
+
+        def _read_text(self, *args, **kwargs):
+            if self == locked:
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _read_text)
+
+        assert svc.reconcile() == (0, 0)
+        store.delete_by_source.assert_not_called()
+
+    def test_a_non_utf8_file_is_still_pruned(self, tmp_path):
+        """It exists but the engine would never ingest it: same as excluded."""
+        binary = tmp_path / "bin.md"
+        binary.write_bytes(b"\xff\xfe\x00binary")
+        svc, store, _ = self._service([tmp_path], [(str(binary), "h1")])
+
+        pruned, _ = svc.reconcile()
+
+        assert pruned == 1
+        store.delete_by_source.assert_called_once_with(str(binary))
+
     def test_upserted_counts_only_files_whose_rows_changed(self, tmp_path):
         """A duplicate or an empty file is attempted on every pass but writes
         nothing; counting it would trigger index work on an unchanged corpus."""
