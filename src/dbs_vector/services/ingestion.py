@@ -230,22 +230,26 @@ class IngestionService:
         path: str,
         *,
         index: tuple[dict[str, set[str]], set[str]] | None = None,
-    ) -> None:
+    ) -> bool:
         """Whole-file replace for one source, source-aware.
 
         `index` is the (by_source, all_hashes) pair from `_store_hash_index()`.
         Pass it from a reconcile loop to avoid one full scan per file; it is
         UPDATED IN PLACE so later files in the same pass see this write.
+
+        Returns True only if rows were inserted or deleted. The watcher gates
+        index work on it, so an unchanged, unreadable, duplicate or empty file
+        must report False and must not commit anything.
         """
         filepath = Path(path)
         try:
             content = filepath.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             logger.warning("Skipping non-UTF-8 file: {}", path)
-            return
+            return False
         except OSError as e:
             logger.warning("Cannot read {}: {}", path, e)
-            return
+            return False
 
         source = str(filepath)
         file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
@@ -257,14 +261,18 @@ class IngestionService:
         # stale rows forever.
         if file_hash in by_source.get(source, set()):
             logger.debug("Unchanged, skipping {}", source)
-            return
+            return False
 
-        self.vector_store.delete_by_source(source)
-        # Drop this source's hashes from BOTH views. Global dedup means a bare
-        # hash lives under exactly one source, so the subtraction is safe — and
-        # without it a shared reconcile index would still claim the content is
-        # "indexed elsewhere" after we just deleted it.
-        all_hashes -= by_source.pop(source, set())
+        # Only delete rows that exist: a delete matching nothing still commits
+        # a table version, and duplicate or empty files land here every pass.
+        deleted = source in by_source
+        if deleted:
+            self.vector_store.delete_by_source(source)
+            # Drop this source's hashes from BOTH views. Global dedup means a
+            # bare hash lives under exactly one source, so the subtraction is
+            # safe — and without it a shared reconcile index would still claim
+            # the content is "indexed elsewhere" after we just deleted it.
+            all_hashes -= by_source.pop(source)
 
         if file_hash in all_hashes:
             # Existing global dedup: the content is indexed once, under
@@ -274,7 +282,7 @@ class IngestionService:
                 "Content of {} is already indexed under another source; not re-adding",
                 source,
             )
-            return
+            return deleted
 
         doc = Document(filepath=source, content=content, content_hash=file_hash)
         written = self._embed_and_store(self.chunker.process(doc))
@@ -284,14 +292,25 @@ class IngestionService:
         # 1..N carry `{file_hash}_{i}` which nothing ever looks up.
         all_hashes.add(file_hash)
         by_source[source] = {file_hash}
+        return deleted or written > 0
 
-    def remove_source(self, path: str) -> None:
-        """Delete every row for one source."""
-        self.vector_store.delete_by_source(str(path))
-        logger.info("Removed source {}", path)
+    def remove_source(self, path: str) -> bool:
+        """Delete every row for one source. Returns True if any rows existed.
+
+        Checks first: the watcher removes paths that were never indexed (an
+        atomic save's temp file), and a no-match delete still commits.
+        """
+        source = str(path)
+        if not self.vector_store.has_source(source):
+            logger.debug("Nothing indexed for {}; nothing to remove", source)
+            return False
+        self.vector_store.delete_by_source(source)
+        logger.info("Removed source {}", source)
+        return True
 
     def reconcile(self) -> tuple[int, int]:
-        """Full delta pass over the ACTIVE roots. Returns (pruned, upserted).
+        """Full delta pass over the ACTIVE roots. Returns (pruned, upserted):
+        counts of sources whose rows actually changed, not files attempted.
 
         Compares content hashes, so it detects FILE changes only. Any change to
         the engine's roots, model, prefixes, tuning profile, chunker behaviour
@@ -341,8 +360,8 @@ class IngestionService:
         for source, file_hash in disk.items():
             if file_hash in by_source.get(source, set()):
                 continue
-            self.upsert_file(source, index=index)
-            upserted += 1
+            if self.upsert_file(source, index=index):
+                upserted += 1
 
         logger.info("Reconciliation complete: {} pruned, {} upserted", pruned, upserted)
         return (pruned, upserted)
