@@ -6,6 +6,11 @@ with a single partition, existing indexes included. Search keeps working on the
 collapsed index, but every vector is quantized against one global centroid, so
 the ANN leg loses recall. Nothing else in the suite looks at index geometry, so
 this is the test that fails when a lancedb bump brings that back.
+
+On 0.36 and 0.38 each optimize() still drops one partition from the index it
+finds, so repeated optimizes without a rebuild walk it down to one as well.
+Production stays safe only because every compact() follows a fresh
+create_indices(). Keep that order.
 """
 
 from __future__ import annotations
@@ -89,3 +94,19 @@ def test_ivf_partitions_survive_a_second_maintenance_cycle(indexed_store):
     store.compact()
 
     assert _ivf_partitions(store, vectors[0]) > 1
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="lancedb 0.36/0.38: each optimize() drops one IVF partition, so compact() "
+    "must only ever follow a fresh create_indices(). XPASS means upstream fixed it.",
+)
+def test_repeated_compact_without_a_rebuild_keeps_the_partitions(indexed_store):
+    store, vectors = indexed_store
+
+    store.create_indices()
+    built = _ivf_partitions(store, vectors[0])
+    for _ in range(built):
+        store.compact()
+
+    assert _ivf_partitions(store, vectors[0]) >= built - 1
