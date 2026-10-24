@@ -137,7 +137,11 @@ class BrowseService:
         df = pl.from_arrow(self.store.scan())
         if isinstance(df, pl.Series):  # pragma: no cover - from_arrow returns DataFrame for tables
             df = df.to_frame()
-        return {self.frame_alias: df, "t": df, "t_by_table": df.explode("tables")}
+        return {
+            self.frame_alias: df,
+            "t": df,
+            "t_by_table": df.explode("tables", empty_as_null=True),
+        }
 
     @staticmethod
     def _execute(sql: str, frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
@@ -299,7 +303,7 @@ class BrowseService:
         if isinstance(df, pl.Series):  # pragma: no cover
             df = df.to_frame()
         explode = "tables" in group_cols
-        frame = df.explode("tables") if explode else df
+        frame = df.explode("tables", empty_as_null=True) if explode else df
         exprs: list[pl.Expr] = []
         for param, column in _EQ_FILTERS.items():
             value = filters.get(param)
