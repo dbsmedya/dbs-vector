@@ -320,18 +320,16 @@ class LanceDBStore:
                 results_df = search_op.to_polars()
                 self._hybrid_ok = True
                 used_fallback = False
-            except (ValueError, RuntimeError, ImportError, OSError) as e:
+            except (ValueError, RuntimeError, OSError) as e:
                 # Narrowed from bare Exception so a programming error doesn't
-                # silently degrade to vector-only. Re-verified against LanceDB
-                # 0.36.0: FTS-absent raises RuntimeError ("Cannot perform full
-                # text search unless an INVERTED index has been created");
-                # ImportError is vestigial — it covered the legacy tantivy index
-                # path that LanceDB 0.32 deleted — and is kept only as cheap
-                # breadth until someone confirms no import can reach here;
-                # OSError (incl. FileNotFoundError) covers corrupt/missing
-                # index files mapped from LanceError(IO). Degrading the HYBRID
-                # leg on IO errors is safe: if the dataset itself is broken,
-                # the vector fallback raises too and THAT exception propagates.
+                # silently degrade to vector-only. FTS-absent ("Cannot perform
+                # full text search unless an INVERTED index has been created")
+                # raises ValueError under LanceDB 0.38 and RuntimeError under
+                # 0.36; both are caught. OSError (incl. FileNotFoundError)
+                # covers corrupt/missing index files mapped from LanceError(IO).
+                # Degrading the HYBRID leg on IO errors is safe: if the dataset
+                # itself is broken, the vector fallback raises too and THAT
+                # exception propagates.
                 self._hybrid_ok = False
                 logger.warning(
                     "Hybrid search unavailable or failed ({}), falling back to pure vector", e
