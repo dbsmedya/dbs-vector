@@ -3,6 +3,7 @@ from typing import Any
 
 import lancedb  # type: ignore[import-untyped]
 import numpy as np
+from lancedb.index import FTS, IvfPq  # type: ignore[import-untyped]
 from lancedb.rerankers import RRFReranker  # type: ignore[import-untyped]
 from loguru import logger
 from numpy.typing import NDArray
@@ -94,16 +95,17 @@ class LanceDBStore:
             # Scale partitions dynamically
             num_partitions = max(1, min(256, int(math.sqrt(total_rows))))
             self.table.create_index(
-                metric="cosine",
-                vector_column_name="vector",
-                index_type="IVF_PQ",
-                num_partitions=num_partitions,
-                num_sub_vectors=min(16, self.vector_dimension // 8),
+                "vector",
+                config=IvfPq(
+                    distance_type="cosine",
+                    num_partitions=num_partitions,
+                    num_sub_vectors=min(16, self.vector_dimension // 8),
+                ),
             )
 
         # 2. Native FTS Indexing (Hybrid Search)
         try:
-            self.table.create_fts_index("text", replace=True)
+            self.table.create_index("text", config=FTS(), replace=True)
         except Exception as e:
             logger.warning("FTS indexing failed: {}", e)
 
@@ -118,7 +120,7 @@ class LanceDBStore:
         immediately without any index work.
         """
         try:
-            self.table.create_fts_index("text", replace=True)
+            self.table.create_index("text", config=FTS(), replace=True)
         except Exception as e:  # noqa: BLE001 — must never kill the watcher worker
             logger.warning("FTS refresh failed for '{}': {}", self.table_name, e)
         # The index may now exist or have been replaced — allow hybrid retry.
