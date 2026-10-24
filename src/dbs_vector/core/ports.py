@@ -104,8 +104,11 @@ class IVectorStore(Protocol):
         """True if any row's `source` column equals `source` exactly."""
         ...
 
-    def refresh_fts(self) -> None:
-        """Rebuild ONLY the full-text index. No vector index work."""
+    def refresh_fts(self) -> bool:
+        """Rebuild ONLY the full-text index. No vector index work.
+
+        Never raises; returns False if the rebuild failed.
+        """
         ...
 
     def search(
