@@ -158,8 +158,17 @@ class TestUpsertLifecycle:
         # Whole-file replace: the old rows are gone, not accumulated.
         assert store.scan(columns=["source"]).num_rows == first
 
-        ingestion.remove_source(str(doc))
+        assert ingestion.remove_source(str(doc)) is True
         assert sources(store) == set()
+
+    def test_removing_a_never_indexed_path_commits_nothing(self, tmp_path, vault):
+        ingestion, store, _ = build_stack(tmp_path, vault)
+        (vault / "a.md").write_text("# Alpha\n\nBody.")
+        ingestion.reconcile()
+        version = store.table.version
+
+        assert ingestion.remove_source(str(vault / "a.md.tmp.4242.abc")) is False
+        assert store.table.version == version
 
     def test_edit_into_duplicate_leaves_no_stale_rows(self, tmp_path, vault):
         """The (source, bare_hash) PAIR check. A global-hash check would skip
@@ -208,6 +217,22 @@ class TestReconcile:
         ingestion.reconcile()
 
         assert ingestion.reconcile() == (0, 0)
+
+    def test_unchanged_reconcile_with_duplicates_and_empty_files_writes_nothing(
+        self, tmp_path, vault
+    ):
+        """A duplicate or empty file has no rows of its own, so every pass
+        attempts it again. That attempt must not commit a no-match delete."""
+        ingestion, store, _ = build_stack(tmp_path, vault)
+        (vault / "one.md").write_text("# Same\n\nIdentical body.")
+        (vault / "two.md").write_text("# Same\n\nIdentical body.")
+        (vault / "empty.md").write_text("")
+        ingestion.reconcile()
+        version = store.table.version
+
+        assert ingestion.reconcile() == (0, 0)
+        assert ingestion.reconcile() == (0, 0)
+        assert store.table.version == version
 
     def test_reconcile_heals_a_deletion_that_happened_while_down(self, tmp_path, vault):
         ingestion, store, _ = build_stack(tmp_path, vault)
