@@ -13,7 +13,10 @@ requires-python = ">=3.12"
 # CI installs from the lockfile, users resolve fresh from these constraints. The
 # caps stop breaking majors; the `fresh-resolution` CI job catches the rest.
 dependencies = [
-    "lancedb==0.36.0",
+    # Held at 0.38: from 0.39, Table.optimize() rebuilds the IVF_PQ index with one
+    # partition. tests/integration/test_lancedb_index_geometry.py fails on any bump
+    # that brings it back; reorder maintenance to compact-then-index before moving on.
+    "lancedb==0.38.0",
     "loguru>=0.7.3,<1",
     "markdown-it-py>=4.0.0,<5",
     "mdit-py-plugins>=0.6.0,<0.7",
