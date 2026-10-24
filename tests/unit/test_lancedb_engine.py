@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+from lancedb.index import FTS, IvfPq  # type: ignore[import-untyped]
 
 from dbs_vector.infrastructure.storage.lancedb_engine import LanceDBStore
 
@@ -175,6 +176,11 @@ class TestCompact:
 class TestCreateIndices:
     """Tests for the create_indices method."""
 
+    @staticmethod
+    def _index_calls(mock_table) -> dict:
+        """create_index calls keyed by the column they index."""
+        return {c.args[0]: c.kwargs for c in mock_table.create_index.call_args_list}
+
     def test_create_indices_with_few_rows(self, lancedb_store):
         """Test index creation with fewer than 256 rows skips vector index."""
         store, _, mock_table, _ = lancedb_store
@@ -183,7 +189,7 @@ class TestCreateIndices:
         store.create_indices()
 
         # Should not create vector index for small tables
-        mock_table.create_index.assert_not_called()
+        assert "vector" not in self._index_calls(mock_table)
 
     def test_create_indices_vector_index_large_table(self, lancedb_store):
         """Test vector index creation for large tables."""
@@ -192,11 +198,20 @@ class TestCreateIndices:
 
         store.create_indices()
 
-        mock_table.create_index.assert_called_once()
-        call_kwargs = mock_table.create_index.call_args.kwargs
-        assert call_kwargs["metric"] == "cosine"
-        assert call_kwargs["vector_column_name"] == "vector"
-        assert call_kwargs["index_type"] == "IVF_PQ"
+        config = self._index_calls(mock_table)["vector"]["config"]
+        assert isinstance(config, IvfPq)
+        assert config.distance_type == "cosine"
+
+    def test_vector_index_config_matches_the_legacy_call(self, lancedb_store):
+        """The unified API must build what the deprecated metric=/num_partitions= call built."""
+        store, _, mock_table, _ = lancedb_store
+        mock_table.__len__.return_value = 10000
+
+        store.create_indices()
+
+        assert self._index_calls(mock_table)["vector"] == {
+            "config": IvfPq(distance_type="cosine", num_partitions=100, num_sub_vectors=0)
+        }
 
     def test_create_indices_fts_index(self, lancedb_store):
         """Test FTS index creation."""
@@ -206,16 +221,14 @@ class TestCreateIndices:
         store.create_indices()
 
         # FTS index should be created even for small tables
-        mock_table.create_fts_index.assert_called_once_with(
-            "text",
-            replace=True,
-        )
+        assert self._index_calls(mock_table)["text"] == {"config": FTS(), "replace": True}
+        mock_table.create_fts_index.assert_not_called()
 
     def test_create_indices_fts_failure_handled(self, lancedb_store, caplog):
         """Test that FTS index failure is handled gracefully."""
         store, _, mock_table, _ = lancedb_store
         mock_table.__len__.return_value = 100
-        mock_table.create_fts_index.side_effect = Exception("tantivy not installed")
+        mock_table.create_index.side_effect = Exception("FTS build failed")
 
         # Should not raise
         store.create_indices()
@@ -230,8 +243,7 @@ class TestCreateIndices:
 
         store.create_indices()
 
-        call_kwargs = mock_table.create_index.call_args.kwargs
-        assert call_kwargs["num_partitions"] == 100
+        assert self._index_calls(mock_table)["vector"]["config"].num_partitions == 100
 
     def test_vector_index_partitions_capped(self, lancedb_store):
         """Test that vector index partitions are capped at 256."""
@@ -240,8 +252,8 @@ class TestCreateIndices:
 
         store.create_indices()
 
-        call_kwargs = mock_table.create_index.call_args.kwargs
-        assert call_kwargs["num_partitions"] == 256  # capped
+        # capped
+        assert self._index_calls(mock_table)["vector"]["config"].num_partitions == 256
 
 
 class TestGetExistingHashes:
@@ -917,6 +929,26 @@ class TestSearch:
         store.create_indices()  # FTS rebuilt → cache reset
         assert store._hybrid_ok is None
 
+    def test_hybrid_import_error_is_not_degraded_to_vector(self, lancedb_store):
+        """An ImportError is a broken install, not a missing FTS index: it must surface.
+
+        The ImportError arm covered the tantivy path lancedb 0.32 deleted; FTS-absent
+        raises ValueError (lancedb 0.38) or RuntimeError (0.36).
+        """
+        store, _, mock_table, _ = lancedb_store
+        qv = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        def search_side_effect(*args, **kwargs):
+            if kwargs.get("query_type") == "hybrid":
+                raise ImportError("broken install")
+            return MagicMock()
+
+        mock_table.search.side_effect = search_side_effect
+
+        with pytest.raises(ImportError, match="broken install"):
+            store.search("q", qv, limit=3)
+        assert store._hybrid_ok is None
+
     def test_hybrid_cache_resets_when_table_version_advances(self, lancedb_store):
         """A version advance seen via checkout_latest() (e.g. ANOTHER process
         ingesting and creating the FTS index) must allow a hybrid retry —
@@ -1155,9 +1187,9 @@ class TestRefreshFts:
 
         store.refresh_fts()
 
-        mock_table.create_fts_index.assert_called_once_with("text", replace=True)
         # FTS-only: never touches the vector index.
-        mock_table.create_index.assert_not_called()
+        mock_table.create_index.assert_called_once_with("text", config=FTS(), replace=True)
+        mock_table.create_fts_index.assert_not_called()
 
     def test_refresh_fts_resets_the_hybrid_cache(self, lancedb_store):
         store, _mock_db, mock_table, _mock_lancedb = lancedb_store
@@ -1169,7 +1201,7 @@ class TestRefreshFts:
 
     def test_refresh_fts_swallows_backend_failure(self, lancedb_store):
         store, _mock_db, mock_table, _mock_lancedb = lancedb_store
-        mock_table.create_fts_index.side_effect = RuntimeError("tantivy missing")
+        mock_table.create_index.side_effect = RuntimeError("FTS build failed")
 
         store.refresh_fts()  # must not raise — the watcher worker survives
 
